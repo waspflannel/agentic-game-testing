@@ -16,17 +16,29 @@ from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from .ai import OpenAI, ProviderError, SUBSCRIPTION_PRICING
 from .codex_backend import CodexError
-from .coordinator import Coordinator
+from .coordinator import Coordinator, InstanceConflict
 from .credentials import Credentials
 from .models import Plan, MODEL, SUPPORTED_MODELS, AI_API, ACTIVE_STATES, RecalculateGoalsRequest
 from .repository import Repository, sha256_file
 from .reports import generate_report
 from .agent_profiles import AgentProfiles
+from .projects import Projects
+from .workspace_import import import_workspace, IMPORT_ID as WORKSPACE_IMPORT_ID
 from .instances import Instances, InstanceRequest
 from .store import Store, uid
 
 PROJECT = Path(__file__).resolve().parents[1]
 DEFAULT_SETTINGS = {"id": "main", "concurrent_sessions": 1, "storage_reserve_bytes": 1024**3, "duration_seconds": None, "spend_usd": None, "pricing": SUBSCRIPTION_PRICING}
+
+
+async def disk_mutation(operation, *args, **kwargs):
+    """Keep the caller's admission hold until actual disk work finishes, even on HTTP cancellation."""
+    task = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        await task
+        raise
 
 
 def build_record(path, name=None, build_id=None):
@@ -75,11 +87,13 @@ def initialize_local(store, credentials):
     if default_manifest.exists():
         record = build_record(default_manifest)
         existing = store.get("builds", record["id"])
-        if not existing or (existing.get("manifest_sha256") != record["manifest_sha256"] and not any(r["plan"]["build_id"] == record["id"] for r in store.list("runs"))):
+        if not existing:
+            # Startup may discover a legacy build, never replace pinned identity or
+            # erase explicit project membership. Changed revisions need a new ID.
             store.put("builds", record)
 
 
-def create_app(data_root=None, credentials=None, start_services=True, initialize=True, ai_backend=None):
+def create_app(data_root=None, credentials=None, start_services=True, initialize=True, ai_backend=None, controller_lock=None):
     store = Store(data_root or os.environ.get("ASHAD_DATA", PROJECT / ".data" / "controller"))
     credentials = credentials or Credentials()
     if initialize:
@@ -143,8 +157,11 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
     app = FastAPI(title="ASHAD Bot", version="1.0.0", lifespan=lifespan)
     app.state.store, app.state.coordinator, app.state.ai, app.state.credentials = store, coordinator, ai, credentials
     app.state.profiles = profiles
+    app.state.controller_lock = controller_lock
     app.state.operations = {}
     app.state.tuning_task = None
+    app.state.tuning_request_id = None
+    app.state.instance_requests = {}
 
     @app.middleware("http")
     async def local_boundary(request: Request, call_next):
@@ -161,6 +178,8 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
             if request.headers.get("x-ashad-request") != "1" or (origin and urlparse(origin).netloc != request.headers.get("host")):
                 return JSONResponse({"detail": "Use the local ASHAD dashboard; cross-origin writes are blocked."}, status_code=403)
         mutation = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        if mutation and coordinator.import_interrupted():
+            return JSONResponse({"detail": "Workspace import is incomplete. Editing, sign-in and admission are blocked until operator reconciliation; keep the verified backup and journal."}, status_code=409)
         if mutation and coordinator.draining:
             return JSONResponse({"detail": "The controller is draining; wait for shutdown or retry afterward."}, status_code=409)
         operation = asyncio.current_task() if mutation else None
@@ -174,6 +193,10 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
                 app.state.operations.pop(operation, None)
         response.headers.update({"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"})
         return response
+
+    @app.exception_handler(InstanceConflict)
+    async def occupied_instance(request, exc):
+        return JSONResponse({"detail": str(exc), "code": "active_instance_conflict", "owning_instances": exc.owners}, status_code=409)
 
     @app.exception_handler(ValueError)
     async def invalid(request, exc):
@@ -201,29 +224,157 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
     @app.get("/api/bootstrap")
     async def bootstrap():
         settings = dict(store.require("settings", "main"))
+        settings.update(saved_concurrent_sessions=settings.get("concurrent_sessions", 1), concurrent_sessions=1, max_active_instances=1)
         memory = psutil.virtual_memory()
         settings["hardware"] = {"cpu_percent": psutil.cpu_percent(), "memory_percent": memory.percent, "memory_available": memory.available, "disk_free": psutil.disk_usage(str(store.root)).free, "gpu": None}
         builds, workers = store.list("builds"), store.list("workers")
-        ai_status = {**store.get("settings", "ai_status", ai.status), "api": AI_API}
+        # Persisted account-status rows are history, not current authentication.
+        # In particular an import/restart must validate this backend's own home.
+        ai_status = {**ai.status, "api": AI_API}
         model_options = [{"id": model, "label": model.replace("gpt-", "GPT-").replace("-luna", " Luna").replace("-sol", " Sol").replace("-astra", " Astra")} for model in SUPPORTED_MODELS]
-        return {"settings": settings, "ai": ai_status, "model_options": model_options, "builds": builds, "workers": workers, "accounts": store.list("accounts"), "agents": store.list("agents"), "runs": store.list("runs"), "usage": store.list("usage"), "leases": store.leases()}
+        owners = coordinator.occupied_instances()
+        interrupted = coordinator.import_interrupted()
+        blocked_reason = ("Workspace import is interrupted; operator reconciliation is required" if interrupted else
+                          "The controller is completing setup or shutdown; wait before starting" if coordinator.draining else
+                          "One instance already owns the global slot" if owners else None)
+        return {"settings": settings, "ai": ai_status, "model_options": model_options, "builds": builds, "workers": workers, "accounts": store.list("accounts"), "agents": store.list("agents"), "runs": store.list("runs"), "usage": store.list("usage"), "leases": store.leases(), "projects": store.list("projects"),
+                "instance_slot": {"available": blocked_reason is None, "owners": owners, "limit": 1, "blocked_reason": blocked_reason},
+                "workspace_import": {"interrupted": coordinator.import_interrupted(), "completed": store.get("migrations", WORKSPACE_IMPORT_ID),
+                                     "readiness_verified": False}}
+
+    @app.post("/api/workspace/import")
+    async def workspace_import(body: dict):
+        if app.state.controller_lock is None or app.state.controller_lock.closed:
+            raise ValueError("Import requires the process lock held by the owned ASHAD controller entry")
+        for name in ("source_root", "backup_dir"):
+            if not isinstance(body.get(name), str) or not Path(body[name]).is_absolute():
+                raise ValueError("Import requires explicit absolute source and fresh backup paths")
+        async with coordinator.lock:
+            if coordinator.draining or coordinator.stopping or coordinator.occupied_instances():
+                raise ValueError("Import requires an idle, reconciled target controller")
+            login = getattr(ai.backend, "login_wait", None)
+            if app.state.tuning_task or len(app.state.operations) > 1 or (login and not login.done()):
+                raise ValueError("Wait for provider, sign-in and setup operations before importing")
+            previous = store.get("migrations", WORKSPACE_IMPORT_ID)
+            coordinator.draining = True
+            try:
+                result = await disk_mutation(import_workspace, store,
+                    source_root=body["source_root"], backup_dir=body["backup_dir"],
+                    external_inventory=body.get("external_inventory"), confirmed=body.get("confirmed") is True,
+                    source_idle_confirmed=body.get("source_idle_confirmed") is True,
+                    external_backup_confirmed=body.get("external_backup_confirmed") is True,
+                    target_drained=True)  # Authority is server-derived, never a body flag.
+                if not previous:
+                    ai.status = {"configured": False, "status": "not_validated", "api": AI_API,
+                                 "auth_method": "chatgpt", "model": MODEL,
+                                 "message": "Imported history is not readiness. Re-check ChatGPT sign-in and compatible desktops in this workspace."}
+                return result
+            except RuntimeError as exc:
+                return JSONResponse({"detail": "Import refused: " + str(exc)}, status_code=409)
+            finally:
+                coordinator.draining = False
+
+    @app.post("/api/projects")
+    async def create_project(body: dict):
+        if set(body) != {"name", "request_id"}:
+            raise ValueError("Project creation requires only name and a stable request_id")
+        return Projects(store).create(body["name"], body["request_id"])
+
+    @app.get("/api/projects/{project_id}")
+    async def project_detail(project_id: str):
+        return {**store.require("projects", project_id),
+                **{kind: [record for record in store.list(kind) if record.get("project_id") == project_id]
+                   for kind in ("builds", "agents", "runs")}}
+
+    @app.post("/api/projects/migration/preview")
+    async def migration_preview(body: dict):
+        login = getattr(ai.backend, "login_wait", None)
+        operations = bool(app.state.tuning_task) or len(app.state.operations) > 1 or bool(login and not login.done())
+        return Projects(store).preview(body.get("groups"), operations_active=operations)
+
+    @app.post("/api/projects/migration/apply")
+    async def migration_apply(body: dict):
+        if app.state.controller_lock is None or app.state.controller_lock.closed:
+            raise ValueError("Migration requires the process lock held by the owned ASHAD controller entry")
+        if not isinstance(body.get("backup_dir"), str) or not Path(body["backup_dir"]).is_absolute():
+            raise ValueError("Choose an absolute, fresh migration backup directory")
+        if not isinstance(body.get("preview_token"), str):
+            raise ValueError("Review a migration preview before confirming")
+        # Own the same admission authority as launch/resume. The store helper also
+        # rejects every queued/live/unresolved lease and changing source snapshot.
+        async with coordinator.lock:
+            if coordinator.draining:
+                raise ValueError("Controller is already draining")
+            operations = bool(app.state.tuning_task) or len(app.state.operations) > 1
+            login = getattr(ai.backend, "login_wait", None)
+            operations = operations or bool(login and not login.done())
+            coordinator.draining = True
+            try:
+                return await disk_mutation(Projects(store).apply, body.get("groups"),
+                    preview_token=body.get("preview_token"), backup_dir=body.get("backup_dir"),
+                    confirmed=body.get("confirmed") is True, operations_active=operations,
+                    codex_home=store.root / "codex")
+            finally:
+                coordinator.draining = False
 
     @app.post("/api/agents/tune")
     async def tune_agent(body: dict):
         model = Plan(model=body.get("model", MODEL)).model
         if app.state.tuning_task:
+            request_id = body.get("request_id")
+            if isinstance(request_id, str) and store.command("tuning", request_id):
+                return await profiles.tune(body.get("build_id"), model, project_id=body.get("project_id"),
+                                           name=body.get("name"), request_id=request_id)
             raise ValueError("An agent is already being tuned. Wait for it to finish.")
+        if any(key in body for key in ("project_id", "name", "request_id")) and not body.get("request_id"):
+            raise ValueError("Use a stable tuning request_id; explicit retune uses a new ID")
         app.state.tuning_task = asyncio.current_task()
+        app.state.tuning_request_id = body.get("request_id")
         try:
+            if any(key in body for key in ("project_id", "name", "request_id")):
+                return await profiles.tune(body.get("build_id"), model, project_id=body.get("project_id"),
+                                           name=body.get("name"), request_id=body.get("request_id"))
             return await profiles.tune(body.get("build_id"), model)
         except asyncio.CancelledError:
             return JSONResponse({"detail": "Agent tuning was cancelled; no incomplete profile was saved."}, status_code=409)
         finally:
             app.state.tuning_task = None
+            app.state.tuning_request_id = None
+
+    @app.get("/api/agents/tuning/{request_id}")
+    async def tuning_request(request_id: str):
+        saved = store.command("tuning", request_id)
+        if saved:
+            return {"status": "completed", "request_id": request_id, "agent": store.require("agents", saved["agent_id"])}
+        running = bool(app.state.tuning_task and app.state.tuning_request_id == request_id)
+        return {"status": "in_progress" if running else "unknown", "request_id": request_id}
+
+    @app.get("/api/instances/requests/{request_id}")
+    async def instance_request(request_id: str):
+        launch = store.command("launch", request_id)
+        if launch:
+            return {"status": "accepted", "request_id": request_id, "run": store.require("runs", launch["run_id"])}
+        prepared = store.command("instance", request_id)
+        legacy_run = store.get("runs", prepared.get("run_id")) if prepared and prepared.get("run_id") else None
+        if legacy_run:
+            return {"status": "accepted", "request_id": request_id, "run": legacy_run}
+        status = ("in_progress" if app.state.instance_requests.get(request_id) else
+                  "prepared" if prepared else "unknown")
+        original = prepared.get("request") if prepared else None
+        original = {key: original[key] for key in ("agent_id", "project_id", "primary_goal", "transport", "request_id") if key in original} if isinstance(original, dict) else None
+        return {"status": status, "request_id": request_id, "request": original}
 
     @app.post("/api/instances")
     async def new_instance(body: InstanceRequest):
-        return await instances.start(body)
+        tasks = app.state.instance_requests.setdefault(body.request_id, set())
+        current = asyncio.current_task()
+        tasks.add(current)
+        try:
+            return await instances.start(body)
+        finally:
+            tasks.discard(current)
+            if not tasks:
+                app.state.instance_requests.pop(body.request_id, None)
 
 
     @app.get("/api/runs/{run_id}")
@@ -354,8 +505,8 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
     @app.post("/api/settings")
     async def settings(body: dict):
         current = store.require("settings", "main")
-        if "concurrent_sessions" in body and (not isinstance(body["concurrent_sessions"], int) or not 1 <= body["concurrent_sessions"] <= 32):
-            raise ValueError("Concurrent session cap must be 1–32")
+        if "concurrent_sessions" in body and (type(body["concurrent_sessions"]) is not int or body["concurrent_sessions"] != 1):
+            raise ValueError("This release allows exactly one active instance; concurrency cannot be increased")
         for key in ("duration_seconds", "spend_usd"):
             if key in body and body[key] is not None and (not isinstance(body[key], (int, float)) or body[key] <= 0):
                 raise ValueError(f"{key} must be positive or unset")
@@ -400,7 +551,10 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
 
     @app.post("/api/builds")
     async def add_build(body: dict):
-        return store.put("builds", build_record(body["manifest_path"], body.get("name"), body.get("id")))
+        if not isinstance(body.get("manifest_path"), str) or not Path(body["manifest_path"]).is_absolute():
+            raise ValueError("Select an absolute manifest path")
+        record = build_record(body["manifest_path"], body.get("name"), body.get("id"))
+        return Projects(store).register_build(record, body.get("project_id"))
 
     @app.get("/api/builds/{build_id}/catalog")
     async def catalog(build_id: str):

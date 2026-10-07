@@ -69,7 +69,7 @@ function launchController() {
   const dataRoot = path.join(app.getPath('userData'), 'controller');
   fs.mkdirSync(dataRoot, { recursive: true });
   config = rules.launchConfig(dataRoot);
-  controller = spawn(python, ['-I', '-B', '-m', 'ashad', '--desktop'], {
+  controller = spawn(python, ['-I', '-B', '-X', 'utf8', '-m', 'ashad', '--desktop'], {
     cwd: resources, env: rules.childEnvironment(process.env), windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
   });

@@ -187,6 +187,8 @@ test('packaging pins exact tooling/full Python and keeps subprocess resources ou
   const packageFile = JSON.parse(await fs.readFile(path.join(__dirname, '../desktop/package.json'), 'utf8'));
   assert.deepEqual(packageFile.devDependencies, { electron: '44.6.0', 'electron-builder': '26.15.3' });
   assert.equal(packageFile.build.asar, true);
+  const main = await fs.readFile(path.join(__dirname, '../desktop/main.cjs'), 'utf8');
+  assert.match(main, /spawn\(python, \['-I', '-B', '-X', 'utf8', '-m'/);
   assert.equal(packageFile.build.nsis.perMachine, false);
   assert.equal(packageFile.build.nsis.allowElevation, false);
   assert.equal(packageFile.build.nsis.deleteAppDataOnUninstall, false);

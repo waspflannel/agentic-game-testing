@@ -6,10 +6,12 @@ from pydantic import Field
 
 from .agent_profiles import AgentProfiles
 from .models import ACTIVE_STATES, Contract, Plan
+from .projects import Projects
 
 
 class InstanceRequest(Contract):
     agent_id: str = Field(min_length=1, max_length=100)
+    project_id: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,100}$")
     primary_goal: str = Field(min_length=1, max_length=4000)
     transport: Literal["enet", "steam"] = "enet"
     request_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,100}$")
@@ -22,17 +24,21 @@ class Instances:
         self.lock = asyncio.Lock()
 
     async def start(self, request: InstanceRequest):
-        payload = request.model_dump()
+        payload = request.model_dump(exclude_none=True)
         payload["primary_goal"] = request.primary_goal.strip()
         if not payload["primary_goal"]:
             raise ValueError("Enter a primary objective.")
         async with self.lock:
             previous = self.store.command("instance", request.request_id)
             if previous:
-                if previous["request"] != payload:
+                if previous.get("request") != payload:
                     raise ValueError("This start request already belongs to a different instance. Start a new request.")
                 return await self._launch(previous["scenario_id"], previous["revision"], request.request_id)
 
+            if self.coordinator.draining or self.coordinator.stopping:
+                raise ValueError("The controller is draining; new instances are blocked.")
+            self.coordinator.require_instance_slot()
+            Projects(self.store).project_for_agent(request.agent_id, request.project_id)
             profile = AgentProfiles(self.store, self.coordinator.ai).validated(request.agent_id)
             build = self.store.require("builds", profile["build_id"])
             occupied = {lease["resource_id"] for lease in self.store.leases() if lease["kind"] == "worker"}

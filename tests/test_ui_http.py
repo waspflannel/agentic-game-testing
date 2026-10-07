@@ -36,7 +36,9 @@ def test_codex_migrates_settings_and_drafts_without_rewriting_run_history(tmp_pa
     app.state.ai.backend = FakeCodexBackend(ready=False)
     with TestClient(app) as client:
         data = client.get("/api/bootstrap").json()
-        assert data["settings"]["concurrent_sessions"] == 3
+        assert data["settings"]["concurrent_sessions"] == 1
+        assert data["settings"]["saved_concurrent_sessions"] == 3
+        assert app.state.store.require("settings", "main")["concurrent_sessions"] == 3
         assert "reasoning_effort" not in data["settings"] and "defaults" not in data
         assert data["settings"]["pricing"]["billing"] == "subscription"
         assert data["ai"]["api"] == "codex" and data["ai"]["model"] == "gpt-6-luna"

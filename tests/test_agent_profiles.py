@@ -35,6 +35,8 @@ def setup(tmp_path):
     (source.parent / "source-hashes.json").write_text(json.dumps(hashes), encoding="utf-8")
     store = Store(tmp_path / "store")
     build = {"id": "build-1", "name": "Test game", "source_root": str(source), "source_revision": "revision-1"}
+    store.put("projects", {"id": "project-test", "name": "Test game"})
+    build["project_id"] = "project-test"
     store.put("builds", build)
     backend = Backend()
     backend.tune = AsyncMock(return_value={"answers": {"instructions": MANUAL}, "thread_id": "tuning-thread",

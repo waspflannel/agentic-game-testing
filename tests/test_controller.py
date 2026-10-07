@@ -79,6 +79,8 @@ def environment(tmp_path):
     catalog = tmp_path / "catalog.json"
     catalog.write_text(json.dumps({"goals": [{"id": "demo_wrapup_moar"}, {"id": "first_quota"}], "unavailable_goals": [{"id": "forest"}], "items": [{"id": "flour"}]}))
     build = {"id": "build-1", "name": "test fixture build", "source_root": str(source), "source_revision": "test-revision", "catalog_path": str(catalog), "command": ["/game/test"], "artifacts": [], "steam_app_id": 3753020, "structured_version": 1}
+    store.put("projects", {"id": "project-1", "name": "Test game"})
+    build["project_id"] = "project-1"
     store.put("builds", build)
     desktops = {}
     for i in range(1, 5):
@@ -162,7 +164,7 @@ async def test_launch_idempotency_and_immutable_revisions(environment):
 
 
 @pytest.mark.asyncio
-async def test_capacity_reserves_late_players_and_queues(environment):
+async def test_capacity_reserves_legacy_late_players_but_rejects_second_instance(environment):
     store, coord, plan, desktops = environment
     plan["players"].append({**plan["players"][0], "id": "p2", "role": "joiner", "worker_id": "worker-2", "initial": False})
     plan["events"] = [{"id": "late", "actor": "p2", "action": "join", "trigger": "elapsed", "value": 60}]
@@ -170,9 +172,9 @@ async def test_capacity_reserves_late_players_and_queues(environment):
     await coord.admit(first)
     assert {l["resource_id"] for l in store.leases(first["id"])} >= {"worker-1", "worker-2"}
     assert not any(path in {"/bind", "/launch", "/action"} for path, _ in desktops["worker-2"].calls)
-    second = await new_run(environment)
-    await coord.admit(second)
-    assert store.require("runs", second["id"])["state"] == "Queued"
+    with pytest.raises(ValueError, match="One active instance"):
+        await new_run(environment)
+    assert len(store.list("runs")) == 1
 
 
 @pytest.mark.asyncio
@@ -210,8 +212,11 @@ async def test_pause_has_no_new_deadline_resume_cancels_investigation(environmen
 async def test_watchdog_expiry_ends_only_affected_run_and_reports(environment):
     store, coord, _, _ = environment
     run = await new_run(environment)
-    other = await new_run(environment)
     await coord.admit(run)
+    # Imported legacy queues stay readable; the new launch API cannot create one.
+    other = copy.deepcopy(run)
+    other["id"] = "legacy-queued"
+    store.put("runs", other)
     await coord.investigate(run["id"], "suspected_game_freeze", "suspected")
     deadline = store.require("runs", run["id"])["investigation_deadline"]
     await once(store, coord, now=deadline + 1)
@@ -344,15 +349,21 @@ def test_repository_traversal_and_full_pagination(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_two_active_sessions_do_not_share_leases_or_deadlines(environment):
+async def test_legacy_active_sessions_do_not_share_leases_or_deadlines(environment):
     store, coord, plan, desktops = environment
     store.put("settings", {"id":"main", "concurrent_sessions":2, "storage_reserve_bytes":1})
     first = await new_run(environment)
-    second_plan = copy.deepcopy(plan)
-    second_plan["players"][0]["worker_id"] = "worker-2"
-    second = await new_run(environment, second_plan)
     await coord.admit(first)
-    await coord.admit(second)
+    # Preserve recovery semantics for already-existing concurrent history, not
+    # permission to author concurrent work through today's API.
+    second = copy.deepcopy(store.require("runs", first["id"]))
+    second["id"] = "legacy-active"
+    second["plan"]["players"][0]["worker_id"] = "worker-2"
+    second["players"]["player-1"].update(worker_id="worker-2", epoch="legacy-epoch")
+    store.put("runs", second)
+    assert store.reserve(second["id"], [("worker", "worker-2")])
+    with pytest.raises(ValueError, match="One active instance"):
+        await new_run(environment)
     assert store.require("runs", first["id"])["state"] == "Starting"
     assert store.require("runs", second["id"])["state"] == "Starting"
     await coord.investigate(first["id"], "progression_blocker", "first session only")

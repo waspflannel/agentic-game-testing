@@ -188,7 +188,7 @@ def read_launch_config(stream):
     return config
 
 
-async def serve_desktop(config):
+async def serve_desktop(config, controller_lock=None):
     import uvicorn
     from .app import create_app
 
@@ -196,7 +196,7 @@ async def serve_desktop(config):
     port = listener.getsockname()[1]
     # Desktop starts with its own store only. Importing checkout data/credentials is
     # an explicit migration, never initialize_local's automatic side effect.
-    app = create_app(config["data_root"], initialize=False)
+    app = create_app(config["data_root"], initialize=False, controller_lock=controller_lock)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False,
                                          timeout_graceful_shutdown=5))
     lifecycle = DesktopLifecycle(app, server)
@@ -228,12 +228,12 @@ def main():
     config = read_launch_config(sys.stdin)
     root = Path(config["data_root"]).resolve()
     os.environ["ASHAD_DATA"] = str(root)
-    with acquire(root / "controller.lock"):
+    with acquire(root / "controller.lock") as controller_lock:
         flags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
         watchdog = subprocess.Popen([sys.executable, "-I", "-B", "-m", "ashad.watchdog"],
             cwd=Path(__file__).resolve().parents[1], creationflags=flags)
         try:
-            asyncio.run(serve_desktop(config))
+            asyncio.run(serve_desktop(config, controller_lock=controller_lock))
         finally:
             # Forced loss is not successful drain. Retain independent authority
             # while any active/queued/unresolved ownership persists.

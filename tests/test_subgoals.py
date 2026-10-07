@@ -389,6 +389,8 @@ async def test_no_action_candidate_returns_to_planner_and_bad_plan_never_execute
 async def test_new_instances_are_isolated_and_monitor_cannot_erase_plan(environment, profile):
     store, coordinator, _, _ = environment
     first = await Instances(coordinator).start(InstanceRequest(agent_id=profile["id"], primary_goal="Make pie", request_id="pie"))
+    await coordinator.finish(first["id"], "user_stopped")
+    first = store.require("runs", first["id"])
     second = await Instances(coordinator).start(InstanceRequest(agent_id=profile["id"], primary_goal="Harvest wheat", request_id="wheat"))
     assert first["subgoal_plan"]["primary_goal"] == "Make pie"
     assert second["subgoal_plan"]["primary_goal"] == "Harvest wheat"

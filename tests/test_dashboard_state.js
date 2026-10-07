@@ -446,7 +446,8 @@ test('tuning uses the selected build and model once, and retains a reusable prof
  const pending=app.tuneAgent();await app.tuneAgent();
  assert.equal(requests.length,1);assert.equal(app.state.tuning,true);
  assert.equal(requests[0][0],'/api/agents/tune');
- assert.deepEqual(JSON.parse(JSON.stringify(requests[0][2])),{build_id:'build-1',model:'gpt-6-sol'});
+ const submitted=JSON.parse(JSON.stringify(requests[0][2]));assert.match(submitted.request_id,/^[a-f0-9-]{36}$/);delete submitted.request_id;
+ assert.deepEqual(submitted,{build_id:'build-1',model:'gpt-6-sol'});
  response.resolve({id:'agent-new',model:'gpt-6-sol',instructions:'Use the controls.'});await pending;
  assert.equal(app.state.tuning,false);assert.equal(app.state.data.agents[0].instructions,'Use the controls.');
  assert.equal(app.destination,'agents/agent-new');
@@ -461,6 +462,42 @@ test('instances launch with only the objective, transport and agent, and retry t
  await app.startInstance();
  assert.deepEqual(JSON.parse(JSON.stringify(requests[1])),['/api/instances','POST',{agent_id:'agent-1',primary_goal:'Explore the beach',transport:'steam',request_id:'same-request'}]);
  assert.equal(app.destination,'runs/run-new');assert.equal(app.state.data.runs[0].id,'run-new');
+});
+
+test('failed tuning retries stable inputs once and changed configuration uses a new key', async()=>{
+ const requests=[],app=agentWorkflow(async(...args)=>{if(args[0].startsWith('/api/agents/tuning/'))return {status:'unknown'};requests.push(args);throw new Error('Lost response');});
+ app.state.data.builds[0].project_id='game-one';app.state.draft={build_id:'build-1',model:'gpt-6-sol',agent_name:' Beach scout '};
+ await assert.rejects(app.tuneAgent(),/Lost response/);await assert.rejects(app.tuneAgent(),/Lost response/);
+ assert.equal(requests[0][2].request_id,requests[1][2].request_id);
+ assert.equal(requests[0][2].project_id,'game-one');assert.equal(requests[0][2].name,'Beach scout');
+ app.state.draft.agent_name='Fisher';await assert.rejects(app.tuneAgent(),/Lost response/);
+ assert.notEqual(requests[2][2].request_id,requests[0][2].request_id);
+});
+
+test('lost tuning response reconciles completed saved profile without repeating a POST',async()=>{
+ const requests=[],app=agentWorkflow(async(path,method,payload)=>{requests.push([path,method]);if(method==='POST')throw new Error('Lost saved response');return {status:'completed',agent:{id:'saved-profile',instructions:'Retained manual'}};});
+ app.state.draft={build_id:'build-1'};
+ await assert.rejects(app.tuneAgent(),/Lost saved response/);await app.tuneAgent();
+ assert.equal(requests.filter(([,method])=>method==='POST').length,1);
+ assert.equal(app.state.data.agents[0].id,'saved-profile');assert.equal(app.destination,'agents/saved-profile');
+});
+
+test('operating settings render a disabled fixed cap and explain retained legacy values',()=>{
+ const app=vm.createContext({state:{parts:['settings','operation'],data:{settings:{concurrent_sessions:1,saved_concurrent_sessions:12}}},
+ heading:()=>'',section:(name,copy,body)=>`${copy}${body}`,hardwareView:()=>'',icon:()=>'',esc:value=>String(value??'')});
+ vm.runInContext(source.slice(source.indexOf('function settingsView('),source.indexOf('function hardwareView(')),app);
+ const html=app.settingsView();assert.match(html,/<input id="concurrency"[^>]*value="1"[^>]*disabled/);
+ assert.doesNotMatch(html,/name="concurrent_sessions"/);assert.match(html,/legacy value: 12 \(not enforced\)/i);
+});
+
+test('an occupied slot retains goal and request ID without silently queuing or auto-starting', async()=>{
+ let calls=0;const app=agentWorkflow(async()=>{calls++;return {id:'new'};});
+ app.state.data.instance_slot={available:false,owners:[{run_id:'owned',state:'Paused'}]};
+ const before=JSON.stringify(app.state.draft);
+ await assert.rejects(app.startInstance(),/global slot/);
+ assert.equal(calls,0);assert.equal(JSON.stringify(app.state.draft),before);
+ app.state.data.instance_slot.available=true;assert.equal(calls,0);
+ await app.startInstance();assert.equal(calls,1);
 });
 
 test('late tuning or launch completion never navigates away from a newer page', async () => {

@@ -13,9 +13,11 @@ from test_ui_http import app_at
 
 
 @pytest.fixture
-def profile(monkeypatch):
+def profile(monkeypatch, environment):
     record = {"id": "agent-test", "name": "Agronauts", "build_id": "build-1", "source_revision": "test-revision",
               "model": MODEL, "instructions": "Use next_text to advance cutscenes; check the UI before moving.", "status": "ready"}
+    record["project_id"] = "project-1"
+    environment[0].put("agents", record)
     monkeypatch.setattr(AgentProfiles, "validated", lambda self, agent_id: copy.deepcopy(record))
     return record
 
@@ -41,8 +43,13 @@ async def test_fresh_instance_freezes_profile_and_deduplicates_start(environment
     assert store.require("runs", run["id"])["agent_profile"]["instructions"] != profile["instructions"]
     with pytest.raises(ValueError, match="different instance"):
         await instances.start(request.model_copy(update={"primary_goal": "Another objective"}))
+    with pytest.raises(ValueError, match="One active instance"):
+        await instances.start(request.model_copy(update={"request_id": "start-two"}))
+    assert len(store.list("runs")) == 1
+    await coordinator.finish(run["id"], "user_stopped")
     second = await instances.start(request.model_copy(update={"request_id": "start-two"}))
-    assert second["plan"]["players"][0]["worker_id"] != plan["players"][0]["worker_id"]
+    assert second["id"] != run["id"] and second["project_id"] == "project-1"
+    assert second["plan"]["world_setup"]["mode"] == "fresh"
 
 
 @pytest.mark.asyncio

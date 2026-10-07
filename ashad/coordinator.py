@@ -32,6 +32,13 @@ def event_due(run, event, state, now):
     return trigger == "manual" and bool(state.get("manual_triggered"))
 
 
+class InstanceConflict(ValueError):
+    def __init__(self, owners):
+        self.owners = owners
+        labels = ", ".join(f"{owner['run_id']} ({owner['state']}: {owner['reason']})" for owner in owners)
+        super().__init__(f"One active instance is allowed. Stop or reconcile the owning instance first: {labels}")
+
+
 class Coordinator:
     def __init__(self, store, credentials, ai, client_factory=None):
         self.store, self.credentials, self.ai = store, credentials, ai
@@ -51,10 +58,12 @@ class Coordinator:
         leases = {lease["run_id"] for lease in self.store.leases()}
         owners = []
         for run in self.store.list("runs"):
-            unresolved = any(ps.get("teardown_confirmed") is not True and
-                             (ps.get("bound") or ps.get("launched") or ps.get("phase") == "teardown_unknown")
+            unresolved = any(ps.get("teardown_confirmed") is False or
+                             (ps.get("teardown_confirmed") is not True and
+                              (ps.get("bound") or ps.get("launched") or ps.get("phase") == "teardown_unknown"))
                              for ps in run.get("players", {}).values())
-            if run["state"] in ACTIVE_STATES | {"Queued"} or run["id"] in leases or unresolved or run.get("human_control"):
+            terminal = str(run.get("state", "Unknown")).lower() in {"ended", "completed", "failed", "terminated", "cancelled"}
+            if not terminal or run["id"] in leases or unresolved or run.get("human_control") or run.get("external_control"):
                 owners.append({"run_id": run["id"], "state": run["state"],
                                "reason": "teardown_unconfirmed" if run["state"] == "Ended" else
                                          "human_control" if run.get("human_control") else run["state"].lower()})
@@ -62,6 +71,16 @@ class Coordinator:
         owners.extend({"run_id": run_id, "state": "Unknown", "reason": "orphaned_lease"}
                       for run_id in sorted(leases))
         return owners
+
+    def import_interrupted(self):
+        return any((self.store.root / name).exists() for name in (".workspace-import-in-progress.json", ".workspace-import-runs"))
+
+    def require_instance_slot(self, run_id=None):
+        if self.import_interrupted():
+            raise ValueError("Workspace import is incomplete; admission is blocked until the journal and verified backup are reconciled")
+        others = [owner for owner in self.occupied_instances() if owner["run_id"] != run_id]
+        if others:
+            raise InstanceConflict(others)
 
     async def reconcile(self, run_id):
         async with self.lock:
@@ -193,11 +212,17 @@ class Coordinator:
         async with self.lock:
             cached = self.store.command("launch", idempotency_key)
             if cached:
-                return self.store.require("runs", cached["run_id"])
+                previous = self.store.require("runs", cached["run_id"])
+                if previous["scenario_id"] != scenario_id or previous["scenario_revision"] != revision:
+                    raise ValueError("Launch request ID already belongs to different frozen inputs")
+                return previous
             if self.draining or self.stopping:
                 raise ValueError("The controller is draining; new instances are blocked.")
+            self.require_instance_slot()
             scenario = self.store.require("scenarios", f"{scenario_id}:{revision}")
-            await self.ai.validate(Plan.model_validate(scenario["plan"]).model)
+            status = await self.ai.validate(Plan.model_validate(scenario["plan"]).model)
+            if status.get("status") != "ready" or status.get("configured") is not True:
+                raise ValueError(status.get("message") or "Verify ChatGPT sign-in and this model before starting an instance")
             checked = validate_plan(scenario["plan"], self.store, self.credentials, check_credentials=True)
             if not checked["valid"]:
                 raise ValueError("; ".join(checked["errors"]))
@@ -206,6 +231,8 @@ class Coordinator:
             if plan.get("agent_id"):
                 from .agent_profiles import AgentProfiles
                 agent_profile = AgentProfiles(self.store, self.ai).validated(plan["agent_id"])
+                from .projects import Projects
+                Projects(self.store).project_for_agent(plan["agent_id"])
                 if agent_profile["build_id"] != plan["build_id"] or agent_profile["model"] != plan["model"]:
                     raise ValueError("Instance build and model must match its tuned agent.")
             for player in plan["players"]:
@@ -237,7 +264,12 @@ class Coordinator:
             run.update(api="codex", billing="subscription")
             run["source_run_id"] = scenario.get("source_run_id")
             run["rerun_kind"] = scenario.get("rerun_kind")
-            with self.store.transaction():
+            run["project_id"] = run["build"].get("project_id")
+            with self.store.transaction() as db:
+                # Accepted/queued work owns the fixed global slot before any worker
+                # allocation. SQLite serializes even independently constructed callers.
+                self.require_instance_slot()
+                db.execute("INSERT INTO leases VALUES (?,?,?)", ("instance", "global", run_id))
                 self.save_run(run)
                 self.store.command("launch", idempotency_key, {"run_id": run_id})
             self.store.event(run_id, "launch_approved", {"scenario_id": scenario_id, "revision": revision, "plan": plan, "identities": {k: v["identity"] for k, v in players.items()}})
@@ -255,11 +287,12 @@ class Coordinator:
             await self._admit(run)
 
     async def _admit(self, run):
-        settings = self.store.get("settings", "main", {})
-        active = [r for r in self.store.list("runs") if r["state"] in ACTIVE_STATES]
-        if len(active) >= settings.get("concurrent_sessions", 1):
+        # Legacy cap values never authorize a second execution; multiple legacy
+        # queued/active owners require explicit human recovery before admission.
+        if self.import_interrupted() or any(owner["run_id"] != run["id"] for owner in self.occupied_instances()):
             return
-        resources = [("worker", p["worker_id"]) for p in run["plan"]["players"]]
+        resources = [("instance", "global")]
+        resources += [("worker", p["worker_id"]) for p in run["plan"]["players"]]
         resources += [("account", p["account_id"]) for p in run["plan"]["players"] if p["account_id"]]
         # Session endpoint belongs to the host network namespace and never collides.
         host = next(p for p in run["plan"]["players"] if p["role"] == "host")
@@ -955,9 +988,12 @@ class Coordinator:
             if resuming:
                 if self.draining or self.stopping:
                     raise ValueError("The controller is draining; bot resume is blocked.")
+                self.require_instance_slot(run_id)
                 status = await self.ai.validate(run.get("model") or run["plan"].get("model", MODEL))
                 if status.get("status") != "ready":
                     raise ValueError(status.get("message") or "Connect your ChatGPT subscription before resuming.")
+                if not self.store.reserve(run_id, [("instance", "global")]):
+                    raise InstanceConflict([owner for owner in self.occupied_instances() if owner["run_id"] != run_id])
             if command == "extend":
                 if run["state"] != "Investigating":
                     raise ValueError("No active investigation to extend")

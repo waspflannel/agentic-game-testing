@@ -14,11 +14,11 @@ The dashboard can start without game files. Agent tuning and gameplay require a 
 
 ## Planned desktop refactor
 
-The [Electron workspace refactor plan](<docs/electron-workspace-refactor-plan.md>) records the agreed Codex-style desktop direction, project/instance model, implementation milestones, migration safeguards, and acceptance checks. It describes planned work, not features already implemented; the instructions below remain the current supported workflow.
+The [Electron workspace refactor plan](<docs/electron-workspace-refactor-plan.md>) records the agreed Codex-style desktop direction, project/instance model, implementation milestones, migration safeguards, and acceptance checks. It tracks implemented milestones separately from remaining release gates; the instructions below describe the current supported workflow.
 
 ## Desktop shell (Windows x64)
 
-The Electron shell and private-runtime build tooling are implemented; the project-workspace refactor and installed/live release acceptance are still in progress. The shell currently opens the existing dashboard. No legacy data, worker registrations, game builds or credentials are imported automatically.
+The Electron shell, private-runtime build tooling, project/migration contracts and fixed global instance admission are implemented; project-workspace navigation/setup and installed/live release acceptance are still in progress. The shell currently opens the existing dashboard. No legacy data, worker registrations, game builds or credentials are imported automatically.
 
 Build locally with Node.js 22.12+ and npm (no system Python required for the desktop runtime):
 
@@ -32,7 +32,7 @@ npm --prefix desktop run build:nsis
 
 Build preparation downloads verified private Python 3.13.16 and pinned dependencies; game files and Docker Desktop remain separately supplied prerequisites. The application writes to `%APPDATA%\ASHAD\controller`, not its installation directory. For isolated diagnostic testing only, pass `--user-data-dir="C:\absolute\fresh test data"`; this changes the store, not authentication or runtime safeguards. Do not point it at live legacy data as a substitute for migration.
 
-Quit lists owning instances and in-flight work. **Cancel** leaves them unchanged; **Stop/cancel and quit** waits for confirmed teardown and clean controller exit. Failed teardown keeps the app open for reconciliation. Closing a human viewer never hands control back automatically. See the [execution log](<docs/electron-workspace-refactor-plan.md#p1-execution-record--2026-10-07-in-progress>) for precise verified scope and remaining gates.
+Quit lists owning instances and in-flight work. **Cancel** leaves them unchanged; **Stop/cancel and quit** waits for confirmed teardown and clean controller exit. Failed teardown keeps the app open for reconciliation. Closing a human viewer never hands control back automatically. See the [execution log](<docs/electron-workspace-refactor-plan.md#p1-execution-record--2026-10-07-offline-packaged-scope-complete>) for precise verified scope and remaining gates.
 
 ## Start locally
 
@@ -53,6 +53,12 @@ Use **Settings → AI connection → Sign in with ChatGPT** and finish the offic
 Profile tuning and bot decisions require account access to the selected model. Model selection belongs to agent setup; ASHAD does not silently substitute a different model. Settings, saved records and local diagnostics remain available while signed out.
 
 **Usage & capacity** retains token totals, cost estimates, hardware measurements, session capacity and desktop availability. Equivalent API-price estimates are comparison values, not ChatGPT subscription charges or spending limits. Missing usage remains marked incomplete; historical charges retain their original meaning.
+
+## Project ownership and retained history
+
+Create a game project in **Settings → Builds**, then register its pinned manifest under that project. Duplicate names remain independent IDs. Name each tuning configuration if useful; retries reconcile the same tuning request rather than silently retuning. Exactly **one occupied instance globally** is allowed, including queued, paused, human-owned and ended/unconfirmed work. Existing higher saved caps remain historical settings, not effective capacity.
+
+Optional **Import existing workspace…** requires an empty owned target, a stopped source controller/watchdog, confirmed idle worker/account pool, a fresh verified SQLite/evidence backup and explicit separate external backups/inventory. It does not copy Codex auth, OS keyring values, registrations, external builds or Docker volumes, and does not infer current readiness. Project grouping is a separate explicit preview/backup/apply operation; unassigned history remains readable. Interrupted imports block editing/admission until operator reconciliation: retain the journal, evidence and backup; do not remove them blindly. See the [migration contracts and verification](<docs/electron-workspace-refactor-plan.md#p2-execution-record--2026-10-07-controller-contracts-complete>).
 
 ## Tune an agent, then run it
 

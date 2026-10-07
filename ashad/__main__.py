@@ -21,7 +21,8 @@ def main():
             raise SystemExit(str(exc)) from None
         return
     from .process_lock import acquire
-    root = Path(os.environ.get("ASHAD_DATA", Path(__file__).resolve().parents[1] / ".data" / "controller"))
+    root = Path(os.environ.get("ASHAD_DATA", Path(__file__).resolve().parents[1] / ".data" / "controller")).resolve()
+    os.environ["ASHAD_DATA"] = str(root)
     try:
         controller_lock = acquire(root / "controller.lock")
     except RuntimeError as exc:
@@ -35,7 +36,8 @@ def main():
                 cwd=Path(__file__).resolve().parents[1], creationflags=flags,
             )
         try:
-            uvicorn.run("ashad.app:create_app", factory=True, host="127.0.0.1", port=args.port, access_log=False)
+            from .app import create_app
+            uvicorn.run(create_app(root, controller_lock=controller_lock), host="127.0.0.1", port=args.port, access_log=False)
         finally:
             # Watchdog deliberately remains if runs are active; it owns their deadlines.
             if watchdog:

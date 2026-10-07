@@ -9,6 +9,7 @@ import time
 from .codex_backend import TUNING_MANUAL_LIMIT, TUNING_PROMPT_VERSION
 from .models import MODEL, SUPPORTED_MODELS
 from .repository import Repository, sha256_file
+from .projects import Projects
 from .store import uid
 
 
@@ -86,12 +87,25 @@ class AgentProfiles:
         self.store, self.ai = store, ai
         self.lock = asyncio.Lock()
 
-    async def tune(self, build_id, model=MODEL):
+    async def tune(self, build_id, model=MODEL, *, request_id=None, name=None, project_id=None):
+        if request_id is not None and (not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", request_id)):
+            raise ValueError("Tuning requires a safe, stable request ID")
+        if name is not None:
+            if not isinstance(name, str) or not name.strip() or len(name.strip()) > 200 or not name.isprintable():
+                raise ValueError("Agent configuration name must be 1–200 printable characters")
+            name = name.strip()
+        payload = {"build_id": build_id, "model": model, "name": name, "project_id": project_id}
         if model not in SUPPORTED_MODELS:
             raise ValueError("Select a supported Codex model.")
+        previous = self.store.command("tuning", request_id) if request_id else None
+        if previous:
+            if previous["request"] != payload:
+                raise ValueError("Tuning request ID already belongs to different inputs; explicit retune needs a new ID")
+            return self.store.require("agents", previous["agent_id"])
         if self.lock.locked():
             raise ValueError("An agent is already being tuned. Wait for it to finish before tuning another.")
         async with self.lock:
+            assigned_project = Projects(self.store).project_for_build(build_id, project_id)
             build = self.store.require("builds", build_id)
             evidence, inventory_hash = await asyncio.to_thread(source_evidence, build)
             batches, batch, used = [], [], 0
@@ -124,8 +138,8 @@ class AgentProfiles:
                     notes.append(note)
                 instructions = await self.ai.tune_agent({"build_id": build_id, "source_revision": build["source_revision"],
                     "source_notes": notes, "coverage": evidence["coverage"]}, model=model)
-            profile = {"id": uid("agent_"), "name": f"{build.get('name', build_id)} agent",
-                "build_id": build_id, "source_revision": build["source_revision"], "model": model,
+            profile = {"id": uid("agent_"), "name": name or f"{build.get('name', build_id)} agent",
+                "project_id": assigned_project, "build_id": build_id, "source_revision": build["source_revision"], "model": model,
                 "instructions": instructions, "instructions_sha256": hashlib.sha256(instructions.encode("utf-8")).hexdigest(),
                 "source_files": list({source["path"]: {k: source[k] for k in ("path", "sha256", "total_lines")}
                     for source in evidence["sources"]}.values()),
@@ -134,7 +148,11 @@ class AgentProfiles:
                     "Tuning prepares a reusable prompt, not model weights. Only currently advertised actions can execute."],
                 "created_at": time.time(), "status": "ready"}
             self._validate(profile)
-            return self.store.put("agents", profile)
+            with self.store.transaction():
+                self.store.put("agents", profile)
+                if request_id:
+                    self.store.command("tuning", request_id, {"request": payload, "agent_id": profile["id"]})
+            return profile
 
     def validated(self, agent_id):
         profile = self.store.require("agents", agent_id)

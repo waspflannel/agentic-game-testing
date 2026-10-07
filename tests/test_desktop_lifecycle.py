@@ -4,6 +4,9 @@ import copy
 import io
 import json
 import secrets
+import subprocess
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -193,6 +196,17 @@ async def test_http_tuning_cancellation_returns_conflict_and_releases_operation(
             assert response.status_code == 409 and "cancelled" in response.json()["detail"]
             assert app.state.operations == {} and app.state.tuning_task is None
             assert app.state.store.list("usage")[0]["status"] == "request_cancelled"
+
+
+def test_private_utf8_pipe_preserves_international_user_data_path(tmp_path):
+    root = str(tmp_path / "ユーザー café 📁")
+    config = {"data_root": root, "session_key": "s" * 43, "owner_key": "o" * 43, "instance_id": "fixture_unicode"}
+    source = str(Path(__file__).resolve().parents[1])
+    script = f"import sys,json;sys.path.insert(0,{source!r});from ashad.desktop import read_launch_config;print(json.dumps({{'root':read_launch_config(sys.stdin)['data_root']}}))"
+    result = subprocess.run([sys.executable, "-I", "-B", "-X", "utf8", "-c", script],
+        input=json.dumps(config, ensure_ascii=False).encode("utf-8"), capture_output=True, timeout=10)
+    assert result.returncode == 0, result.stderr.decode("utf-8", errors="replace")
+    assert json.loads(result.stdout)["root"] == root
 
 
 def test_launch_handshake_validates_boundaries_without_echoing_keys(tmp_path):

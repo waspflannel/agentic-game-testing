@@ -85,6 +85,8 @@ Supplying a goal still does **not** create a reliable automatic whole-game succe
 
 ## Observe and recover
 
+The instance workspace puts the **Bot computer** first, with bounded evidence-based **Agent activity** below and a collapsible **Instance inspector** for usage, current goals and retained observed world state. Load older activity replaces a bounded page; returning to latest does not discard the ledger. Observation age/coverage and decision-time context are explicit; monitor-only diagnostics are not model knowledge. Polling preserves current-page reading position, focus and disclosures.
+
 The live camera is for the human operator. Routine model decisions use the filtered JSON observation, profile instructions, objective and recent action outcomes. The executor sends bounded normal game controls; it does not directly grant inventory, complete quests or modify saves. Input delivery is not proof that an intended gameplay effect occurred.
 
 **Pause** holds bot input and inference; the game world may continue simulating. **Take over** pauses the bot and opens that desktop for human control. **Hand back to bots** closes human access and resumes from fresh observations, with optional instructions. Closing the viewer alone does not hand control back.

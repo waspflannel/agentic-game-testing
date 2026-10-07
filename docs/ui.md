@@ -1,6 +1,6 @@
 # Dashboard
 
-The dashboard centers on two actions: **Tune agent**, then **New instance**. It uses native HTML, CSS and JavaScript, with no external runtime or CDN dependency. Live game views, readable status and recovery controls take priority over configuration breadth.
+The dashboard groups builds, saved agent configurations and instance threads under **Projects**. **Projects +** opens explicit game-agent setup; select a project/configuration to create a **New instance**. It uses native HTML, CSS and JavaScript, with no external runtime or CDN dependency. Navigation and inspection do not launch gameplay.
 
 ## Agent setup
 
@@ -10,13 +10,17 @@ Tuning requires ChatGPT sign-in and access to the selected model. It does not st
 
 ## New instance
 
-Choose an agent, enter the primary goal, and select ENet or Steam. ASHAD starts one host bot with fresh world and character setup and assigns a compatible available desktop automatically. Steam requires a verified account with access to the pinned game's App ID.
+In a project, choose a saved configuration, enter the primary goal and explicitly Start one fresh host-bot instance. Admission requires current provider availability and positively measured compatible desktop readiness; an occupied or unresolved instance blocks a second run. ENet is an explicit transport choice. Steam is currently unavailable because the supported passive worker contract cannot prove fresh licensed identity; stored verification or an offline fallback does not enable it.
 
 There is no player grid, individual-goal editor, participation schedule, seed field, saved-start selector, success-predicate builder or advanced scenario JSON editor. A free-text goal does not imply that ASHAD can automatically recognize its completion.
 
 ## Live operation
 
-Each launched instance exposes its live view, status, usage and controls to pause, resume, stop and recover. Observation freshness, pending actions and errors remain visible. A paused bot stops issuing input; the authoritative game may still simulate.
+The instance workspace puts the **Bot computer** first, with existing pause/resume/stop/recovery controls, a bounded **Agent activity** stream below and a native collapsible **Instance inspector**. A paused bot stops issuing input; the authoritative game may still simulate.
+
+Activity cards project retained event types and actual recorded status; selecting an action is not dispatch, and completed input is not proof of gameplay success. Missing attribution remains **Instance activity**. Correlated evidence links use recorded IDs, not guessed prose; expandable raw previews escape and bound long content. The latest window contains at most 100 cards. **Load older activity** replaces the window using an exclusive sequence cursor; **Return to latest activity** reports newer available records. Same-window polling follows the live edge only when already near it, otherwise preserves reading position and signals new activity. Explicit page/run changes reset that scroll scope. The full ledger retains its search/cursor API with a maximum 200-record rendered window, not an accumulating whole history.
+
+The inspector combines retained token totals/API-equivalent estimates, recent operational activity, current goal/checklist and a player-scoped **Observed world state**. Latest model state comes only from the retained structured observation; rendering never requests a new observation or inference. Timestamp, identity, age and coverage distinguish stale, partial and unknown records; coverage is not whole-game or goal success. Camera freshness is separate. **Decision-time context** shows only the observation actually retained for a selected planning/selection event, or an explicit reference/unavailable notice; matching the latest observation ID does not reconstruct earlier prompt input. Privileged worker/telemetry records remain collapsed **Monitor-only diagnostics**, not agent knowledge. Missing token counts stay unknown; cache and reasoning subsets are not counted twice, and comparison estimates are not subscription bills.
 
 New tuned-agent instances also show **Currently chasing**, its ancestry and a nested, read-only **Goal checklist**. Each goal displays Pending/Active/Completed/Blocked, its observable completion condition, any blocked reason, and expandable planning/verification evidence. The hierarchy is instance-owned and generated from game observations; users do not author it in the setup form. Completed children do not automatically verify their parent. Prerequisites made unnecessary by an independently verified parent are labelled not needed, not falsely checked off. Historical records without a plan remain readable.
 
@@ -42,7 +46,7 @@ The Windows Electron shell opens this dashboard using an authenticated, owned lo
 
 Quit checks queued/live/unresolved ownership and in-flight tuning/sign-in/setup operations. Cancel does not stop or resume anything. Confirmed Stop/cancel and quit uses normal runtime teardown and waits for a clean controller exit; unknown teardown keeps the application open for recovery. A renderer reload reconnects to the same controller. Human viewers use an isolated session and closing one does not hand back control.
 
-Unsent tuning, instance and operating-settings forms warn before navigation/quit. Integrated setup-modal draft handling belongs to the remaining workspace refactor. Installer, live account/viewer and gameplay acceptance are not implied by shell unit tests. See the [desktop build instructions](<../README.md#desktop-shell-windows-x64>) and [execution log](<electron-workspace-refactor-plan.md#16-execution-and-decision-log>).
+Unsent tuning, instance, setup-modal and operating-settings forms warn before navigation/quit; Cancel retains the draft. Installer, live account/viewer and gameplay acceptance are not implied by shell unit tests or synthetic historical UI smoke. See the [desktop build instructions](<../README.md#desktop-shell-windows-x64>) and [execution log](<electron-workspace-refactor-plan.md#16-execution-and-decision-log>).
 
 ## Compatibility and verification
 

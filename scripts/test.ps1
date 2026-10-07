@@ -11,5 +11,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Desktop shell syntax check failed.' }
 if ($LASTEXITCODE -ne 0) { throw 'Workspace syntax check failed.' }
 & node --check desktop/prepare.cjs
 if ($LASTEXITCODE -ne 0) { throw 'Desktop resource preparation syntax check failed.' }
-& node --test tests/test_dashboard_state.js tests/test_desktop_dashboard.js tests/test_desktop_shell.js tests/test_workspace_ui.js tests/test_workspace_integration.js
+& node --check ashad/static/instance-workspace.js
+if ($LASTEXITCODE -ne 0) { throw 'Instance workspace syntax check failed.' }
+& node --test tests/test_dashboard_state.js tests/test_desktop_dashboard.js tests/test_desktop_shell.js tests/test_workspace_ui.js tests/test_workspace_integration.js tests/test_instance_workspace.js tests/test_instance_integration.js
 if ($LASTEXITCODE -ne 0) { throw 'Dashboard and desktop boundary checks failed.' }

@@ -452,15 +452,39 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
                 app.state.instance_requests.pop(body.request_id, None)
 
 
+    def event_page(run_id, after=0, limit=200, search="", *, before=None, tail=False):
+        reverse = tail or before is not None
+        with store.lock:
+            entries = store.events(run_id, after=after, limit=limit + 1, search=search, before=before, tail=tail)
+            total = store.count_events(run_id)
+            has_more = len(entries) > limit
+            entries = entries[-limit:] if reverse else entries[:limit]
+            # Counts describe all ledger rows outside the page, not search matches.
+            if entries:
+                older_count = store.count_events(run_id, before=entries[0]["seq"])
+                newer_count = store.count_events(run_id, after=entries[-1]["seq"])
+            else:
+                boundary = before if before is not None else (None if tail else after + 1)
+                older_count = store.count_events(run_id, before=boundary) if boundary is not None else total
+                newer_count = total - older_count
+        return {"events": entries, "next": entries[-1]["seq"] if entries else after,
+                "before": entries[0]["seq"] if entries else before,
+                "total": total, "has_more": has_more,
+                "older_count": older_count, "newer_count": newer_count}
+
     @app.get("/api/runs/{run_id}")
     async def run_detail(run_id: str):
         run = dict(store.require("runs", run_id))
         run["external_control"] = coordinator.external_control(run_id)
         run["event_states"] = run["events"]
-        run["events"] = store.events(run_id, after=max(0, store.count_events(run_id)-200), limit=200)
+        with store.lock:
+            page = event_page(run_id, limit=200, tail=True)
+            run["events"] = page.pop("events")
+            recent = run["events"][-100:]
+            page["recent_100_older_count"] = store.count_events(run_id, before=recent[0]["seq"]) if recent else 0
+        run["events_page"] = page
         if run["state"] in {"Investigating", "Paused"} and not run.get("pause"):
-            alerts = store.events(run_id, limit=store.count_events(run_id), search="investigation_started")
-            latest = next((event for event in reversed(alerts) if event["kind"] == "investigation_started"), None)
+            latest = store.latest_event(run_id, "investigation_started") if run["state"] == "Investigating" else None
             if latest and run["state"] == "Investigating":
                 payload = latest["payload"]
                 run["pause"] = coordinator.pause_details(payload.get("category", "investigation"), payload.get("reason", "Review the latest incident."), payload.get("players") or list(run["players"]), latest["timestamp"])
@@ -471,10 +495,12 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
         return run
 
     @app.get("/api/runs/{run_id}/events")
-    async def events(run_id: str, after: int = 0, limit: int = 200, search: str = ""):
+    async def events(run_id: str, after: int = 0, limit: int = 200, search: str = "", before: int | None = None, tail: bool = False):
         store.require("runs", run_id)
-        entries = store.events(run_id, after=max(0, after), limit=max(1, min(limit, 1000)), search=search)
-        return {"events": entries, "next": entries[-1]["seq"] if entries else after, "total": store.count_events(run_id), "has_more": len(entries) >= min(limit, 1000)}
+        if after > 0 and (before is not None or tail):
+            raise ValueError("Use after for newer events, or before/tail for older events, not both")
+        return event_page(run_id, after=max(0, after), limit=max(1, min(limit, 1000)), search=search,
+                          before=max(0, before) if before is not None else None, tail=tail)
 
     @app.get("/api/runs/{run_id}/report")
     async def report(run_id: str):

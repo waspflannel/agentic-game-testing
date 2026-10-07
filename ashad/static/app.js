@@ -138,7 +138,7 @@ function apiEstimate(row) {
  return ((t.input-t.cached-t.cacheWrite)*rates[0]+t.cached*rates[1]+t.cacheWrite*rates[2]+t.output*rates[3])/1e6;
 }
 function usageSummary(rows) {
- const summary={requests:rows.length,partial:rows.some(row=>subscriptionUsage(row)&&row.usage!=null&&!['selection_total','tuning_total'].includes(row.usage_scope))};
+ const summary={requests:rows.length,partial:rows.some(row=>subscriptionUsage(row)&&row.usage!=null&&!['selection_total','tuning_total','planning_total'].includes(row.usage_scope))};
  for(const key of ['input','output','cached','cacheWrite','reasoning','total','cost']){
   const values=rows.map(row=>key==='cost'?apiEstimate(row):usageTokens(row)[key]).filter(value=>value!=null);
   summary[key]={value:values.reduce((sum,value)=>sum+value,0),known:values.length};
@@ -354,13 +354,35 @@ function subgoalPlanView(run) {
 }
 function progressView(run){const progress=run.progress||{},completed=arr(progress.completed_quests||progress.quests);return `<section><div class="section-head"><h2>Primary objective</h2></div><p class="objective-copy">${esc(run.subgoal_plan?.primary_goal||run.plan?.primary_goal||run.plan?.players?.[0]?.goal||'No objective recorded')}</p>${subgoalPlanView(run)}<p class="section-note">Overall success requires verified game evidence, not just completed subgoals. You can pause or stop this instance at any time.</p><dl class="definition-list instance-details"><dt>Agent</dt><dd>${run.agent_id?`<a href="#/agents/${esc(run.agent_id)}">${esc(run.agent_profile?.name||run.agent_id)}</a>`:'Legacy session'}</dd><dt>Build</dt><dd><code>${esc(run.build?.source_revision||run.build?.commit||run.plan?.build_id||'Unknown')}</code></dd><dt>World</dt><dd>${esc(title(run.plan?.world_setup?.mode||'unknown'))}</dd><dt>Latest stage</dt><dd>${known(progress.stage||progress.phase||completed.at(-1))}</dd><dt>Last progress</dt><dd>${(progress.last_meaningful_progress||progress.last_progress_at)?date(progress.last_meaningful_progress||progress.last_progress_at):'Unknown'}</dd><dt>Duration cap</dt><dd>${esc(duration(run.plan?.limits?.duration_seconds))}</dd></dl><details class="agent-instructions"><summary>Observed quest progress</summary><pre class="json-details">${esc(JSON.stringify(progress,null,2))}</pre></details></section>`;}
 function eventView(e){const type=e.type||e.kind||e.event_type||'event';return `<li class="timeline-item" id="event-${esc(e.id||e.event_id)}"><span class="timeline-time">${time(e.created_at||e.received_at||e.timestamp||e.time)}</span>${icon(type.includes('incident')?'flag':type.includes('action')?'target':type.includes('message')?'message':'bolt')}<div><h3>${esc(e.title||e.summary||title(type))}</h3><p>${esc(e.description||e.message||e.reason||e.payload?.reason||e.payload?.actual||e.payload?.message||e.data?.reason||e.data?.summary||'')}${(e.player_id||e.payload?.player_id)?` <span class="mono">${esc(e.player_id||e.payload?.player_id)}</span>`:''}</p><details><summary>${esc(e.id||e.event_id||'Event details')} · view record</summary><pre class="json-details">${esc(JSON.stringify(e,null,2))}</pre></details></div></li>`;}
-function timelineView(events,searchable=false){return `${searchable?`<div class="filter-row"><div class="search-field">${icon('search')}<input id="event-search" type="search" placeholder="Search the entire action ledger…" value="${esc(state.search)}" aria-label="Search action ledger"></div>${button('Search','search-events','search','ghost')}<span class="small muted">${state.search?`${state.events.length} matches loaded · `:''}${number(state.eventTotal)} total records</span></div>`:''}${events.length?`<ol class="timeline">${events.map(eventView).join('')}</ol>`:empty(searchable&&state.search?'No matching records':'No events recorded',searchable?'Search is backed by the retained chronological ledger.':'Activity appears here as the run proceeds.')}${searchable&&state.eventHasMore?`<div style="margin-top:18px">${button('Load more records','more-events','plus','ghost')}</div>`:''}`;}
+function timelineView(events,searchable=false){return `${searchable?`<div class="filter-row"><div class="search-field">${icon('search')}<input id="event-search" type="search" placeholder="Search the entire action ledger…" value="${esc(state.search)}" aria-label="Search action ledger"></div>${button('Search','search-events','search','ghost')}<span class="small muted">${state.events.length} records in this bounded window (maximum 200) · ${number(state.eventTotal)} total records</span></div>`:''}${events.length?`<ol class="timeline">${events.map(eventView).join('')}</ol>`:empty(searchable&&state.search?'No matching records':'No events recorded',searchable?'Search is backed by the retained chronological ledger.':'Activity appears here as the run proceeds.')}${searchable&&state.eventHasMore?`<div style="margin-top:18px">${button('Load more records','more-events','plus','ghost')}</div>`:''}`;}
 
+function instanceLiveView(r,players) {
+ globalThis.ashadInstanceContext={esc,arr,date,time,nowSeconds:Date.now()/1000};
+ const retained=state.activityPage?.runId===r.id?state.activityPage:null;
+ const events=retained?.events||arr(r.events).slice(-100),total=r.events_page?.total??retained?.total;
+ const olderCount=retained?retained.older_count:r.events_page?.recent_100_older_count;
+ const newerCount=retained?Math.max(0,(retained.newer_count||0)+((total??retained.total??0)-(retained.total??total??0))):0;
+ const playerID=players.some(p=>p.id===state.inspectedPlayer)?state.inspectedPlayer:players[0]?.id;
+ const decision=events.find(event=>String(event.id)===state.inspectedDecision);
+ const missingDecision=state.inspectedDecision&&!decision;
+ const older=retained?.has_more??(total!=null?total>events.length:arr(r.events).length>events.length);
+ return `<div class="instance-workspace"><div class="instance-main"><section class="instance-computer"><div class="section-head"><h2>Bot computer</h2><span class="small muted">Camera freshness is independent of observations</span></div><div class="feed-grid ${players.length===1?'single':''}">${players.map(p=>feed(p,r.players?.[p.id])).join('')}</div></section><section class="instance-agent-activity"><div class="section-head"><h2>Agent activity</h2><a href="#/runs/${esc(r.id)}/timeline">Full ledger</a></div><div class="actions">${older?button('Load older activity','older-activity','clock','ghost small'):''}${retained?button(`Return to latest activity${newerCount?` · ${newerCount} newer records`:''}`,'latest-activity','refresh','ghost small'):''}</div>${state.activityError?`<p role="alert" class="danger-text">${esc(state.activityError)}</p>`:''}<div id="instance-activity-scroll" data-scope="${esc(`${r.id}:${retained?`history:${events[0]?.seq}`:'latest'}`)}" tabindex="0" aria-label="Scrollable agent activity">${globalThis.activityCardsView?.({events,total,older_count:olderCount},r)||'<p>Activity renderer unavailable; open the retained ledger.</p>'}</div></section></div><details class="instance-inspector" data-key="instance-inspector" open><summary>Instance inspector</summary><section class="instance-usage"><h2>Usage &amp; API equivalent</h2>${runUsageView(r)}</section><label for="inspected-player">Observed player</label><select id="inspected-player">${players.map(p=>`<option value="${esc(p.id)}" ${p.id===playerID?'selected':''}>${esc(p.name||p.id)}</option>`).join('')}</select><label for="inspected-decision">Decision-time context</label><select id="inspected-decision"><option value="">Latest observed state</option>${events.filter(event=>['structured_decision_context','subgoal_planning_context','decision_selected'].includes(event.kind)).map(event=>`<option value="${esc(event.id)}" ${String(event.id)===state.inspectedDecision?'selected':''}>Sequence ${esc(event.seq)} · ${esc(event.kind)}</option>`).join('')}</select>${missingDecision?'<p role="status">Previously selected decision is outside this page. Latest state below is not its decision-time input; choose a retained decision from this page.</p>':''}${globalThis.observedWorldView?.(r,playerID,decision)||'<p>World observation unknown.</p>'}${progressView(r)}<section><h2>Recent activity</h2>${globalThis.recentActivityView?.(arr(r.events),r)||'<p>No retained operational activity.</p>'}</section></details></div>`;
+}
+async function olderActivity(){
+ const runId=state.run.id,epoch=state.renderEpoch,activityEpoch=(state.activityEpoch||0)+1;
+ state.activityEpoch=activityEpoch;
+ const previous=state.activityPage?.runId===runId?state.activityPage.events:arr(state.run.events).slice(-100);
+ if(!previous.length)return;
+ try{const page=await api(`/api/runs/${encodeURIComponent(runId)}/events?before=${previous[0].seq}&limit=100`);
+  if(epoch!==state.renderEpoch||state.run?.id!==runId||activityEpoch!==state.activityEpoch)return;
+  if(page.events.length)state.activityPage={runId,...page};state.activityError='';render(true);
+ }catch(error){if(epoch===state.renderEpoch&&state.run?.id===runId&&activityEpoch===state.activityEpoch){state.activityError=errorMessage(error);render(true);}}
+}
 function runView() {
  const r=state.run,tab=state.parts[2]==='timeline'?'timeline':'live';
  if(!r)return empty('Loading instance','Fetching current game observations.');
  const players=arr(r.plan?.players),status=String(r.state).toLowerCase();
- const body=tab==='timeline'?timelineView(state.events,true):runUsageView(r)+`<div class="workspace-grid"><section><div class="section-head"><h2>Live game</h2><span class="small muted">${players.length} player${players.length===1?'':'s'}</span></div><div class="feed-grid ${players.length===1?'single':''}">${players.map(p=>feed(p,r.players?.[p.id])).join('')}</div><div class="section-head"><h2>Recent activity</h2><a class="text-link" href="#/runs/${esc(r.id)}/timeline">Full ledger ${icon('arrow')}</a></div>${timelineView(arr(r.events).slice(-8).reverse())}</section><aside class="context-panel">${progressView(r)}</aside></div>`;
+ const body=tab==='timeline'?timelineView(state.events,true):instanceLiveView(r,players);
  return heading('Instance / '+r.id,r.plan?.title||'Instance',`${(r.plan?.transport?.mode||'unknown').toUpperCase()} · ${players.length} player${players.length===1?'':'s'} · ${r.model||r.approved_plan?.model||r.plan?.model||'gpt-6-luna'} · Started ${date(r.started_at||r.created_at)}`,badge(r.state)+(!active(r)&&arr(state.data.leases).some(l=>l.run_id===r.id)?button('Reconcile teardown','reconcile','refresh','ghost'):'')+(r.agent_id?`<a class="button ghost" href="#/new/${esc(r.agent_id)}">${icon('plus')}New instance</a>`:''))+
   `${pauseNotice(r)}${active(r)?`<div class="run-controls">${r.human_control?'':button(['paused','investigating'].includes(status)?'Resume inputs':'Pause bot inputs',['paused','investigating'].includes(status)?'resume':'pause',['paused','investigating'].includes(status)?'play':'pause')}${status==='investigating'?button('Extend investigation','extend','clock','ghost'):''}<span class="spacer"></span>${button('Stop run','stop','stop','ghost')}${button('Terminate now','terminate','close','danger')}<span class="world-status"><span class="dot ${['paused','investigating'].includes(status)?'warn':'good'}"></span>World ${(r.world_simulating??r.progress?.world_simulating)===false?'not simulating':(r.world_simulating??r.progress?.world_simulating)===true?'simulating':'simulation unknown'}</span></div>`:`<div class="run-info"><span>Ending reason <strong>${esc(title(r.ending_reason||'unknown'))}</strong></span></div>`}<nav class="tabs" aria-label="Instance views"><a class="tab ${tab==='live'?'active':''}" href="#/runs/${esc(r.id)}/live" ${tab==='live'?'aria-current="page"':''}>Live game</a><a class="tab ${tab==='timeline'?'active':''}" href="#/runs/${esc(r.id)}/timeline" ${tab==='timeline'?'aria-current="page"':''}>Action ledger</a></nav>${body}`;
 }
@@ -445,7 +467,7 @@ async function loadEvents(append=false) {
  const data = await api(`/api/runs/${encodeURIComponent(runId)}/events?after=${after}&limit=200&search=${encodeURIComponent(search)}`);
  // A previous route or search no longer owns the visible ledger.
  if (epoch !== state.renderEpoch || runId !== state.parts[1] || search !== state.search) return;
- state.events = append ? [...state.events, ...arr(data.events)] : arr(data.events);
+ state.events = (append ? [...state.events, ...arr(data.events)] : arr(data.events)).slice(-200);
  state.eventNext = data.next ?? state.events.length;
  state.eventTotal = data.total ?? state.events.length;
  state.eventHasMore = data.has_more ?? (arr(data.events).length >= 200 && state.eventNext < state.eventTotal);
@@ -574,6 +596,8 @@ const actions={
  'copy-desktop-password':async()=>{const field=$('#takeover-password');if(!field)return;try{await navigator.clipboard.writeText(field.value);toast('Desktop password copied.');}catch{field.focus();field.select();toast('Password selected. Copy it, then paste it in the desktop connection dialog.');}},
 
  'expand-feed':el=>{const p=state.run.plan.players.find(p=>p.id===el.dataset.player);modal(`${p.name||p.id} · ${title(p.role)}`,feed(p,state.run.players?.[p.id],true),null,null,{wide:true});},
+ 'older-activity':olderActivity,
+ 'latest-activity':()=>{state.activityEpoch=(state.activityEpoch||0)+1;state.activityPage=null;state.activityError='';render(true);},
  'search-events':async()=>{state.search=$('#event-search').value;await loadEvents();render();},
  'more-events':async()=>{await loadEvents(true);render();},
 
@@ -596,7 +620,7 @@ const actions={
 
 
 };
-function render(background=false){const views={projects:()=>state.parts[2]==='new'?globalThis.projectComposerView?.(state.parts[1]):globalThis.projectOverviewView?.(state.parts[1]),history:()=>globalThis.unassignedHistoryView?.(),sessions:sessionsView,agents:agentsView,new:draftView,runs:runView,settings:settingsView,usage:usageView};shell((views[state.route]||sessionsView)(),background);document.title=`ASHAD — ${state.route==='runs'?(state.run?.plan?.title||'Instance'):title(state.route==='new'?'New instance':state.route)}`;}
+function render(background=false){const scrollNode=$('#instance-activity-scroll'),scrollSnapshot=globalThis.activityScrollSnapshot?.(scrollNode),scrollScope=scrollNode?.dataset?.scope;const views={projects:()=>state.parts[2]==='new'?globalThis.projectComposerView?.(state.parts[1]):globalThis.projectOverviewView?.(state.parts[1]),history:()=>globalThis.unassignedHistoryView?.(),sessions:sessionsView,agents:agentsView,new:draftView,runs:runView,settings:settingsView,usage:usageView};shell((views[state.route]||sessionsView)(),background);const currentScroll=$('#instance-activity-scroll');if(currentScroll){if(scrollSnapshot&&scrollScope===currentScroll.dataset.scope)globalThis.restoreActivityScroll?.(currentScroll,scrollSnapshot);else currentScroll.scrollTop=currentScroll.dataset.scope.includes(':history:')?0:currentScroll.scrollHeight;}document.title=`ASHAD — ${state.route==='runs'?(state.run?.plan?.title||'Instance'):title(state.route==='new'?'New instance':state.route)}`;}
 async function route() {
  const next=location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).join('/');
  if(globalThis.workspaceBeforeNavigate&&!await globalThis.workspaceBeforeNavigate(next)){globalThis.history?.replaceState(null,'',`#/${state.parts.join('/')}`);return;}
@@ -628,9 +652,14 @@ async function route() {
  }
  if (epoch === state.renderEpoch) {render();if(previous!==state.parts.join('/'))globalThis.window?.scrollTo(0,0);}
 }
-document.addEventListener('click',async event=>{const el=event.target.closest('[data-action]');if(!el||el.disabled)return;const action=actions[el.dataset.action];if(!action)return;event.preventDefault();try{el.disabled=true;await action(el);}catch(error){toast(errorMessage(error),true);}finally{el.disabled=false;}});
+document.addEventListener('click',async event=>{
+ const evidence=event.target.closest('[data-activity-anchor]');
+ if(evidence){event.preventDefault();let card=document.getElementById(evidence.dataset.activityAnchor);if(!card){state.activityEpoch=(state.activityEpoch||0)+1;state.activityPage=null;render(true);card=document.getElementById(evidence.dataset.activityAnchor);}card?.scrollIntoView({block:'nearest',behavior:'instant'});card?.focus({preventScroll:true});return;}
+ const edge=event.target.closest('[data-instance-action="activity-live-edge"]');
+ if(edge){event.preventDefault();const node=$('#instance-activity-scroll');if(node)node.scrollTop=Math.max(0,node.scrollHeight-node.clientHeight);edge.hidden=true;return;}
+ const el=event.target.closest('[data-action]');if(!el||el.disabled)return;const action=actions[el.dataset.action];if(!action)return;event.preventDefault();try{el.disabled=true;await action(el);}catch(error){toast(errorMessage(error),true);}finally{el.disabled=false;}});
 document.addEventListener('input',event=>{const el=event.target;if(el.dataset.path&&state.draft)set(state.draft,el.dataset.path,el.value);if(el.closest('#instance-form,#tune-agent-form,#settings-form'))markDraftDirty(true);});
-document.addEventListener('change',event=>{const el=event.target;if(el.dataset.path&&el.tagName==='SELECT')el.dispatchEvent(new Event('input',{bubbles:true}));});
+document.addEventListener('change',event=>{const el=event.target;if(el.id==='inspected-player'||el.id==='inspected-decision'){if(el.id==='inspected-player')state.inspectedPlayer=el.value;else state.inspectedDecision=el.value;render(true);return;}if(el.dataset.path&&el.tagName==='SELECT')el.dispatchEvent(new Event('input',{bubbles:true}));});
 document.addEventListener('keydown',event=>{if(event.target.id==='event-search'&&event.key==='Enter'){event.preventDefault();actions['search-events']().catch(e=>toast(errorMessage(e),true));}});
 document.addEventListener('submit',async event=>{
  const form=event.target;

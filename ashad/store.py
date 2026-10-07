@@ -126,17 +126,47 @@ class Store:
                     break
         return errors
 
-    def events(self, run_id, after=0, limit=200, search=""):
+    def events(self, run_id, after=0, limit=200, search="", *, before=None, tail=False):
+        if limit <= 0:
+            return []
+        reverse = tail or before is not None
+        query = "SELECT data FROM events WHERE run_id=? AND seq>?"
+        parameters = [run_id, after]
+        if before is not None:
+            query += " AND seq<?"
+            parameters.append(before)
+        query += " ORDER BY seq" + (" DESC" if reverse else "")
+        if not search:
+            query += " LIMIT ?"
+            parameters.append(limit)
+        entries = []
         with self.lock:
-            rows = self.db.execute("SELECT data FROM events WHERE run_id=? AND seq>? ORDER BY seq", (run_id, after)).fetchall()
-        entries = [json.loads(r[0]) for r in rows]
-        if search:
-            entries = [e for e in entries if search.casefold() in json.dumps(e, ensure_ascii=False).casefold()]
-        return entries[:limit]
+            # ponytail: legacy Unicode/serialized-JSON search scans candidates;
+            # ordinary cursor reads are SQL-bounded, add a search index only if needed.
+            needle = search.casefold()
+            for row in self.db.execute(query, parameters):
+                event = json.loads(row[0])
+                if not needle or needle in json.dumps(event, ensure_ascii=False).casefold():
+                    entries.append(event)
+                    if len(entries) == limit:
+                        break
+        return list(reversed(entries)) if reverse else entries
 
-    def count_events(self, run_id):
+    def latest_event(self, run_id, kind):
         with self.lock:
-            return self.db.execute("SELECT COUNT(*) FROM events WHERE run_id=?", (run_id,)).fetchone()[0]
+            row = self.db.execute("SELECT data FROM events WHERE run_id=? AND json_extract(data, '$.kind')=? ORDER BY seq DESC LIMIT 1", (run_id, kind)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def count_events(self, run_id, *, before=None, after=None):
+        """Count ledger rows, with exclusive sequence bounds, never search matches."""
+        query = "SELECT COUNT(*) FROM events WHERE run_id=?"
+        parameters = [run_id]
+        for operator, boundary in (("<", before), (">", after)):
+            if boundary is not None:
+                query += f" AND seq{operator}?"
+                parameters.append(boundary)
+        with self.lock:
+            return self.db.execute(query, parameters).fetchone()[0]
 
     def leases(self, run_id=None):
         with self.lock:

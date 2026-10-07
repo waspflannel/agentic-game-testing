@@ -315,19 +315,29 @@ test('identically named Luna and Sol instances keep $10 and $20 costs with $30 g
  assert.doesNotMatch(app.instanceUsageView(rows,runs),/\$129\.00/);
 });
 
-test('live run displays token summary before video and uses its frozen model', () => {
+test('completed planning usage is not partial while unknown scopes remain partial',()=>{
+ const app=usageDashboard();
+ const completed=subscriptionRow({purpose:'planning',usage_scope:'planning_total'});
+ assert.equal(app.usageSummary([completed]).partial,false);
+ assert.equal(app.usageSummary([subscriptionRow({usage_scope:'unknown'})]).partial,true);
+});
+
+test('live run displays dominant computer and inspector tokens using its frozen model', () => {
  const app=usageDashboard();
  Object.assign(app,{heading:(_label,title,copy)=>`${title} ${copy}`,feed:()=>'<video>camera</video>',progressView:()=>'',timelineView:()=>'',pauseNotice:()=>'',badge:()=>'',button:()=>'',active:()=>true});
  app.state.run={id:'run',model:'gpt-6-sol',plan:{title:'Live',model:'gpt-6-luna',players:[{id:'bot'}]},usage:[subscriptionRow({model:'gpt-6-sol'})]};
  app.state.parts=['runs','run'];
- const start=source.indexOf('function runView(');
+ Object.assign(app,{date:()=>'',time:()=>'',Date});
+ const start=source.indexOf('function instanceLiveView(');
  vm.runInContext(source.slice(start,source.indexOf('function countdown(',start)),app);
  const html=app.runView();
- assert.ok(html.indexOf('API price estimate')<html.indexOf('<video>'));
+ assert.ok(html.indexOf('<video>')<html.indexOf('API price estimate'));
+ assert.match(html,/Bot computer[^]*?Agent activity[^]*?Instance inspector/);
  assert.match(html,/1,000/);
  assert.match(html,/200/);
  assert.match(html,/gpt-6-sol · Started/);
- assert.doesNotMatch(html,/<select/);
+ assert.doesNotMatch(html,/<select[^>]*(name="model"|id="model")/);
+ assert.match(html,/<select id="inspected-player"/);
 });
 
 test('agent model selection defaults to Luna, respects known account availability, and supports offline editing', () => {

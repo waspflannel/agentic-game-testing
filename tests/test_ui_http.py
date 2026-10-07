@@ -84,14 +84,16 @@ def test_dashboard_serves_local_assets_and_offers_chatgpt_sign_in(tmp_path):
         index = client.get("/")
         assert index.status_code == 200
         assert '/static/app.js' in index.text
-        script = client.get("/static/app.js")
-        assert script.status_code == 200
-        assert "/api/settings/codex/login" in script.text
-        assert "Sign in with ChatGPT" in script.text
-        assert 'name="key"' not in script.text and "/api/settings/key" not in script.text
-        assert "localStorage" not in script.text and "sessionStorage" not in script.text
-        assert "X-ASHAD-Request" in script.text
-        assert client.get("/static/style.css").status_code == 200
+        assert 'type="module"' in index.text
+        scripts = {name: client.get(f"/static/{name}") for name in ("app.js", "core.js", "views/sidebar.js")}
+        for script in scripts.values():
+            assert script.status_code == 200
+            # Module scripts are refused unless served as JavaScript.
+            assert script.headers["content-type"].startswith("text/javascript")
+            assert 'name="key"' not in script.text and "/api/settings/key" not in script.text
+            assert "localStorage" not in script.text and "sessionStorage" not in script.text
+        assert "X-ASHAD-Request" in scripts["core.js"].text
+        assert client.get("/static/app.css").status_code == 200
         assert "script-src 'self'" in index.headers["content-security-policy"]
 
 

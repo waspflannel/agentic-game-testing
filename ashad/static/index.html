@@ -3,21 +3,53 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#101416">
   <meta name="color-scheme" content="dark">
-  <title>ASHAD — Game agents</title>
+  <meta name="theme-color" content="#1a1a1a">
+  <title>ASHAD</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-  <link rel="stylesheet" href="/static/style.css">
-  <link rel="stylesheet" href="/static/workspace.css">
-  <script src="/static/app.js" defer></script>
-  <script src="/static/workspace.js" defer></script>
-  <link rel="stylesheet" href="/static/instance-workspace.css">
-  <script src="/static/instance-workspace.js" defer></script>
+  <link rel="stylesheet" href="/static/app.css">
+  <script type="module" src="/static/app.js"></script>
 </head>
 <body>
   <a class="skip-link" href="#main">Skip to workspace</a>
-  <div id="app"><div class="boot"><span class="boot-mark">A</span><p>Connecting to ASHAD…</p></div></div>
-  <div id="toast-region" class="toast-region" role="status" aria-live="polite"></div>
-  <dialog id="dialog" aria-labelledby="dialog-title"></dialog>
+  <svg xmlns="http://www.w3.org/2000/svg" hidden>
+    <!-- Paths from Lucide (ISC licence). 24-unit grid, stroked. -->
+    <symbol id="i-panel-left" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/></symbol>
+    <symbol id="i-panel-right" viewBox="0 0 24 24"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/></symbol>
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M5 12h14"/><path d="M12 5v14"/></symbol>
+    <symbol id="i-square-pen" viewBox="0 0 24 24"><path d="M12 3H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.375 2.625a1 1 0 0 1 3 3l-9.013 9.014a2 2 0 0 1-.853.505l-2.873.84a.5.5 0 0 1-.62-.62l.84-2.873a2 2 0 0 1 .506-.852z"/></symbol>
+    <symbol id="i-folder" viewBox="0 0 24 24"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></symbol>
+    <symbol id="i-folder-open" viewBox="0 0 24 24"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></symbol>
+    <symbol id="i-chevron-right" viewBox="0 0 24 24"><path d="m9 18 6-6-6-6"/></symbol>
+    <symbol id="i-ellipsis" viewBox="0 0 24 24"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/></symbol>
+    <symbol id="i-chart-column" viewBox="0 0 24 24"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></symbol>
+    <symbol id="i-sliders" viewBox="0 0 24 24"><path d="M20 7h-9"/><path d="M14 17H5"/><circle cx="17" cy="17" r="3"/><circle cx="7" cy="7" r="3"/></symbol>
+    <symbol id="i-play" viewBox="0 0 24 24"><polygon points="6 3 20 12 6 21 6 3"/></symbol>
+    <symbol id="i-pause" viewBox="0 0 24 24"><rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/></symbol>
+    <symbol id="i-stop" viewBox="0 0 24 24"><rect width="14" height="14" x="5" y="5" rx="2"/></symbol>
+    <symbol id="i-arrow-up" viewBox="0 0 24 24"><path d="m5 12 7-7 7 7"/><path d="M12 19V5"/></symbol>
+    <symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3"/><path d="M12 9v4"/><path d="M12 17h.01"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6 9 17l-5-5"/></symbol>
+    <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></symbol>
+    <symbol id="i-monitor" viewBox="0 0 24 24"><rect width="20" height="14" x="2" y="3" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/></symbol>
+    <symbol id="i-gamepad" viewBox="0 0 24 24"><path d="M6 11h4"/><path d="M8 9v4"/><path d="M15 12h.01"/><path d="M18 10h.01"/><path d="M17.32 5H6.68a4 4 0 0 0-3.978 3.59c-.006.052-.01.101-.017.152C2.604 9.416 2 14.456 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.414-1.414A2 2 0 0 1 9.828 16h4.344a2 2 0 0 1 1.414.586L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.545-.604-6.584-.685-7.258-.007-.05-.011-.1-.017-.151A4 4 0 0 0 17.32 5z"/></symbol>
+  </svg>
+
+  <header class="titlebar">
+    <button id="nav-toggle" class="icon-btn" type="button" aria-controls="sidebar" aria-expanded="true" aria-label="Toggle sidebar" title="Toggle sidebar (Ctrl+B)"><svg class="icon" aria-hidden="true"><use href="#i-panel-left"/></svg></button>
+    <a class="brand" href="#/"><svg class="icon brand-mark" aria-hidden="true"><use href="#i-gamepad"/></svg>ASHAD</a>
+    <span id="window-title" class="titlebar-title"></span>
+  </header>
+  <div class="layout">
+    <nav id="sidebar" class="sidebar" aria-label="Projects and instances"></nav>
+    <main id="main" class="workspace" tabindex="-1">
+      <div id="banners"></div>
+      <div id="view" class="view"><div class="boot"><p>Connecting to ASHAD…</p></div></div>
+    </main>
+    <aside id="inspector" class="inspector" aria-label="Inspector" hidden><div class="placeholder"><span class="tag">Coming in C6</span><p>Inspector</p></div></aside>
+  </div>
+  <div id="toasts" class="toasts" role="status" aria-live="polite"></div>
+  <dialog id="dialog" class="dialog" aria-labelledby="dialog-title"></dialog>
 </body>
 </html>

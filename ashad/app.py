@@ -6,6 +6,7 @@ import httpx
 from contextlib import AsyncExitStack, asynccontextmanager
 import json
 import math
+import mimetypes
 from pathlib import Path
 import re
 import time
@@ -29,6 +30,9 @@ from .instances import Instances, InstanceRequest
 from .store import Store, uid
 
 PROJECT = Path(__file__).resolve().parents[1]
+# The renderer uses module scripts, which browsers refuse unless served as JavaScript;
+# Windows registry entries can otherwise map .js to text/plain.
+mimetypes.add_type("text/javascript", ".js")
 # DNS rebinding defense: a browser only sends one of these Host values to this process.
 LOOPBACK_HOST = re.compile(r"(?:127\.0\.0\.1|localhost|\[::1\])(?::\d{1,5})?", re.IGNORECASE)
 DEFAULT_SETTINGS = {"id": "main", "concurrent_sessions": 1, "storage_reserve_bytes": 1024**3, "duration_seconds": None, "spend_usd": None, "pricing": SUBSCRIPTION_PRICING}

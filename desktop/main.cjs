@@ -263,6 +263,7 @@ function createWindow() {
     callback({ cancel: !localStatus && !rules.appUrl(details.url, origin) });
   });
   window = new BrowserWindow({ width: 1440, height: 960, minWidth: 800, minHeight: 600, title: 'ASHAD', show: false,
+    backgroundColor: '#141414', titleBarStyle: 'hidden', titleBarOverlay: { color: '#1a1a1a', symbolColor: '#a8a8a8', height: 40 },
     webPreferences: { session: applicationSession, preload: path.join(__dirname, 'preload.cjs'),
       contextIsolation: true, sandbox: true, nodeIntegration: false, webviewTag: false },
   });

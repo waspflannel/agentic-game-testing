@@ -66,7 +66,7 @@ async def check_app(root):
         # Empty fixture only; any attempted worker operation raises immediately.
         await once(app.state.store, OfflineOnly())
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
-            for url in ("/", "/static/app.js", "/static/style.css", "/api/health", "/api/bootstrap"):
+            for url in ("/", "/static/app.js", "/static/app.css", "/api/health", "/api/bootstrap"):
                 response = await client.get(url)
                 assert response.status_code == 200 and response.content, (url, response.status_code)
             bootstrap = (await client.get("/api/bootstrap")).json()
@@ -89,7 +89,7 @@ def probe(scratch_parent):
         import_module(name)  # Import only: no main(), no watchdog process, no keyring calls.
     app_root = Path(ashad.__file__).resolve().parent.parent
     static = app_root / "ashad" / "static"
-    for name in ("index.html", "app.js", "style.css"):
+    for name in ("index.html", "app.js", "core.js", "app.css"):
         assert (static / name).is_file(), f"Missing static resource: {name}"
     backend = "not checked: Windows-only probe"
     if os.name == "nt":

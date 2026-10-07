@@ -38,7 +38,7 @@ async def test_fresh_instance_freezes_profile_and_deduplicates_start(environment
     assert plan["success_criteria"]["predicate"] == "manual"
     assert (await instances.start(request))["id"] == run["id"]
     assert len(store.list("runs")) == 1
-    assert all(path == "/health" for desktop in desktops.values() for path, _ in desktop.calls)
+    assert all(path in {"/prepare/probe", "/status"} for desktop in desktops.values() for path, _ in desktop.calls)
     profile["instructions"] = "new tuning"
     assert store.require("runs", run["id"])["agent_profile"]["instructions"] != profile["instructions"]
     with pytest.raises(ValueError, match="different instance"):
@@ -62,20 +62,17 @@ async def test_steam_requires_a_ready_account_and_never_falls_back(environment, 
     assert store.list("runs") == []
     store.put("accounts", {"id": "steam-account", "worker_id": "worker-2", "steam_id": "76561198000000001",
                            "app_id": 3753020, "readiness": "ready"})
-    run = await instances.start(request)
-    assert run["plan"]["transport"]["mode"] == "steam"
-    assert run["plan"]["players"][0]["worker_id"] == "worker-2"
-    assert run["players"]["player-1"]["identity"] == "76561198000000001"
+    with pytest.raises(ValueError, match="Steam readiness is unknown.*No ENet fallback"):
+        await instances.start(request)
+    assert not store.list("runs") and not store.leases()
+    assert not store.command("instance", request.request_id)
 
 
 @pytest.mark.asyncio
 async def test_allocation_skips_known_wrong_build_and_unconfigured_enet(environment, profile):
     store, coordinator, _, desktops = environment
-    build = store.require("builds", "build-1")
-    build["artifact_sha256"] = "expected-pack"
-    store.put("builds", build)
     first = store.list("workers")[0]
-    desktops[first["id"]].request = AsyncMock(return_value={"build": {"artifact_sha256": "other-pack"}, "lifecycle": "ended"})
+    desktops[first["id"]].probe["build"]["artifact_sha256"] = "0" * 64
     second = store.list("workers")[1]
     second.pop("host_address")
     store.put("workers", second)

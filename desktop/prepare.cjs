@@ -36,7 +36,7 @@ function run(executable, args, env = environment) {
 // Destructive replacement is restricted to these generated resource directories.
 async function removeGenerated(directory) {
   const resolved = path.resolve(directory);
-  if (![path.join(site, 'ashad'), path.join(site, 'integration')].includes(resolved)) {
+  if (![path.join(site, 'ashad'), path.join(site, 'integration'), path.join(site, 'ashad_resources')].includes(resolved)) {
     throw new Error(`Refusing to remove unexpected path: ${resolved}`);
   }
   await fs.rm(resolved, { recursive: true, force: true });
@@ -82,6 +82,12 @@ async function prepare() {
   await removeGenerated(path.join(site, 'integration'));
   await fs.mkdir(path.join(site, 'integration'), { recursive: true });
   await fs.copyFile(path.join(root, 'integration', 'fixtures.py'), path.join(site, 'integration', 'fixtures.py'));
+  const resources = path.join(site, 'ashad_resources');
+  await removeGenerated(resources);
+  await fs.mkdir(path.join(resources, 'scripts'), { recursive: true });
+  await fs.cp(path.join(root, 'worker'), path.join(resources, 'worker'), { recursive: true,
+    filter: source => !source.split(path.sep).some(part => ['__pycache__', '.pytest_cache'].includes(part)) && !/\.py[co]$/.test(source) });
+  await fs.copyFile(path.join(root, 'scripts', 'provision-workers.ps1'), path.join(resources, 'scripts', 'provision-workers.ps1'));
   // Check every resolved pin and real subprocess resource without login/provider/game activity.
   await run(python, ['-I', '-B', '-c',
     'import sys; from pathlib import Path; from importlib.metadata import version; ' +
@@ -92,6 +98,9 @@ async function prepare() {
     'from keyring.backends.Windows import WinVaultKeyring; assert WinVaultKeyring.priority > 0; ' +
     'from codex_cli_bin import bundled_codex_path; assert bundled_codex_path().is_file(); ' +
     'assert (Path(ashad.app.__file__).parent/"static"/"index.html").is_file(); ' +
+    'resources=Path(ashad.app.__file__).parents[1]/"ashad_resources"; ' +
+    'assert (resources/"worker"/"Dockerfile").is_file() and (resources/"worker"/"prepare_probe.py").is_file(); ' +
+    'assert (resources/"scripts"/"provision-workers.ps1").is_file(); ' +
     'print("Prepared private Python, 49 resolved pins, keyring import, Codex resources and controller/static resources.")', lock]);
 }
 

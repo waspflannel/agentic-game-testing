@@ -147,7 +147,7 @@ async def test_drain_blocks_admission_and_resume_even_outside_http(environment):
     coord.draining = True
     await coord.admit(run)
     assert store.require("runs", run["id"])["state"] == "Queued"
-    assert desktops["worker-1"].calls == [("/health", None)]
+    assert desktops["worker-1"].calls == [("/prepare/probe", {"build": run["build"]}), ("/status", None)]
     run["state"] = "Paused"
     store.put("runs", run)
     coord.ai.validate = AsyncMock()

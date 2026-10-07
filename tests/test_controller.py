@@ -1,6 +1,7 @@
 """Contract tests use doubles for failure paths, never as gameplay evidence."""
 import asyncio
 import copy
+import hashlib
 import json
 import time
 from unittest.mock import AsyncMock
@@ -14,6 +15,7 @@ from ashad.models import MODEL, SUPPORTED_MODELS, Plan
 from ashad.store import Store
 from ashad.validation import validate_plan
 from ashad.watchdog import once
+from ashad.workspace_environment import CONTRACT, ENGINE
 
 
 class MemoryCredentials:
@@ -51,18 +53,37 @@ class FakeCodexBackend:
 
 
 class DesktopDouble:
-    def __init__(self, worker):
+    def __init__(self, worker, build):
         self.worker = worker
         self.calls = []
         self.fail_stop = False
         self.bound = None
+        self.status = {"worker_id": worker["id"], "contract_version": CONTRACT, "independent_desktop": True,
+            "lifecycle": "unbound", "binding": None, "game_running": False, "world_may_continue": False,
+            "human_control": False, "held_keys": [], "held_buttons": [], "infrastructure_error": None,
+            "steam": {"setup_active": False, "authenticated": False, "identity_verified": False,
+                      "app_id_verified": False, "license_verified": False, "requires_human_setup": True}}
+        self.status["build"] = {**copy.deepcopy(build), "executable_sha256": build["engine_sha256"]}
+        # This fixture retains its own measured pins; it never echoes requested pins as evidence.
+        self.probe = {**copy.deepcopy(self.status), "ready": True, "build": copy.deepcopy(build),
+                      "desktop": {"rendered": True, "capture_ready": True, "input_ready": True}}
     async def request(self, method, path, *, data=None, **kwargs):
         self.calls.append((path, data))
+        if path == "/prepare/probe":
+            assert method == "POST" and set(data) == {"build"}
+            return copy.deepcopy(self.probe)
+        if path == "/status":
+            assert method == "GET"
+            status = copy.deepcopy(self.status)
+            if self.bound:
+                status.update(lifecycle="running", binding=self.bound, game_running=True, world_may_continue=True)
+            return status
         if path == "/bind":
             self.bound = data
         if path == "/stop" and self.fail_stop:
             raise OSError("Unavailable")
         if path == "/stop":
+            self.bound = None
             return {"teardown_confirmed": True}
         if path == "/game":
             return {"state": "completed"}
@@ -78,15 +99,27 @@ def environment(tmp_path):
     (source / "quest.gd").write_text("# terminal demo_wrapup_moar\n", encoding="utf-8")
     catalog = tmp_path / "catalog.json"
     catalog.write_text(json.dumps({"goals": [{"id": "demo_wrapup_moar"}, {"id": "first_quota"}], "unavailable_goals": [{"id": "forest"}], "items": [{"id": "flour"}]}))
-    build = {"id": "build-1", "name": "test fixture build", "source_root": str(source), "source_revision": "test-revision", "catalog_path": str(catalog), "command": ["/game/test"], "artifacts": [], "steam_app_id": 3753020, "structured_version": 1}
+    pinned = tmp_path / "pinned-build"
+    pinned.mkdir()
+    engine, pack = pinned / "fixture-engine", pinned / "fixture.pck"
+    engine.write_bytes(b"FIXTURE ONLY engine bytes; never executed")
+    pack.write_bytes(b"FIXTURE ONLY pack bytes; never gameplay")
+    build = {"id": "build-1", "project_id": "project-1", "name": "test fixture build", "source_root": str(source),
+             "source_revision": "test-revision", "catalog_path": str(catalog),
+             "command": ["/game/fixture-engine", "--main-pack", "/game/fixture.pck"], "artifacts": [],
+             "steam_app_id": 3753020, "structured_version": 1, "integration_version": 2, "engine_version": ENGINE,
+             "engine_sha256": hashlib.sha256(engine.read_bytes()).hexdigest(),
+             "artifact_sha256": hashlib.sha256(pack.read_bytes()).hexdigest()}
+    manifest = pinned / "manifest.json"
+    manifest.write_text(json.dumps(build), encoding="utf-8")
+    build.update(manifest_path=str(manifest), manifest_sha256=hashlib.sha256(manifest.read_bytes()).hexdigest())
     store.put("projects", {"id": "project-1", "name": "Test game"})
-    build["project_id"] = "project-1"
     store.put("builds", build)
     desktops = {}
     for i in range(1, 5):
         worker = {"id": f"worker-{i}", "name": f"Worker {i}", "url": "http://127.0.0.1:8800", "credential_ref": f"worker:{i}", "host_address": f"ashad-worker-{i}", "enabled": True}
         store.put("workers", worker)
-        desktops[worker["id"]] = DesktopDouble(worker)
+        desktops[worker["id"]] = DesktopDouble(worker, build)
     credentials = MemoryCredentials(None)
     backend = FakeCodexBackend()
     store.put("settings", {"configured": True, "status": "ready", "api": "codex",

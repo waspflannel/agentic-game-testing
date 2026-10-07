@@ -147,7 +147,7 @@ async def test_new_crash_during_investigation_is_logged_once_without_extending_d
 
     async def request(method, path, **kwargs):
         if path == "/status":
-            return {"game_running": False}
+            return {**await original(method, path, **kwargs), "game_running": False}
         return await original(method, path, **kwargs)
 
     monkeypatch.setattr(desktops["worker-1"], "request", request)

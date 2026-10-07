@@ -1,6 +1,6 @@
 # ASHAD Bot
 
-ASHAD runs a game-playing bot in an isolated desktop. Tune a reusable agent profile from the pinned game's controls, then start a fresh instance with that agent, one primary goal, and ENet or Steam. The bot receives its saved instructions and filtered JSON game state, chooses an action, and checks the next observation.
+ASHAD runs a game-playing bot in an isolated desktop. Tune a reusable agent profile from the pinned game's controls, then start a fresh instance with that agent and one primary goal using ENet. Steam remains unavailable without fresh licensed-identity proof; see the limitation below. The bot receives its saved instructions and filtered JSON game state, chooses an action, and checks the next observation.
 
 **Tuning writes instructions; it does not train model weights.** A profile records the selected model and build. Each run freezes its profile so later tuning cannot silently change a running bot.
 
@@ -18,7 +18,7 @@ The [Electron workspace refactor plan](<docs/electron-workspace-refactor-plan.md
 
 ## Desktop shell (Windows x64)
 
-The Electron shell, private-runtime build tooling, project/migration contracts and fixed global instance admission are implemented; project-workspace navigation/setup and installed/live release acceptance are still in progress. The shell currently opens the existing dashboard. No legacy data, worker registrations, game builds or credentials are imported automatically.
+The Electron shell now opens the project workspace with nested instance threads, a protected setup wizard and project-scoped goal composer. Private-runtime packaging, project/import contracts, actual passive worker probes, confirmed Docker preparation and fixed global instance admission are implemented and fixture-tested. The richer live workspace and installed/live release acceptance remain in progress. No legacy data, worker registrations, game builds or credentials are imported automatically.
 
 Build locally with Node.js 22.12+ and npm (no system Python required for the desktop runtime):
 
@@ -56,16 +56,20 @@ Profile tuning and bot decisions require account access to the selected model. M
 
 ## Project ownership and retained history
 
-Create a game project in **Settings → Builds**, then register its pinned manifest under that project. Duplicate names remain independent IDs. Name each tuning configuration if useful; retries reconcile the same tuning request rather than silently retuning. Exactly **one occupied instance globally** is allowed, including queued, paused, human-owned and ended/unconfirmed work. Existing higher saved caps remain historical settings, not effective capacity.
+Use **Projects + → Setup new game agent** to create a game project, select/register a supported pinned manifest, explicitly inspect/prepare its desktop, tune a named model-specific configuration and review its saved guide. Selection never imports, prepares, tunes or starts automatically. Duplicate names remain independent IDs. Completed tuning retries reconcile the same request rather than silently retuning. Exactly **one occupied instance globally** is allowed, including queued, paused, human-owned and ended/unconfirmed work. Existing higher saved caps remain historical settings, not effective capacity.
 
 Optional **Import existing workspace…** requires an empty owned target, a stopped source controller/watchdog, confirmed idle worker/account pool, a fresh verified SQLite/evidence backup and explicit separate external backups/inventory. It does not copy Codex auth, OS keyring values, registrations, external builds or Docker volumes, and does not infer current readiness. Project grouping is a separate explicit preview/backup/apply operation; unassigned history remains readable. Interrupted imports block editing/admission until operator reconciliation: retain the journal, evidence and backup; do not remove them blindly. See the [migration contracts and verification](<docs/electron-workspace-refactor-plan.md#p2-execution-record--2026-10-07-controller-contracts-complete>).
 
 ## Tune an agent, then run it
 
-1. Open **Tune agent**, choose the pinned build and model, and generate the profile. Codex uses the build's source and control evidence to produce reusable gameplay instructions. Review the saved instructions before using the profile.
-2. Open **New instance**, select an agent, enter the primary goal, and choose ENet or Steam.
-3. Start the instance. ASHAD validates readiness and automatically allocates an available compatible desktop for one host bot in a fresh world. Steam additionally requires a verified, entitled account on an available desktop.
+1. Complete **Projects +** setup: choose the pinned build, inspect a compatible desktop, select the model and explicitly tune a named profile. Codex uses source/control evidence; tuning performs inference but does not launch a game. Review the saved instructions.
+2. Open the project's **New instance**, select a saved profile and enter the primary goal. Its build/model are fixed by the profile. Check readiness without inference/gameplay if needed.
+3. Explicitly **Start instance**. ASHAD freshly revalidates authentication, exact supported build pins and actual idle desktop/render/capture/input capabilities, then accepts one host bot in a fresh world. Failed/blocked drafts never auto-launch. Lost replies reconcile the same request; restoring prepared inputs asks first and still requires another Start click.
 4. Follow the live view. Pause, resume, stop, or take over if the bot needs help. Each instance retains its own run ID and evidence.
+
+**Desktop prerequisites:** Docker Desktop's Linux engine and separately supplied supported game files are required. Confirmed preparation may build a content-addressed bundled worker image and create one owner-labelled desktop, persistent volumes and local service/desktop credential references; it never starts gameplay or recreates/adopts unrelated containers. Changed/legacy artifacts lacking exact supported pins require a new registration. Provisioning completion alone is not readiness.
+
+**Steam limitation:** Steam is unavailable until fresh actual matching identity, real App ID and licence are proven. The current idle passive worker cannot supply that proof without application initialization, so copied account readiness or an old verification never enables it. ASHAD never substitutes App ID 480, ENet or offline transport. Supported owned Steam-start/integration work and live acceptance remain separate gates; ENet is an explicit user choice.
 
 Profile generation does not launch a game. A new instance always uses fresh world and character setup; multiplayer planning, saved starts, seeds and advanced scenario editing are deferred. Existing desktops and Steam profiles are retained between runs.
 

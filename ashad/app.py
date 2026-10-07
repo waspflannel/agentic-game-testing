@@ -24,6 +24,7 @@ from .reports import generate_report
 from .agent_profiles import AgentProfiles
 from .projects import Projects
 from .workspace_import import import_workspace, IMPORT_ID as WORKSPACE_IMPORT_ID
+from .workspace_environment import inspect_fresh_environment, prepare_environment, validate_build
 from .instances import Instances, InstanceRequest
 from .store import Store, uid
 
@@ -31,14 +32,20 @@ PROJECT = Path(__file__).resolve().parents[1]
 DEFAULT_SETTINGS = {"id": "main", "concurrent_sessions": 1, "storage_reserve_bytes": 1024**3, "duration_seconds": None, "spend_usd": None, "pricing": SUBSCRIPTION_PRICING}
 
 
-async def disk_mutation(operation, *args, **kwargs):
-    """Keep the caller's admission hold until actual disk work finishes, even on HTTP cancellation."""
-    task = asyncio.create_task(asyncio.to_thread(operation, *args, **kwargs))
+async def settled_operation(operation):
+    """Keep admission held until the actual operation finishes, even on HTTP cancellation."""
+    task = asyncio.create_task(operation)
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        await task
+        # ASGI cancellation is level-triggered; cleanup must not cancel real work.
+        with anyio.CancelScope(shield=True):
+            await asyncio.shield(task)
         raise
+
+
+async def disk_mutation(operation, *args, **kwargs):
+    return await settled_operation(asyncio.to_thread(operation, *args, **kwargs))
 
 
 def build_record(path, name=None, build_id=None):
@@ -221,6 +228,13 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
 
     app.mount("/mcp", game_mcp.app)
 
+    def instance_slot():
+        owners = coordinator.occupied_instances()
+        reason = ("Workspace import is interrupted; operator reconciliation is required" if coordinator.import_interrupted() else
+                  "The controller is completing setup or shutdown; wait before starting" if coordinator.draining or coordinator.stopping else
+                  "One instance already owns the global slot" if owners else None)
+        return {"available": reason is None, "owners": owners, "limit": 1, "blocked_reason": reason}
+
     @app.get("/api/bootstrap")
     async def bootstrap():
         settings = dict(store.require("settings", "main"))
@@ -232,13 +246,8 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
         # In particular an import/restart must validate this backend's own home.
         ai_status = {**ai.status, "api": AI_API}
         model_options = [{"id": model, "label": model.replace("gpt-", "GPT-").replace("-luna", " Luna").replace("-sol", " Sol").replace("-astra", " Astra")} for model in SUPPORTED_MODELS]
-        owners = coordinator.occupied_instances()
-        interrupted = coordinator.import_interrupted()
-        blocked_reason = ("Workspace import is interrupted; operator reconciliation is required" if interrupted else
-                          "The controller is completing setup or shutdown; wait before starting" if coordinator.draining else
-                          "One instance already owns the global slot" if owners else None)
         return {"settings": settings, "ai": ai_status, "model_options": model_options, "builds": builds, "workers": workers, "accounts": store.list("accounts"), "agents": store.list("agents"), "runs": store.list("runs"), "usage": store.list("usage"), "leases": store.leases(), "projects": store.list("projects"),
-                "instance_slot": {"available": blocked_reason is None, "owners": owners, "limit": 1, "blocked_reason": blocked_reason},
+                "instance_slot": instance_slot(),
                 "workspace_import": {"interrupted": coordinator.import_interrupted(), "completed": store.get("migrations", WORKSPACE_IMPORT_ID),
                                      "readiness_verified": False}}
 
@@ -285,6 +294,72 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
         return {**store.require("projects", project_id),
                 **{kind: [record for record in store.list(kind) if record.get("project_id") == project_id]
                    for kind in ("builds", "agents", "runs")}}
+
+    @app.get("/api/projects/{project_id}/readiness")
+    async def project_readiness(project_id: str, build_id: str, agent_id: str | None = None):
+        Projects(store).project_for_build(build_id, project_id)
+        build = store.require("builds", build_id)
+        model = MODEL
+        if agent_id:
+            Projects(store).project_for_agent(agent_id, project_id)
+            selected = store.require("agents", agent_id)
+            if selected["build_id"] != build_id:
+                raise ValueError("Saved configuration belongs to a different build")
+            model = Plan(model=selected["model"]).model
+        build_validation = {"ready": False, "reason": "Build has not been validated"}
+        try:
+            await asyncio.to_thread(validate_build, build)
+            Repository(build)
+            if agent_id:
+                Projects(store).project_for_agent(agent_id, project_id)
+                profile = await asyncio.to_thread(profiles.validated, agent_id)
+                if profile["build_id"] != build_id:
+                    raise ValueError("Saved configuration belongs to a different build")
+                model = profile["model"]
+            build_validation = {"ready": True, "reason": "Exact supported manifest, engine and artifact pins verified"}
+        except (OSError, ValueError, KeyError) as exc:
+            build_validation["reason"] = str(exc)
+        try:
+            status = await ai.validate(model)
+            provider = {"ready": status.get("configured") is True and status.get("status") == "ready",
+                        "status": status.get("status", "unknown"), "message": status.get("message", "Unknown AI connection"), "model": model}
+        except (ProviderError, CodexError) as exc:
+            provider = {"ready": False, "status": exc.status, "message": exc.message, "model": model}
+        environments = []
+        if build_validation["ready"]:
+            occupied = {lease["resource_id"] for lease in store.leases() if lease["kind"] == "worker"}
+            accounts = {record["worker_id"]: record for record in store.list("accounts") if record.get("app_id") == build.get("steam_app_id")}
+            workers = store.list("workers")
+            checks = await asyncio.gather(*(inspect_fresh_environment(build, worker, credentials,
+                occupied=worker["id"] in occupied, account=accounts.get(worker["id"])) for worker in workers))
+            environments = [{"id": worker["id"], "name": worker.get("name", worker["id"]), **check} for worker, check in zip(workers, checks)]
+        slot = instance_slot()
+        steam_ready = any(environment["steam"]["ready"] for environment in environments)
+        return {"project_id": project_id, "build_id": build_id, "provider": provider,
+                "build_validation": build_validation, "environments": environments, "slot": slot,
+                "steam": {"ready": steam_ready, "reason": "Fresh matching licensed identity verified" if steam_ready else "No fresh matching licensed Steam identity is proven; no App ID 480 or ENet fallback"},
+                "ready": provider["ready"] and build_validation["ready"] and slot["available"] and any(environment["ready"] for environment in environments)}
+
+    @app.post("/api/projects/{project_id}/environments/prepare")
+    async def project_prepare(project_id: str, body: dict):
+        if set(body) != {"build_id", "request_id", "confirmed"} or body.get("confirmed") is not True:
+            raise ValueError("Preparation requires build_id, stable request_id and explicit confirmation of image/volume/credential creation")
+        if app.state.controller_lock is None or app.state.controller_lock.closed:
+            raise ValueError("Preparation requires the process lock held by the owned ASHAD controller entry")
+        Projects(store).project_for_build(body["build_id"], project_id)
+        build = store.require("builds", body["build_id"])
+        async with coordinator.lock:
+            coordinator.require_instance_slot()
+            login = getattr(ai.backend, "login_wait", None)
+            if coordinator.draining or coordinator.stopping or app.state.tuning_task or len(app.state.operations) > 1 or (login and not login.done()):
+                raise ValueError("Wait for admission, tuning, sign-in and setup operations before preparation")
+            coordinator.draining = True
+            try:
+                resources = PROJECT / "ashad_resources" if (PROJECT / "ashad_resources").is_dir() else PROJECT
+                return await settled_operation(prepare_environment(store, credentials, project_id=project_id,
+                    build=build, request_id=body["request_id"], confirmed=True, target_drained=True, resource_root=resources))
+            finally:
+                coordinator.draining = False
 
     @app.post("/api/projects/migration/preview")
     async def migration_preview(body: dict):

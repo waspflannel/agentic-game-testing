@@ -98,7 +98,7 @@ async def test_game_tick_freshness_is_distinct_from_telemetry_packet_freshness(e
 
     async def responding_worker(method, path, *, data=None, **kwargs):
         if path == "/status":
-            return {"game_running": True, "capture": {"healthy": True, "last_at": clock[0]}}
+            return {**await original_request(method, path, data=data, **kwargs), "game_running": True, "capture": {"healthy": True, "last_at": clock[0]}}
         if path == "/telemetry":
             sequence[0] += 1
             return {**run["players"]["player-1"]["telemetry"], "sequence": sequence[0] + 10,

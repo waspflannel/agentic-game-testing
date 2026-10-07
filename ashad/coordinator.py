@@ -18,6 +18,7 @@ from .store import uid
 from . import subgoals
 from .subgoals import new_plan
 from .validation import validate_plan
+from .workspace_environment import inspect_environment, validate_build
 
 
 def event_due(run, event, state, now):
@@ -206,6 +207,28 @@ class Coordinator:
         self.store.put("scenarios", record, f"{scenario_id}:{revision}")
         return record
 
+    def validated_build(self, build_id):
+        build = copy.deepcopy(self.store.require("builds", build_id))
+        try:
+            validate_build(build)
+        except (KeyError, TypeError, OSError):
+            raise ValueError("Pinned build cannot be verified; re-register a supported build with available artifacts.") from None
+        return build
+
+    async def inspect_worker_environment(self, build, worker_id, *, account=None):
+        """Fresh passive measurements through the same authenticated client as launch."""
+        worker = self.store.require("workers", worker_id)
+        probe = status = None
+        try:
+            client = self.client(worker_id)
+            probe = await client.request("POST", "/prepare/probe", data={"build": build})
+            status = await client.request("GET", "/status")
+        except Exception:
+            # Worker exception bodies can contain credentials; report authored unknowns only.
+            probe = None
+        occupied = any(lease["kind"] == "worker" and lease["resource_id"] == worker_id for lease in self.store.leases())
+        return inspect_environment(build, worker, probe, status, occupied=occupied, account=account)
+
     async def launch(self, scenario_id, revision, idempotency_key):
         if not idempotency_key:
             raise ValueError("Launch needs an idempotency key")
@@ -227,6 +250,7 @@ class Coordinator:
             if not checked["valid"]:
                 raise ValueError("; ".join(checked["errors"]))
             plan = checked["plan"]
+            build = self.validated_build(plan["build_id"])
             agent_profile = None
             if plan.get("agent_id"):
                 from .agent_profiles import AgentProfiles
@@ -236,15 +260,12 @@ class Coordinator:
                 if agent_profile["build_id"] != plan["build_id"] or agent_profile["model"] != plan["model"]:
                     raise ValueError("Instance build and model must match its tuned agent.")
             for player in plan["players"]:
-                try:
-                    health = await self.client(player["worker_id"]).request("GET", "/health")
-                except Exception as exc:
-                    raise ValueError(f"{player['name']}: desktop worker is unavailable ({type(exc).__name__}).") from None
-                if health.get("independent_desktop") is False or health.get("steam", {}).get("setup_active"):
-                    raise ValueError(f"{player['name']}: finish desktop/account setup before Launch.")
-                leased = any(l["kind"] == "worker" and l["resource_id"] == player["worker_id"] for l in self.store.leases())
-                if health.get("lifecycle", "unbound") not in {"unbound", "ended"} and not leased:
-                    raise ValueError(f"{player['name']}: desktop is busy outside this controller; finish its current run first.")
+                account = self.store.get("accounts", player["account_id"]) if player["account_id"] else None
+                environment = await self.inspect_worker_environment(build, player["worker_id"], account=account)
+                if not environment["ready"]:
+                    raise ValueError(f"{player['name']}: fresh desktop readiness is not verified. {environment['reason']}")
+                if plan["transport"]["mode"] == "steam" and not environment["steam"]["ready"]:
+                    raise ValueError(f"{player['name']}: Steam readiness is unknown or unverified. {environment['steam']['reason']}. No ENet fallback is allowed.")
             run_id = uid("run_")
             players = {}
             for p in plan["players"]:
@@ -255,7 +276,7 @@ class Coordinator:
                     identity = fixture["players"][plan["world_setup"]["identity_mapping"][p["id"]]]["identity"]
                 identity = identity or str(uuid.uuid4())
                 players[p["id"]] = {"id": p["id"], "worker_id": p["worker_id"], "identity": str(identity), "epoch": uid("epoch_"), "generation": 0, "phase": "waiting", "activity": "Waiting for launch" if p["initial"] else "Scheduled", "launched": False, "bound": False, "teardown_confirmed": False, "invalid_actions": 0, "last_observation": None, "telemetry": None}
-            run = {"id": run_id, "session_id": run_id, "scenario_id": scenario_id, "scenario_revision": revision, "state": "Queued", "created_at": time.time(), "plan": copy.deepcopy(plan), "build": copy.deepcopy(self.store.require("builds", plan["build_id"])), "players": players, "events": {e["id"]: {"status": "pending", "attempts": 0} for e in plan["events"]}, "model": plan["model"], "controller_version": CONTROLLER_VERSION, "world_namespace": run_id, "progress": {"completed_quests": [], "handler": None, "disagreement": [], "world_simulating": "unknown"}, "starting_milestones": [], "investigation_deadline": None, "goal_complete": False, "demo_complete": False, "validity": "unknown", "evidence_status": "collecting", "limitations": [], "interventions": [], "evidence": [], "launch_record": {"explicit": True, "timestamp": time.time(), "scenario_revision": revision, "idempotency_key": idempotency_key}}
+            run = {"id": run_id, "session_id": run_id, "scenario_id": scenario_id, "scenario_revision": revision, "state": "Queued", "created_at": time.time(), "plan": copy.deepcopy(plan), "build": copy.deepcopy(build), "players": players, "events": {e["id"]: {"status": "pending", "attempts": 0} for e in plan["events"]}, "model": plan["model"], "controller_version": CONTROLLER_VERSION, "world_namespace": run_id, "progress": {"completed_quests": [], "handler": None, "disagreement": [], "world_simulating": "unknown"}, "starting_milestones": [], "investigation_deadline": None, "goal_complete": False, "demo_complete": False, "validity": "unknown", "evidence_status": "collecting", "limitations": [], "interventions": [], "evidence": [], "launch_record": {"explicit": True, "timestamp": time.time(), "scenario_revision": revision, "idempotency_key": idempotency_key}}
             run["approved_plan"] = copy.deepcopy(plan)
             if agent_profile:
                 run.update(agent_id=agent_profile["id"], agent_profile=copy.deepcopy(agent_profile))
@@ -268,6 +289,8 @@ class Coordinator:
             with self.store.transaction() as db:
                 # Accepted/queued work owns the fixed global slot before any worker
                 # allocation. SQLite serializes even independently constructed callers.
+                if self.draining or self.stopping:
+                    raise ValueError("The controller is draining; new instances are blocked.")
                 self.require_instance_slot()
                 db.execute("INSERT INTO leases VALUES (?,?,?)", ("instance", "global", run_id))
                 self.save_run(run)

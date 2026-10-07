@@ -12,6 +12,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from .models import Binding, BoundCommand, FixtureImport, Heartbeat, Launch, Pin, SteamVerify, Stop
 from .runtime import Runtime
 from .models import GameRequest
+from .prepare_probe import PrepareProbe, prepare_probe
 
 
 def create_app(runtime: Runtime | None = None, token: str | None = None) -> FastAPI:
@@ -43,6 +44,10 @@ def create_app(runtime: Runtime | None = None, token: str | None = None) -> Fast
     @app.get("/status")
     async def status():
         return service.status()
+
+    @app.post("/prepare/probe")
+    async def probe_preparation(body: PrepareProbe):
+        return await prepare_probe(service, body.build)
 
     @app.post("/bind")
     async def bind(body: Binding):

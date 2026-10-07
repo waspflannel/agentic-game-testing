@@ -52,7 +52,7 @@ async def test_competing_projects_share_atomic_slot_across_independent_callers(e
     winner = next(result for result in results if isinstance(result, dict))
     assert store.list("runs") == [winner]
     assert store.leases() == [{"kind": "instance", "resource_id": "global", "run_id": winner["id"]}]
-    assert all(path == "/health" for desktop in desktops.values() for path, _ in desktop.calls)
+    assert all(path in {"/prepare/probe", "/status"} for desktop in desktops.values() for path, _ in desktop.calls)
 
 
 @pytest.mark.asyncio
@@ -112,7 +112,7 @@ async def test_unvalidated_current_account_cannot_launch_from_imported_ready_cac
     with pytest.raises(ValueError, match="new controller home"):
         await Instances(coord).start(InstanceRequest(agent_id=profile["id"], primary_goal="Not allowed", request_id="no-auth"))
     assert not store.list("runs") and not store.leases()
-    assert all(path == "/health" for desktop in desktops.values() for path, _ in desktop.calls)
+    assert all(path in {"/prepare/probe", "/status"} for desktop in desktops.values() for path, _ in desktop.calls)
 
 
 @pytest.mark.asyncio
@@ -345,3 +345,165 @@ def test_migration_api_is_explicit_backed_up_and_replay_safe(tmp_path):
         assert migrated == {**before, "project_id": "migrated-game"}
         assert (tmp_path / "backup" / "ashad.sqlite3").is_file()
         assert not app.state.coordinator.draining and len(app.state.store.list("projects")) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("section,field,value", [
+    ("probe", "ready", None), ("probe", "independent_desktop", None),
+    ("probe", "worker_id", "another-worker"), ("probe", "contract_version", "unsupported"),
+    ("build", "artifact_sha256", None), ("build", "engine_sha256", "0" * 64),
+    ("build", "manifest_sha256", "0" * 64), ("build", "structured_version", 2),
+    ("build", "integration_version", 1), ("build", "engine_version", "unverified-engine"),
+    ("build", "source_revision", "other-revision"), ("build", "command", ["/game/other"]),
+    ("desktop", "rendered", False), ("desktop", "capture_ready", None), ("desktop", "input_ready", False),
+    ("status", "lifecycle", "running"), ("status", "lifecycle", "ended"),
+    ("status", "binding", {"run_id": "outside-owner"}), ("status", "game_running", True),
+    ("status", "human_control", True), ("status", "world_may_continue", True),
+    ("status", "held_keys", ["W"]), ("status", "held_buttons", ["left"]),
+    ("status", "independent_desktop", None), ("status", "infrastructure_error", "fixture-unhealthy"),
+    ("steam", "setup_active", True),
+])
+async def test_direct_launch_rejects_unknown_or_incompatible_passive_evidence(environment, section, field, value):
+    store, coord, plan, desktops = environment
+    desktop = desktops["worker-1"]
+    target = desktop.status if section == "status" else desktop.probe if section == "probe" else desktop.probe[section]
+    if value is None:
+        target.pop(field, None)
+    else:
+        target[field] = value
+    worker = store.require("workers", "worker-1")
+    worker["last_probe"] = {"ready": True, "independent_desktop": True}  # Cached metadata must never authorize launch.
+    store.put("workers", worker)
+    scenario = coord.save_scenario(plan)
+    with pytest.raises(ValueError, match="fresh desktop readiness is not verified"):
+        await coord.launch(scenario["id"], scenario["revision"], "bypass-attempt")
+    assert not store.list("runs") and not store.leases() and not store.command("launch", "bypass-attempt")
+    assert not coord.ai.backend.requests and not store.list("usage")
+    assert [path for path, _ in desktop.calls] == ["/prepare/probe", "/status"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", ["metadata-only", "missing-manifest-path", "changed-pack", "missing-engine", "changed-manifest"])
+async def test_new_launch_rechecks_local_pins_before_any_worker_probe(environment, damage):
+    from pathlib import Path
+    store, coord, plan, desktops = environment
+    build = store.require("builds", "build-1")
+    root = Path(build["manifest_path"]).parent
+    if damage == "metadata-only":
+        build.pop("engine_sha256")
+        store.put("builds", build)
+    elif damage == "missing-manifest-path":
+        build.pop("manifest_path")
+        store.put("builds", build)
+    elif damage == "changed-pack":
+        (root / "fixture.pck").write_bytes(b"changed fixture; never executed")
+    elif damage == "missing-engine":
+        removed = root / "fixture-engine"
+        assert removed.resolve().is_relative_to(root.resolve())
+        removed.unlink()
+    else:
+        Path(build["manifest_path"]).write_text("{}", encoding="utf-8")
+    scenario = coord.save_scenario(plan)
+    with pytest.raises(ValueError, match="legacy build|missing or changed|cannot be verified"):
+        await coord.launch(scenario["id"], 1, "unsupported")
+    assert not any(desktop.calls for desktop in desktops.values())
+    assert not store.list("runs") and not store.leases() and not coord.ai.backend.requests
+
+
+@pytest.mark.asyncio
+async def test_worker_exception_is_unknown_without_leaking_service_credentials(environment):
+    store, coord, plan, desktops = environment
+    desktops["worker-1"].request = AsyncMock(side_effect=RuntimeError("fixture-private-token"))
+    scenario = coord.save_scenario(plan)
+    with pytest.raises(ValueError, match="Authenticated passive probe/status unavailable") as error:
+        await coord.launch(scenario["id"], 1, "failed-probe")
+    assert "fixture-private-token" not in str(error.value)
+    assert not store.list("runs") and not store.leases() and not coord.ai.backend.requests
+
+
+@pytest.mark.asyncio
+async def test_final_shared_guard_reprobes_after_instance_selection(environment, profile, monkeypatch):
+    store, coord, _, desktops = environment
+    desktop = desktops[store.list("workers")[0]["id"]]
+    original, count = desktop.request, 0
+    async def became_unavailable(method, path, **kwargs):
+        nonlocal count
+        result = await original(method, path, **kwargs)
+        if path == "/prepare/probe":
+            count += 1
+            if count == 2:
+                result["desktop"]["input_ready"] = False
+        return result
+    monkeypatch.setattr(desktop, "request", became_unavailable)
+    with pytest.raises(ValueError, match="input_ready"):
+        await Instances(coord).start(InstanceRequest(agent_id=profile["id"], primary_goal="Probe again", request_id="recheck"))
+    assert count == 2
+    assert not store.list("runs") and not store.leases() and not store.command("instance", "recheck")
+    assert not coord.ai.backend.requests
+    assert all(path in {"/prepare/probe", "/status"} for path, _ in desktop.calls)
+
+
+@pytest.mark.asyncio
+async def test_direct_steam_launch_cannot_use_cached_account_entitlement(environment):
+    store, coord, plan, desktops = environment
+    store.put("accounts", {"id": "steam-fixture", "worker_id": "worker-1", "steam_id": "76561198000000001",
+                           "app_id": 3753020, "readiness": "ready", "last_verification": {"verified": True}})
+    plan["transport"].update(mode="steam", app_id=3753020)
+    plan["players"][0]["account_id"] = "steam-fixture"
+    scenario = coord.save_scenario(plan)
+    with pytest.raises(ValueError, match="Steam readiness is unknown.*No ENet fallback"):
+        await coord.launch(scenario["id"], 1, "steam-no-proof")
+    assert not store.list("runs") and not store.leases() and not coord.ai.backend.requests
+    assert all(path in {"/prepare/probe", "/status"} for path, _ in desktops["worker-1"].calls)
+
+
+@pytest.mark.asyncio
+async def test_exact_frozen_retry_skips_missing_build_provider_and_worker_checks(environment):
+    store, coord, plan, desktops = environment
+    scenario = coord.save_scenario(plan)
+    first = await coord.launch(scenario["id"], 1, "frozen")
+    before = copy.deepcopy(first)
+    calls = {key: list(desktop.calls) for key, desktop in desktops.items()}
+    store.delete("builds", "build-1")
+    coord.draining = True
+    coord.ai.validate = AsyncMock(side_effect=AssertionError("retry must not verify provider"))
+    assert await coord.launch(scenario["id"], 1, "frozen") == before
+    assert {key: desktop.calls for key, desktop in desktops.items()} == calls
+    coord.ai.validate.assert_not_awaited()
+    assert len(store.list("runs")) == 1
+
+
+@pytest.mark.asyncio
+async def test_drain_beginning_during_probe_prevents_acceptance(environment, monkeypatch):
+    store, coord, plan, desktops = environment
+    desktop = desktops["worker-1"]
+    original = desktop.request
+    async def drain_during_status(method, path, **kwargs):
+        result = await original(method, path, **kwargs)
+        if path == "/status":
+            coord.draining = True
+        return result
+    monkeypatch.setattr(desktop, "request", drain_during_status)
+    scenario = coord.save_scenario(plan)
+    with pytest.raises(ValueError, match="draining"):
+        await coord.launch(scenario["id"], 1, "drain-race")
+    assert not store.list("runs") and not store.leases() and not coord.ai.backend.requests
+
+
+def test_instance_http_cannot_bypass_positive_probe_with_registered_metadata(environment, profile, tmp_path):
+    store, _, _, desktops = environment
+    app = offline_app(tmp_path / "http-controller")
+    for kind in ("settings", "projects", "builds", "workers", "agents"):
+        for record in store.list(kind):
+            if record.get("id"):
+                app.state.store.put(kind, record)
+    for desktop in desktops.values():
+        desktop.probe = {"ok": True}
+    app.state.coordinator.client_factory = lambda record: desktops[record["id"]]
+    with TestClient(app) as client:
+        result = client.post("/api/instances", json={"agent_id": profile["id"], "primary_goal": "Bypass metadata", "request_id": "http-no-probe"},
+                             headers={"X-ASHAD-Request": "1"})
+        assert result.status_code == 422 and "fresh positive" in result.json()["detail"]
+        assert not app.state.store.list("runs") and not app.state.store.leases()
+        assert not app.state.store.list("usage")
+    assert all(path in {"/prepare/probe", "/status"} for desktop in desktops.values() for path, _ in desktop.calls)

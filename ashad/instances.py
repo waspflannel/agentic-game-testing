@@ -40,33 +40,25 @@ class Instances:
             self.coordinator.require_instance_slot()
             Projects(self.store).project_for_agent(request.agent_id, request.project_id)
             profile = AgentProfiles(self.store, self.coordinator.ai).validated(request.agent_id)
-            build = self.store.require("builds", profile["build_id"])
+            build = self.coordinator.validated_build(profile["build_id"])
             occupied = {lease["resource_id"] for lease in self.store.leases() if lease["kind"] == "worker"}
             for run in self.store.list("runs"):
                 if run["state"] in ACTIVE_STATES | {"Queued"}:
                     occupied.update(p["worker_id"] for p in run["plan"]["players"])
             accounts = {a["worker_id"]: a for a in self.store.list("accounts")
-                        if a.get("readiness") == "ready" and a.get("steam_id") and a.get("app_id") == build.get("steam_app_id")}
+                        if a.get("steam_id") and a.get("app_id") == build.get("steam_app_id")}
             workers = [w for w in self.store.list("workers") if w.get("enabled", True) and w["id"] not in occupied
                        and (w["id"] in accounts if request.transport == "steam" else w.get("host_address"))]
             worker = None
             for candidate in workers:
-                try:
-                    health = await self.coordinator.client(candidate["id"]).request("GET", "/health")
-                except Exception:
-                    continue
-                if health.get("independent_desktop") is False or health.get("steam", {}).get("setup_active"):
-                    continue
-                measured = health.get("build") or {}
-                if any(build.get(expected) and measured.get(actual) and measured[actual] != build[expected]
-                       for actual, expected in (("executable_sha256", "engine_sha256"), ("artifact_sha256", "artifact_sha256"))):
-                    continue
-                if health.get("lifecycle", "unbound") in {"unbound", "ended"}:
+                environment = await self.coordinator.inspect_worker_environment(build, candidate["id"], account=accounts.get(candidate["id"]))
+                if environment["ready"] and (request.transport != "steam" or environment["steam"]["ready"]):
                     worker = candidate
                     break
             if worker is None:
-                requirement = " with a verified, licensed Steam account" if request.transport == "steam" else ""
-                raise ValueError(f"No available desktop for this build{requirement}. Check Settings and the mounted build, or stop an existing instance.")
+                if request.transport == "steam":
+                    raise ValueError("No available desktop with a fresh verified, licensed Steam identity for this build. Steam readiness is unknown or unverified; cached account readiness is insufficient. No ENet fallback is allowed.")
+                raise ValueError("No available desktop with fresh positive build, rendering, capture, input and idle probes. Check Settings and the mounted build, or stop an existing instance.")
             plan = Plan(agent_id=profile["id"], build_id=profile["build_id"], model=profile["model"],
                         title=payload["primary_goal"][:100], intent=payload["primary_goal"], primary_goal=payload["primary_goal"]).model_dump()
             plan["players"][0].update(name="Player 1", goal=payload["primary_goal"], goal_id="", worker_id=worker["id"],

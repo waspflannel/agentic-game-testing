@@ -12,6 +12,10 @@ This repository contains only the ASHAD web app, controller, worker services, su
 
 The dashboard can start without game files. Agent tuning and gameplay require a separately supplied compatible game build, pinned source/control evidence, and a registered manifest. The default local manifest location is `builds/agronauts-decisions/manifest.json`; game files remain local and ignored.
 
+## Planned desktop refactor
+
+The [Electron workspace refactor plan](<docs/electron-workspace-refactor-plan.md>) records the agreed Codex-style desktop direction, project/instance model, implementation milestones, migration safeguards, and acceptance checks. It describes planned work, not features already implemented; the instructions below remain the current supported workflow.
+
 ## Start locally
 
 From PowerShell in your clone directory:

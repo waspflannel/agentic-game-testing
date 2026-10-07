@@ -31,6 +31,7 @@
 !/docs/future-work.md
 !/docs/architecture.md
 !/docs/api-contract.md
+!/docs/electron-workspace-refactor-plan.md
 
 # Generated files and secrets must never accompany source.
 __pycache__/

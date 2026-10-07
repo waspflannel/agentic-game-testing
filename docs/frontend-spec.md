@@ -422,7 +422,7 @@ The order lets you use the new UI for real as early as possible. After C4 you ca
   - Update asset paths in `test_ui_http.py` (`style.css` → `app.css`).
   - Add: `esc()` escapes untrusted text; the router maps legacy links; a late response for an old route is dropped.
 - **Review:** open the app. Check the title bar, the empty three-pane shell and the styleguide page. Judge colour, type size, density and focus ring. **This is the main look-and-feel review.**
-- **Notes:** Added `core.js` (pure helpers) so tests can import renderer logic without a DOM. `.js` served as `text/javascript`. Inspector hidden below 1280px until C10. Old asset references updated in `scripts/test.ps1` and `scripts/probe-desktop-runtime.py`. `test_ui_http.py` no longer asserts ChatGPT sign-in text in the renderer; that comes back in C9.
+- **Notes:** Added `core.js` (pure helpers) so tests can import renderer logic without a DOM. `.js` served as `text/javascript`. Inspector hidden below 1280px until C10. Old asset references updated in `scripts/test.ps1` and `scripts/probe-desktop-runtime.py`; the old-dashboard baseline capture script was deleted. `test_ui_http.py` no longer asserts ChatGPT sign-in text in the renderer; that comes back in C9.
 
 #### C2: Sidebar
 

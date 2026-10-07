@@ -21,6 +21,8 @@
 !/scripts/test.ps1
 !/scripts/provision-workers.ps1
 !/scripts/test-dashboard-polling.js
+!/scripts/probe-desktop-runtime.py
+!/scripts/capture-dashboard-baseline.js
 /tests/test_game_integration.py
 
 # App documentation only; omit local validation history and game-layer designs.

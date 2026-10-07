@@ -7,12 +7,14 @@ def acquire(path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     stream = path.open("a+b")
-    stream.seek(0)
-    if stream.read(1) == b"":
-        stream.write(b"0")
-        stream.flush()
-    stream.seek(0)
     try:
+        # Windows byte-range locks can reject this read before locking() runs.
+        # Close the handle and report the same ownership failure in either case.
+        stream.seek(0)
+        if stream.read(1) == b"":
+            stream.write(b"0")
+            stream.flush()
+        stream.seek(0)
         if os.name == "nt":
             import msvcrt
             msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)

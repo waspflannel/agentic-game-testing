@@ -1,6 +1,6 @@
 # Electron Game-Testing Workspace Refactor Plan
 
-**Status:** Planning baseline. The product direction below is agreed; implementation has not started under this plan.
+**Status:** Implementation in progress. P0 baseline and executable transport/resource investigation are underway; see the execution log for verified results and remaining gates.
 
 **Target:** The ASHADBOT application in this repository, not the DeepSeek Harness GUI or the Codex application.
 
@@ -504,11 +504,11 @@ Every milestone should be reviewable and testable independently. The checkboxes 
 
 **Purpose:** Establish a known starting point and discover packaging blockers before redesign work depends on them.
 
-- [ ] P0.1 Record a clean baseline of the existing Python/Node checks and any pre-existing failures; do not relabel historical test counts as a current pass.
-- [ ] P0.2 Capture the current dashboard in supported states using test data: no setup, saved agent, active/paused/ended instance, missing feed, and provider error.
-- [ ] P0.3 Validate how a packaged Python runtime locates the app, static assets, keyring backend, Codex SDK resources, and independent watchdog entry points.
-- [ ] P0.4 Choose one Electron packaging approach and a reliable owned-backend readiness/shutdown mechanism. Record concrete versions and tradeoffs in the decision log.
-- [ ] P0.5 Identify the current data/worker registration/build paths and the required migration backup. Do not modify or copy live runtime data during discovery.
+- [x] P0.1 Record a clean baseline of the existing Python/Node checks and any pre-existing failures; do not relabel historical test counts as a current pass.
+- [x] P0.2 Capture the current dashboard in supported states using test data: no setup, saved agent, active/paused/ended instance, missing feed, and provider error.
+- [x] P0.3 Validate how a packaged Python runtime locates the app, static assets, keyring backend, Codex SDK resources, and independent watchdog entry points.
+- [x] P0.4 Choose one Electron packaging approach and a reliable owned-backend readiness/shutdown mechanism. Record concrete versions and tradeoffs in the decision log.
+- [x] P0.5 Identify the current data/worker registration/build paths and the required migration backup. Do not modify or copy live runtime data during discovery.
 
 **Exit criteria:** Baseline evidence is recorded; startup, package-resource, and graceful-shutdown approaches have a small runnable proof. No inference or gameplay is needed for this phase.
 
@@ -712,12 +712,28 @@ Use this section as the durable handoff. For each completed slice, record what c
 
 | Milestone | Status | Change / verification reference | Remaining limitations |
 | --- | --- | --- | --- |
-| P0 — Baseline and packaging investigation | Not started | — | Baseline and executable packaging proof required. |
+| P0 — Baseline and packaging investigation | Complete (offline scope) | P0 execution record below; runnable resource/transport checks and seven fixture captures | Actual application/installer, credential access, and live acceptance remain P1/P5 gates. |
 | P1 — Electron shell | Not started | — | Desktop lifecycle/security/packaging not implemented. |
 | P2 — Projects and admission | Not started | — | Project records/migration and fixed global admission not implemented. |
 | P3 — Navigation and setup | Not started | — | Project sidebar and integrated setup not implemented. |
 | P4 — Instance workspace and inspector | Not started | — | Codex-style composition and richer telemetry presentation not implemented. |
 | P5 — Packaged acceptance and handoff | Not started | — | No packaged or live acceptance under this plan. |
+
+### P0 execution record — 2026-10-07
+
+- Preserved the only pre-existing tracked changes: this approved plan, its README link, and the documentation allowlist; committed exactly those files as `b46ebb1` (documentation baseline). No unrelated changes were staged.
+- Unchanged baseline: `scripts/test.ps1` passed **344 Python tests**, dashboard syntax, and **45 Node tests**. One pre-existing FastAPI/Starlette warning recommends `httpx2` for TestClient; it is not a test failure. Environment: Python 3.13.7, Node 22.20.0, npm 10.9.3.
+- Fixture dashboard: [capture server](<../scripts/capture-dashboard-baseline.js>) self-check and syntax passed; seven browser states plus real five-second polling/focus/disclosure/feed stability checks passed. [Local evidence/reproduction](<../.artifacts/electron-baseline/README.md>) and PNGs are deliberately ignored artifacts. All data/frames/errors are labelled synthetic; no inference/game/worker/controller connection. Browser and fixture server were stopped.
+- Resource proof: [offline probe](<../scripts/probe-desktop-runtime.py>) and [tests](<../tests/test_desktop_resources.py>) check static HTTP assets, fixture bootstrap, SQLite lifespan drain/reopen, Windows keyring backend import/priority **without reading or changing credentials**, Codex binary/resources/version, and independent controller/watchdog interpreter imports and process locks. No watchdog loop or real controller is launched by the probe.
+- **P0 decision — packaging:** pin Electron **44.6.0**, electron-builder **26.15.3**, private full CPython **3.13.16 x64** with verified archive SHA-256 `bbf675bb5e763c1efbb09a3a461b259d81598a63c30c4b0d7ea11b9f063df159`. Use standard builder `extraResources` outside ASAR: Python, complete installed dependencies/Codex platform resources, app/static assets and existing integration utility. Build-time dependency resolution produced 49 exact pins; P1 must retain a committed lock. Do not use PyInstaller: keeping `sys.executable -m ashad.watchdog` and normal package/resource discovery avoids special frozen-entry dispatch. No custom updater.
+- Actual builder `--win --x64 --dir --publish never` fixture package spawned its **own** Python 3.13.16 with `-I -B`, from a separate working directory/path with spaces. Probe exit 0; Electron version verified as 44.6.0 after removing inherited `ELECTRON_RUN_AS_NODE`. [Packaged probe evidence](<../.artifacts/desktop packaging p0/packaged fixture/packaged-probe-result.json>) is a **no-window offline fixture**, not the delivered application/installer or live acceptance. Its copied app predates the lock fix and honestly records PermissionError rejection.
+- Found and corrected an existing Windows lock-reporting bug: a competing byte-range lock can reject the first read before the old exception handler. [Process lock](<../ashad/process_lock.py>) now closes the handle and reports actionable ownership consistently; [regression test](<../tests/test_process_lock.py>) verifies a real competing interpreter and reacquisition after release.
+- **P0 decision — transport:** use the same bound ephemeral loopback socket from selection through Uvicorn, per-launch random main-only owner key, and separately injected renderer-session header. Keys remain outside URLs, JS/storage and evidence. Main verifies `ashad-desktop/1` and exact launch identity, not generic health. [Transport proof](<../tests/test_desktop_transport.py>) uses real Uvicorn/HTTP: unauthorized assets/API/camera fail, origin/host forgery fails, JSON/static/mock multipart camera authenticate, session key cannot shut down, refused drain leaves service available, confirmed drain gracefully exits/releases socket. Five focused resource/transport/lock tests passed. P1 still must wire the real drain and main-process injection.
+- **P0 data discovery:** metadata names only, no database queries/copies or credential contents: controller root `.data/controller` contains SQLite WAL/SHM, run ledgers/evidence, locks, logs and managed `codex` home; local registration is `.data/workers.local.json`; secrets are in `.data/worker-secrets`; default external manifest is `builds/agronauts-decisions/manifest.json` with other local build revisions retained. Worker guide/provisioner names persistent ASHAD data/home Docker volumes and read-only mounts. Desktop import requires explicit user authorization, an idle/reconciled controller/watchdog/worker pool, consistent SQLite backup **plus** evidence/Codex/registration/external-path/volume inventory; never copy only a live WAL DB or assume keyring credentials transfer. No runtime data migrated.
+- Repository-wide discovery encountered old unreadable artifact directories. Authorized permission diagnosis verified an added current-user entry on the artifact root but stopped at unreadable/truncated descendants; no contents/owners changed. User switched session to full access. Scoped source/instruction discovery succeeded; no repository AGENTS instructions found. [Local permission report](<../.artifacts-permission-recovery/acl-report-a4375103512744e7b566b1cc8d2b8377.jsonl>) retains recovery command. No further permission edits.
+- Final P0 batch check: fixture server syntax/self-check passed; `scripts/test.ps1` passed **349 Python tests** (including five new proofs), the same existing warning, dashboard syntax and **45 Node tests**. Source/staged whitespace and file-scope review required before commit.
+- Version sources: [Electron registry](<https://registry.npmjs.org/electron/latest>), [builder registry](<https://registry.npmjs.org/electron-builder/latest>), [official Python Windows index](<https://www.python.org/ftp/python/index-windows.json>), [private archive](<https://www.python.org/ftp/python/3.13.16/python-3.13.16-amd64.zip>). Downloads and fixture package stay ignored, not release artifacts.
+- Remaining gates: actual window, application startup/drain/watchdog recovery, non-admin installer, credential/login/viewer and authorized bounded gameplay remain unverified; P0 never claims them.
 
 ### Decision entry template
 

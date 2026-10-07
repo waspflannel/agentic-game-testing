@@ -1,0 +1,60 @@
+# Publish only the ASHAD app; game sources, builds, local data and reports stay local.
+/*
+!/.gitignore
+!/README.md
+!/requirements.txt
+!/ashad/
+!/worker/
+!/integration/
+!/scripts/
+!/tests/
+!/docs/
+
+# Python-side controller dependency only, not the Godot AI layer or catalog tools.
+/integration/*
+!/integration/fixtures.py
+
+# App setup and verification only, never game-patching or game-build scripts.
+/scripts/*
+!/scripts/setup.ps1
+!/scripts/start.ps1
+!/scripts/test.ps1
+!/scripts/provision-workers.ps1
+!/scripts/test-dashboard-polling.js
+/tests/test_game_integration.py
+
+# App documentation only; omit local validation history and game-layer designs.
+/docs/*
+!/docs/ui.md
+!/docs/workers.md
+!/docs/structured-testing.md
+!/docs/future-work.md
+!/docs/architecture.md
+!/docs/api-contract.md
+
+# Generated files and secrets must never accompany source.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+node_modules/
+.env
+.env.*
+*.log
+*.sqlite*
+*.db
+*.pem
+*.key
+*.pfx
+*.p12
+# Game projects/assets are external even if copied into an app directory.
+.godot/
+*.gd
+*.godot
+*.tscn
+*.tres
+*.pck
+*.exe
+*.dll
+*.so
+*.zip

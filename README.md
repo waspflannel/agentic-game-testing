@@ -16,6 +16,24 @@ The dashboard can start without game files. Agent tuning and gameplay require a 
 
 The [Electron workspace refactor plan](<docs/electron-workspace-refactor-plan.md>) records the agreed Codex-style desktop direction, project/instance model, implementation milestones, migration safeguards, and acceptance checks. It describes planned work, not features already implemented; the instructions below remain the current supported workflow.
 
+## Desktop shell (Windows x64)
+
+The Electron shell and private-runtime build tooling are implemented; the project-workspace refactor and installed/live release acceptance are still in progress. The shell currently opens the existing dashboard. No legacy data, worker registrations, game builds or credentials are imported automatically.
+
+Build locally with Node.js 22.12+ and npm (no system Python required for the desktop runtime):
+
+```powershell
+npm --prefix desktop ci
+npm --prefix desktop run build:dir
+.\desktop\output\win-unpacked\ASHAD.exe
+# Optional unsigned, per-user installer:
+npm --prefix desktop run build:nsis
+```
+
+Build preparation downloads verified private Python 3.13.16 and pinned dependencies; game files and Docker Desktop remain separately supplied prerequisites. The application writes to `%APPDATA%\ASHAD\controller`, not its installation directory. For isolated diagnostic testing only, pass `--user-data-dir="C:\absolute\fresh test data"`; this changes the store, not authentication or runtime safeguards. Do not point it at live legacy data as a substitute for migration.
+
+Quit lists owning instances and in-flight work. **Cancel** leaves them unchanged; **Stop/cancel and quit** waits for confirmed teardown and clean controller exit. Failed teardown keeps the app open for reconciliation. Closing a human viewer never hands control back automatically. See the [execution log](<docs/electron-workspace-refactor-plan.md#p1-execution-record--2026-10-07-in-progress>) for precise verified scope and remaining gates.
+
 ## Start locally
 
 From PowerShell in your clone directory:

@@ -29,20 +29,23 @@ async def desktop_server(tmp_path):
     state = {"can_drain": False}
 
     @app.get("/fixture-camera")
-    async def camera():
+    async def camera(hold: bool = False):
         async def frames():
             yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\nfixture-not-gameplay\r\n"
+            if hold:
+                await asyncio.Event().wait()
         return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame")
 
-    async def shutdown():
+    async def shutdown(**options):
         if not state["can_drain"]:
-            return False
+            return {"drained": False}
         server.should_exit = True
-        return True
+        return {"drained": True}
 
     wrapped = DesktopBoundary(app, port=port, session_key=session, owner_key=owner,
                               instance_id=instance, shutdown=shutdown)
-    server = uvicorn.Server(uvicorn.Config(wrapped, log_level="error", access_log=False))
+    server = uvicorn.Server(uvicorn.Config(wrapped, log_level="error", access_log=False,
+                                          timeout_graceful_shutdown=.2))
     task = asyncio.create_task(server.serve(sockets=[listener]))
     try:
         async with asyncio.timeout(10):
@@ -90,6 +93,9 @@ async def test_owned_readiness_assets_camera_and_confirmed_shutdown(tmp_path):
         for forged in ({"Origin": "https://127.0.0.1:" + str(port)}, {"Host": "attacker.invalid"}):
             assert (await client.get("/api/health", headers={**headers, **forged})).status_code == 403
         assert (await client.post("/_desktop/shutdown", headers=headers)).status_code == 401
+        for options in ({"stop_runs": 1}, {"command": "shell"}, []):
+            assert (await client.post("/_desktop/shutdown", headers=admin, json=options)).status_code == 422
+        assert (await client.post("/_desktop/shutdown", headers=admin, content=b"x" * 1025)).status_code == 413
         assert (await client.post("/_desktop/shutdown", headers=admin)).status_code == 409
         assert (await client.get("/api/health", headers=headers)).status_code == 200
         state["can_drain"] = True
@@ -97,6 +103,25 @@ async def test_owned_readiness_assets_camera_and_confirmed_shutdown(tmp_path):
     # Lifespan closed the real SQLite handle; no controller process was killed.
     with socket.socket() as released:
         released.bind(("127.0.0.1", port))
+
+
+@pytest.mark.asyncio
+async def test_open_camera_cannot_wedge_confirmed_server_resource_drain(tmp_path):
+    camera = None
+    try:
+        async with desktop_server(tmp_path) as (client, state, session, owner, _, _):
+            camera = httpx.AsyncClient(base_url=str(client.base_url), trust_env=False)
+            response = await camera.send(camera.build_request("GET", "/fixture-camera?hold=true",
+                headers={"X-ASHAD-Desktop": session}), stream=True)
+            assert response.status_code == 200
+            chunks = response.aiter_bytes()
+            assert b"fixture-not-gameplay" in await anext(chunks)
+            state["can_drain"] = True
+            assert (await client.post("/_desktop/shutdown", headers={"X-ASHAD-Owner": owner})).json() == {"drained": True}
+        # Exit completed even though this client deliberately retained its camera.
+    finally:
+        if camera:
+            await camera.aclose()
 
 
 def test_transport_rejects_weak_or_reused_keys():

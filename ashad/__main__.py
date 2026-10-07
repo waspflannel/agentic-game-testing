@@ -11,7 +11,15 @@ def main():
     parser = argparse.ArgumentParser(description="ASHAD local dashboard/controller")
     parser.add_argument("--port", type=int, default=8740)
     parser.add_argument("--no-watchdog", action="store_true", help="Tests only: do not start independent deadline watchdog")
+    parser.add_argument("--desktop", action="store_true", help="Owned Electron controller; bounded configuration arrives on stdin")
     args = parser.parse_args()
+    if args.desktop:
+        from .desktop import main as desktop_main
+        try:
+            desktop_main()
+        except (ValueError, RuntimeError) as exc:
+            raise SystemExit(str(exc)) from None
+        return
     from .process_lock import acquire
     root = Path(os.environ.get("ASHAD_DATA", Path(__file__).resolve().parents[1] / ".data" / "controller"))
     try:

@@ -36,6 +36,14 @@ Stop and teardown reconciliation retain their existing safety behavior. A failed
 
 The UI retains labelled inputs, visible keyboard focus, native-dialog focus management, status announcements, responsive navigation and reduced-motion support. Feed refreshes must not overwrite active form input or misrepresent stale frames as fresh.
 
+## Desktop shell
+
+The Windows Electron shell opens this dashboard using an authenticated, owned loopback controller and bundled Python. It starts with a separate user-data store; selecting a build does not import legacy history or launch a game. The build-registration dialog offers native manifest/folder selection; cancelling selection leaves the form unchanged.
+
+Quit checks queued/live/unresolved ownership and in-flight tuning/sign-in/setup operations. Cancel does not stop or resume anything. Confirmed Stop/cancel and quit uses normal runtime teardown and waits for a clean controller exit; unknown teardown keeps the application open for recovery. A renderer reload reconnects to the same controller. Human viewers use an isolated session and closing one does not hand back control.
+
+Unsent tuning, instance and operating-settings forms warn before navigation/quit. Integrated setup-modal draft handling belongs to the remaining workspace refactor. Installer, live account/viewer and gameplay acceptance are not implied by shell unit tests. See the [desktop build instructions](<../README.md#desktop-shell-windows-x64>) and [execution log](<electron-workspace-refactor-plan.md#16-execution-and-decision-log>).
+
 ## Compatibility and verification
 
 Advanced scenarios, multiplayer scheduling, saved starts, balancing, run comparison, reviews and custom success predicates are deferred; their scope and restoration gates are in [future work](future-work.md). Existing records and evidence are preserved. Retired mutation endpoints remain unavailable even if old links or payloads are retained in history.

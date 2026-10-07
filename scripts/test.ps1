@@ -5,5 +5,7 @@ Set-Location -LiteralPath $workspace
 if ($LASTEXITCODE -ne 0) { throw 'ASHAD automated checks failed.' }
 & node --check ashad/static/app.js
 if ($LASTEXITCODE -ne 0) { throw 'Dashboard syntax check failed.' }
-& node --test tests/test_dashboard_state.js
-if ($LASTEXITCODE -ne 0) { throw 'Dashboard state checks failed.' }
+& node --check desktop/main.cjs
+if ($LASTEXITCODE -ne 0) { throw 'Desktop shell syntax check failed.' }
+& node --test tests/test_dashboard_state.js tests/test_desktop_dashboard.js tests/test_desktop_shell.js
+if ($LASTEXITCODE -ne 0) { throw 'Dashboard and desktop boundary checks failed.' }

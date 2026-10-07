@@ -9,6 +9,18 @@
 !/scripts/
 !/tests/
 !/docs/
+!/desktop/
+
+# Desktop sources only; private runtimes, downloads and installers stay local.
+/desktop/*
+!/desktop/main.cjs
+!/desktop/preload.cjs
+!/desktop/shell.cjs
+!/desktop/prepare.cjs
+!/desktop/status.html
+!/desktop/package.json
+!/desktop/package-lock.json
+!/desktop/python-requirements.lock
 
 # Python-side controller dependency only, not the Godot AI layer or catalog tools.
 /integration/*

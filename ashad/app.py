@@ -143,6 +143,8 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
     app = FastAPI(title="ASHAD Bot", version="1.0.0", lifespan=lifespan)
     app.state.store, app.state.coordinator, app.state.ai, app.state.credentials = store, coordinator, ai, credentials
     app.state.profiles = profiles
+    app.state.operations = {}
+    app.state.tuning_task = None
 
     @app.middleware("http")
     async def local_boundary(request: Request, call_next):
@@ -158,7 +160,18 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
             origin = request.headers.get("origin")
             if request.headers.get("x-ashad-request") != "1" or (origin and urlparse(origin).netloc != request.headers.get("host")):
                 return JSONResponse({"detail": "Use the local ASHAD dashboard; cross-origin writes are blocked."}, status_code=403)
-        response = await call_next(request)
+        mutation = request.method in {"POST", "PUT", "PATCH", "DELETE"}
+        if mutation and coordinator.draining:
+            return JSONResponse({"detail": "The controller is draining; wait for shutdown or retry afterward."}, status_code=409)
+        operation = asyncio.current_task() if mutation else None
+        if operation:
+            app.state.operations[operation] = {"kind": "tuning" if request.url.path == "/api/agents/tune" else "mutation",
+                                               "path": request.url.path}
+        try:
+            response = await call_next(request)
+        finally:
+            if operation:
+                app.state.operations.pop(operation, None)
         response.headers.update({"X-Content-Type-Options": "nosniff", "Referrer-Policy": "no-referrer", "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"})
         return response
 
@@ -198,7 +211,15 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
     @app.post("/api/agents/tune")
     async def tune_agent(body: dict):
         model = Plan(model=body.get("model", MODEL)).model
-        return await profiles.tune(body.get("build_id"), model)
+        if app.state.tuning_task:
+            raise ValueError("An agent is already being tuned. Wait for it to finish.")
+        app.state.tuning_task = asyncio.current_task()
+        try:
+            return await profiles.tune(body.get("build_id"), model)
+        except asyncio.CancelledError:
+            return JSONResponse({"detail": "Agent tuning was cancelled; no incomplete profile was saved."}, status_code=409)
+        finally:
+            app.state.tuning_task = None
 
     @app.post("/api/instances")
     async def new_instance(body: InstanceRequest):
@@ -466,28 +487,7 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
 
     @app.post("/api/runs/{run_id}/reconcile")
     async def reconcile(run_id: str):
-        async with coordinator.lock:
-            run = store.require("runs", run_id)
-            if run["state"] != "Ended":
-                raise ValueError("Reconciliation is for ended runs with unresolved teardown")
-            results = []
-            for pid, ps in run["players"].items():
-                if ps["teardown_confirmed"]:
-                    continue
-                try:
-                    result = await coordinator.request(ps["worker_id"], "POST", "/stop", {"epoch": ps["epoch"], "terminate": True, "reason": "human_reconciliation"})
-                    ps["teardown_confirmed"] = result.get("teardown_confirmed") is True
-                    if ps["teardown_confirmed"]:
-                        ps.update(phase="ended", launched=False)
-                    results.append({"player_id": pid, "confirmed": ps["teardown_confirmed"]})
-                except Exception as exc:
-                    results.append({"player_id": pid, "confirmed": False, "reason": type(exc).__name__})
-            if all(p["teardown_confirmed"] for p in run["players"].values()):
-                store.release(run_id)
-            store.put("runs", run)
-            store.event(run_id, "teardown_reconciled", {"results": results, "actor": "human"})
-            await coordinator.collect_evidence(run_id)
-            return store.require("runs", run_id)
+        return await coordinator.reconcile(run_id)
 
     @app.delete("/api/{kind}/{record_id}")
     async def delete_catalog(kind: str, record_id: str):

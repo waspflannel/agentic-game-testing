@@ -45,6 +45,9 @@ const icons = {
 };
 const icon = name => `<svg class="icon" viewBox="0 0 24 24" aria-hidden="true">${icons[name] || icons.info}</svg>`;
 const state = {data:null,dataRevision:0,route:'sessions',parts:[],draft:null,run:null,events:[],eventNext:0,eventTotal:0,search:'',connected:true,polling:false,renderEpoch:0,codexLogin:null,authEpoch:0,tuning:false,tuneError:'',launching:false,launchError:''};
+function markDraftDirty(value){state.dirtyDraft=Boolean(value);globalThis.window?.ashadDesktop?.setDirtyDraft(state.dirtyDraft)?.catch(error=>toast(errorMessage(error),true));}
+function allowDraftNavigation(next){if(!state.dirtyDraft||next===state.parts.join('/'))return true;if(globalThis.window?.confirm?.('Discard the unsent form changes and leave this page?')===false)return false;markDraftDirty(false);return true;}
+async function chooseBuildManifest(trigger){const form=trigger.closest('form'),field=form?.querySelector('[name="manifest_path"]');if(!field)return;const selected=await globalThis.window?.ashadDesktop?.chooseBuild(trigger.dataset.kind||'manifest');if(!selected||!form.isConnected||form!==$('#modal-form'))return;field.value=selected;field.dispatchEvent(new Event('input',{bubbles:true}));field.focus();}
 const activeStates = ['queued','starting','running','paused','investigating','stopping'];
 const active = r => activeStates.includes(String(r.state).toLowerCase());
 const known = v => v === undefined || v === null || v === '' ? 'Unknown' : esc(v);
@@ -194,7 +197,7 @@ async function tuneAgent() {
   const profile=await api('/api/agents/tune','POST',payload);
   state.dataRevision++;
   state.data.agents=[profile,...arr(state.data.agents).filter(agent=>agent.id!==profile.id)];
-  if(epoch===state.renderEpoch)navigate(`agents/${profile.id}`);
+  if(epoch===state.renderEpoch){markDraftDirty(false);navigate(`agents/${profile.id}`);}
   toast('Agent tuned. Its game guide is saved and ready for a new instance.');
  } catch(error) {state.tuneError=errorMessage(error);throw error;}
  finally {state.tuning=false;if(state.route==='agents')render(true);}
@@ -211,7 +214,7 @@ async function startInstance() {
   const run=await api('/api/instances','POST',payload);
   state.dataRevision++;
   state.data.runs=[run,...arr(state.data.runs).filter(item=>item.id!==run.id)];
-  if(epoch===state.renderEpoch)navigate(`runs/${run.id}`);
+  if(epoch===state.renderEpoch){markDraftDirty(false);navigate(`runs/${run.id}`);}
   toast('Instance started. Follow the game and agent in Sessions.');
  } catch(error) {state.launchError=errorMessage(error);throw error;}
  finally {state.launching=false;if(state.route==='new')render(true);}
@@ -389,7 +392,7 @@ function usageView() {
 function modal(name,body,submitLabel,onSubmit,{danger=false,wide=false}={}){const d=$('#dialog');d.className=wide?'feed-detail-modal':'';stopCameras(d);d.innerHTML=`<div class="dialog-head"><h2 id="dialog-title">${esc(name)}</h2><button type="button" class="icon-button" data-action="close-dialog" aria-label="Close dialog">${icon('close')}</button></div><form id="modal-form"><div class="dialog-body">${body}</div>${submitLabel?`<div class="dialog-actions">${button('Cancel','close-dialog',null,'ghost')}<button class="button ${danger?'danger':'primary'}" type="submit">${esc(submitLabel)}</button></div>`:''}</form>`;const form=$('#modal-form');form.dataset.requestId=crypto.randomUUID();form.onsubmit=async e=>{e.preventDefault();const btn=$('button[type="submit"]',form);if(btn?.disabled)return;if(!form.reportValidity())return;try{if(btn)btn.disabled=true;await onSubmit(Object.fromEntries(new FormData(form)),form);if(d.open&&$('#modal-form')===form)d.close();}catch(error){if(d.open&&$('#modal-form')===form)toast(errorMessage(error),true);}finally{if(btn)btn.disabled=false;}};if(!d.open)d.showModal();bindImages();}
 function dialogField(label,name,value='',type='text',help='',required=false){return `<div class="field"><label for="modal-${name}">${esc(label)}</label>${type==='textarea'?`<textarea id="modal-${name}" name="${esc(name)}" ${required?'required':''}>${esc(value)}</textarea>`:`<input id="modal-${name}" name="${esc(name)}" type="${type}" value="${esc(value)}" ${required?'required':''} ${type==='password'?'autocomplete="new-password" spellcheck="false"':''}>`}${help?`<small>${esc(help)}</small>`:''}</div>`;}
 function dialogSelect(label,name,options,value){return `<div class="field"><label for="modal-${name}">${esc(label)}</label><select id="modal-${name}" name="${esc(name)}">${options.map(o=>{const [v,l]=Array.isArray(o)?o:[o,title(o)];return `<option value="${esc(v)}" ${String(value??'')===String(v)?'selected':''}>${esc(l)}</option>`;}).join('')}</select></div>`;}
-function entityModal(kind,entity={}){const edit=Boolean(entity.id);const names={builds:'build',workers:'environment',accounts:'Steam account'};let fields=dialogField('Name','name',entity.name||'','text','',true);if(kind==='builds')fields+=dialogField('Build manifest path','manifest_path',entity.manifest_path||'','text','An absolute path accessible to the coordinator. Import verifies artifact and source hashes.',true);if(kind==='workers')fields+=dialogField('Worker service URL','url',entity.url||'','url','For example http://worker-host:8766',true)+dialogField(edit?'Replace worker token (leave empty to retain)':'Worker authentication token','token','','password','Stored only by the backend credential store.',!edit)+dialogField('Desktop setup URL','desktop_url',entity.desktop_url||'','url','The worker noVNC desktop, commonly port 6080.')+dialogField('Private host address','host_address',entity.host_address||'','text','Reachable ENet host address for other environments.')+`<label class="checkbox-row"><input type="checkbox" name="enabled" ${entity.enabled===false?'':'checked'}>Environment enabled for allocation</label>`;if(kind==='accounts')fields+=dialogSelect('Assigned environment','worker_id',entityOptions('workers','Select environment'),entity.worker_id)+dialogField('Persistent Steam ID','steam_id',entity.steam_id||'','text','Complete sign-in in the worker desktop first.',true)+dialogField('Real game App ID','app_id',entity.app_id||'','number','Use the selected licensed game App ID.',true);modal(`${edit?'Edit':'Add'} ${names[kind]}`,`<div class="field-grid" style="grid-template-columns:1fr">${fields}</div>`,'Save '+names[kind],async (data,form)=>{const payload={...data};if(edit)payload.id=entity.id;if(kind==='workers'){payload.enabled=data.enabled==='on';if(!data.token)delete payload.token;}if(kind==='accounts'){payload.app_id=Number(data.app_id);payload.readiness=entity.readiness||'human_sign_in_required';}await api(`/api/${kind}`,'POST',payload);await refresh();render();toast(`${title(names[kind])} saved.`);});}
+function entityModal(kind,entity={}){const edit=Boolean(entity.id);const names={builds:'build',workers:'environment',accounts:'Steam account'};let fields=dialogField('Name','name',entity.name||'','text','',true);if(kind==='builds')fields+=dialogField('Build manifest path','manifest_path',entity.manifest_path||'','text','An absolute path accessible to the coordinator. Import verifies artifact and source hashes.',true)+(globalThis.window?.ashadDesktop?.chooseBuild?`<div class="actions">${button('Choose manifest…','choose-build',null,'ghost','data-kind="manifest"')}${button('Choose build folder…','choose-build',null,'ghost','data-kind="folder"')}</div>`:'');if(kind==='workers')fields+=dialogField('Worker service URL','url',entity.url||'','url','For example http://worker-host:8766',true)+dialogField(edit?'Replace worker token (leave empty to retain)':'Worker authentication token','token','','password','Stored only by the backend credential store.',!edit)+dialogField('Desktop setup URL','desktop_url',entity.desktop_url||'','url','The worker noVNC desktop, commonly port 6080.')+dialogField('Private host address','host_address',entity.host_address||'','text','Reachable ENet host address for other environments.')+`<label class="checkbox-row"><input type="checkbox" name="enabled" ${entity.enabled===false?'':'checked'}>Environment enabled for allocation</label>`;if(kind==='accounts')fields+=dialogSelect('Assigned environment','worker_id',entityOptions('workers','Select environment'),entity.worker_id)+dialogField('Persistent Steam ID','steam_id',entity.steam_id||'','text','Complete sign-in in the worker desktop first.',true)+dialogField('Real game App ID','app_id',entity.app_id||'','number','Use the selected licensed game App ID.',true);modal(`${edit?'Edit':'Add'} ${names[kind]}`,`<div class="field-grid" style="grid-template-columns:1fr">${fields}</div>`,'Save '+names[kind],async (data,form)=>{const payload={...data};if(edit)payload.id=entity.id;if(kind==='workers'){payload.enabled=data.enabled==='on';if(!data.token)delete payload.token;}if(kind==='accounts'){payload.app_id=Number(data.app_id);payload.readiness=entity.readiness||'human_sign_in_required';}await api(`/api/${kind}`,'POST',payload);await refresh();render();toast(`${title(names[kind])} saved.`);});}
 
 async function loadEvents(append=false) {
  const runId = state.parts[1];
@@ -518,6 +521,7 @@ async function cancelGoalRecalculation(trigger) {
 const actions={
  menu:()=>{const open=document.body.classList.toggle('nav-open');syncNavigation();(open?$('.sidebar a'):$('.mobile-menu'))?.focus();},
  'close-dialog':()=>$('#dialog').close(),
+ 'choose-build':chooseBuildManifest,
  new:()=>navigate(arr(state.data.agents).length===1?`new/${state.data.agents[0].id}`:'agents'),
  pause:()=>controlDialog('pause'),resume:()=>controlDialog('resume'),stop:()=>controlDialog('stop'),terminate:()=>controlDialog('terminate'),extend:()=>controlDialog('extend'),
  takeover:el=>startTakeover(el.dataset.player),
@@ -549,6 +553,8 @@ const actions={
 };
 function render(background=false){const views={sessions:sessionsView,agents:agentsView,new:draftView,runs:runView,settings:settingsView,usage:usageView};shell((views[state.route]||sessionsView)(),background);document.title=`ASHAD — ${state.route==='runs'?(state.run?.plan?.title||'Instance'):title(state.route==='new'?'New instance':state.route)}`;}
 async function route() {
+ const next=location.hash.replace(/^#\/?/, '').split('/').filter(Boolean).join('/');
+ if(!allowDraftNavigation(next)){globalThis.history?.replaceState(null,'',`#/${state.parts.join('/')}`);return;}
  if ($('#dialog')?.open) $('#dialog').close();
  const epoch = ++state.renderEpoch;
  document.body.classList.remove('nav-open');
@@ -577,7 +583,7 @@ async function route() {
  if (epoch === state.renderEpoch) {render();if(previous!==state.parts.join('/'))globalThis.window?.scrollTo(0,0);}
 }
 document.addEventListener('click',async event=>{const el=event.target.closest('[data-action]');if(!el||el.disabled)return;const action=actions[el.dataset.action];if(!action)return;event.preventDefault();try{el.disabled=true;await action(el);}catch(error){toast(errorMessage(error),true);}finally{el.disabled=false;}});
-document.addEventListener('input',event=>{const el=event.target;if(el.dataset.path&&state.draft)set(state.draft,el.dataset.path,el.value);});
+document.addEventListener('input',event=>{const el=event.target;if(el.dataset.path&&state.draft)set(state.draft,el.dataset.path,el.value);if(el.closest('#instance-form,#tune-agent-form,#settings-form'))markDraftDirty(true);});
 document.addEventListener('change',event=>{const el=event.target;if(el.dataset.path&&el.tagName==='SELECT')el.dispatchEvent(new Event('input',{bubbles:true}));});
 document.addEventListener('keydown',event=>{if(event.target.id==='event-search'&&event.key==='Enter'){event.preventDefault();actions['search-events']().catch(e=>toast(errorMessage(e),true));}});
 document.addEventListener('submit',async event=>{
@@ -593,12 +599,13 @@ document.addEventListener('submit',async event=>{
   else {
    const data=Object.fromEntries(new FormData(form));
    for(const key of ['concurrent_sessions','storage_reserve_bytes','duration_seconds'])data[key]=data[key]===''?null:Number(data[key]);
-   await api('/api/settings','POST',data);await refresh();render();toast('Operating settings saved.');
+   await api('/api/settings','POST',data);markDraftDirty(false);await refresh();render();toast('Operating settings saved.');
   }
  }catch(error){toast(errorMessage(error),true);}finally{submit.disabled=false;}
 });
 window.addEventListener('hashchange',()=>route().catch(error=>toast(errorMessage(error),true)));
 window.addEventListener('resize',syncNavigation);
+window.addEventListener('beforeunload',event=>{if(state.dirtyDraft&&!window.ashadDesktop){event.preventDefault();event.returnValue='';}});
 $('#dialog').addEventListener('close',()=>{stopCameras($('#dialog'));const password=$('#takeover-password');if(password){password.value='';password.removeAttribute('value');}});
 setInterval(()=>{$$('[data-clock]').forEach(el=>el.textContent=new Date().toLocaleTimeString());$$('[data-deadline]').forEach(el=>el.textContent=countdown(el.dataset.deadline));$$('[data-age]').forEach(el=>{if(el.dataset.age)el.textContent=ago(isNaN(Number(el.dataset.age))?el.dataset.age:Number(el.dataset.age));});},1000);
 async function poll() {

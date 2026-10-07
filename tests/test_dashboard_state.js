@@ -45,7 +45,7 @@ function dashboard(api) {
   arr:value => Array.isArray(value) ? value : [],
   render(){}, toast(){},
  });
- vm.runInContext(loaders + routing, context);
+ vm.runInContext(source.slice(source.indexOf('function markDraftDirty('), source.indexOf('const activeStates =')) + loaders + routing, context);
  return context;
 }
 
@@ -435,7 +435,7 @@ function agentWorkflow(api) {
   arr:value=>Array.isArray(value)?value:[],render(){},toast(){},errorMessage:error=>error.message,
   navigate(route){app.destination=route;},
  });
- vm.runInContext(source.slice(source.indexOf('function selectedAgent('),source.indexOf('function feed(')),app);
+ vm.runInContext(source.slice(source.indexOf('function markDraftDirty('),source.indexOf('const activeStates ='))+source.slice(source.indexOf('function selectedAgent('),source.indexOf('function feed(')),app);
  return app;
 }
 

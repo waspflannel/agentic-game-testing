@@ -1,0 +1,99 @@
+'use strict';
+const { createHash } = require('node:crypto');
+const { spawn } = require('node:child_process');
+const fs = require('node:fs/promises');
+const { createReadStream, createWriteStream } = require('node:fs');
+const path = require('node:path');
+const { Readable } = require('node:stream');
+const { pipeline } = require('node:stream/promises');
+const { childEnvironment } = require('./shell.cjs');
+
+const PYTHON_VERSION = '3.13.16';
+const PYTHON_URL = `https://www.python.org/ftp/python/${PYTHON_VERSION}/python-${PYTHON_VERSION}-amd64.zip`;
+const PYTHON_SHA256 = 'bbf675bb5e763c1efbb09a3a461b259d81598a63c30c4b0d7ea11b9f063df159';
+const root = path.resolve(__dirname, '..');
+const runtime = path.join(__dirname, 'runtime');
+const pythonRoot = path.join(runtime, 'python');
+const python = path.join(pythonRoot, 'python.exe');
+const site = path.join(pythonRoot, 'Lib', 'site-packages');
+const lock = path.join(__dirname, 'python-requirements.lock');
+const cache = path.resolve(process.env.ASHAD_DESKTOP_CACHE || path.join(root, '.artifacts', 'desktop packaging p0'));
+const environment = childEnvironment(process.env);
+
+async function exists(file) { try { await fs.access(file); return true; } catch { return false; } }
+async function sha256(file) {
+  const hash = createHash('sha256');
+  for await (const chunk of createReadStream(file)) hash.update(chunk);
+  return hash.digest('hex');
+}
+function run(executable, args, env = environment) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(executable, args, { cwd: runtime, env, stdio: 'inherit', windowsHide: true });
+    child.once('error', reject);
+    child.once('exit', code => code === 0 ? resolve() : reject(new Error(`${path.basename(executable)} failed (${code}).`)));
+  });
+}
+// Destructive replacement is restricted to these generated resource directories.
+async function removeGenerated(directory) {
+  const resolved = path.resolve(directory);
+  if (![path.join(site, 'ashad'), path.join(site, 'integration')].includes(resolved)) {
+    throw new Error(`Refusing to remove unexpected path: ${resolved}`);
+  }
+  await fs.rm(resolved, { recursive: true, force: true });
+}
+
+async function prepare() {
+  if (process.platform !== 'win32' || process.arch !== 'x64') throw new Error('P1 packaging supports Windows x64 only.');
+  await fs.mkdir(runtime, { recursive: true });
+  const zip = path.join(runtime, 'python.zip');
+  const cached = path.join(cache, 'python.zip');
+  if (!await exists(zip)) {
+    if (await exists(cached)) await fs.copyFile(cached, zip);
+    else {
+      const response = await fetch(PYTHON_URL);
+      if (!response.ok || !response.url.startsWith('https://www.python.org/')) throw new Error('Official Python runtime download failed.');
+      await pipeline(Readable.fromWeb(response.body), createWriteStream(zip, { flags: 'wx' }));
+    }
+  }
+  if (await sha256(zip) !== PYTHON_SHA256) throw new Error('Private Python ZIP SHA256 mismatch. Remove only desktop/runtime/python.zip and retry the official download.');
+  if (!await exists(python)) {
+    const powershell = path.join(environment.SystemRoot || environment.SYSTEMROOT || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    await run(powershell, ['-NoProfile', '-NonInteractive', '-Command',
+      'Expand-Archive -LiteralPath $env:ASHAD_BUILD_ZIP -DestinationPath $env:ASHAD_BUILD_PYTHON -Force'],
+      { ...environment, ASHAD_BUILD_ZIP: zip, ASHAD_BUILD_PYTHON: pythonRoot });
+  }
+  const marker = path.join(runtime, 'prepared.json');
+  const lockHash = await sha256(lock);
+  let prior = {};
+  if (await exists(marker)) prior = JSON.parse(await fs.readFile(marker, 'utf8'));
+  if (prior.python_sha256 !== PYTHON_SHA256 || prior.requirements_sha256 !== lockHash) {
+    // Full official distribution supports normal site initialization/native keyring,
+    // unlike the embeddable _pth runtime. Pip is strictly a build-time tool.
+    await run(python, ['-I', '-B', '-m', 'ensurepip', '--upgrade']);
+    await run(python, ['-I', '-B', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-deps',
+      '--only-binary=:all:', '--no-compile', '--upgrade', '--target', site,
+      '--cache-dir', path.join(cache, 'pip-cache'), '-r', lock]);
+    await fs.writeFile(marker, JSON.stringify({ python_version: PYTHON_VERSION, python_sha256: PYTHON_SHA256,
+      requirements_sha256: lockHash }, null, 2) + '\n');
+  }
+  await removeGenerated(path.join(site, 'ashad'));
+  await fs.cp(path.join(root, 'ashad'), path.join(site, 'ashad'), { recursive: true,
+    filter: source => !source.split(path.sep).includes('__pycache__') && !/\.py[co]$/.test(source) });
+  await removeGenerated(path.join(site, 'integration'));
+  await fs.mkdir(path.join(site, 'integration'), { recursive: true });
+  await fs.copyFile(path.join(root, 'integration', 'fixtures.py'), path.join(site, 'integration', 'fixtures.py'));
+  // Check every resolved pin and real subprocess resource without login/provider/game activity.
+  await run(python, ['-I', '-B', '-c',
+    'import sys; from pathlib import Path; from importlib.metadata import version; ' +
+    `assert sys.version.split()[0] == "${PYTHON_VERSION}"; ` +
+    'pins=Path(sys.argv[1]).read_text().splitlines(); ' +
+    'assert all(version(name)==expected for name,expected in (line.split("==") for line in pins if line)); ' +
+    'import ashad.__main__, ashad.watchdog, ashad.app, integration.fixtures; ' +
+    'from keyring.backends.Windows import WinVaultKeyring; assert WinVaultKeyring.priority > 0; ' +
+    'from codex_cli_bin import bundled_codex_path; assert bundled_codex_path().is_file(); ' +
+    'assert (Path(ashad.app.__file__).parent/"static"/"index.html").is_file(); ' +
+    'print("Prepared private Python, 49 resolved pins, keyring import, Codex resources and controller/static resources.")', lock]);
+}
+
+if (require.main === module) prepare().catch(error => { console.error(error.message); process.exitCode = 1; });
+module.exports = { PYTHON_VERSION, PYTHON_URL, PYTHON_SHA256, prepare };

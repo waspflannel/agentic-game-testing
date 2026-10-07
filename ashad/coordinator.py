@@ -42,8 +42,52 @@ class Coordinator:
         self.command_locks = {}
         self.clients = {}
         self.stopping = False
+        self.draining = False
         from .structured import StructuredPlayers
         self.structured = StructuredPlayers(self)
+
+    def occupied_instances(self):
+        """Lifecycle labels cannot release unresolved desktop/account ownership."""
+        leases = {lease["run_id"] for lease in self.store.leases()}
+        owners = []
+        for run in self.store.list("runs"):
+            unresolved = any(ps.get("teardown_confirmed") is not True and
+                             (ps.get("bound") or ps.get("launched") or ps.get("phase") == "teardown_unknown")
+                             for ps in run.get("players", {}).values())
+            if run["state"] in ACTIVE_STATES | {"Queued"} or run["id"] in leases or unresolved or run.get("human_control"):
+                owners.append({"run_id": run["id"], "state": run["state"],
+                               "reason": "teardown_unconfirmed" if run["state"] == "Ended" else
+                                         "human_control" if run.get("human_control") else run["state"].lower()})
+            leases.discard(run["id"])
+        owners.extend({"run_id": run_id, "state": "Unknown", "reason": "orphaned_lease"}
+                      for run_id in sorted(leases))
+        return owners
+
+    async def reconcile(self, run_id):
+        async with self.lock:
+            run = self.store.require("runs", run_id)
+            if run["state"] != "Ended":
+                raise ValueError("Reconciliation is for ended runs with unresolved teardown")
+            results = []
+            for pid, ps in run["players"].items():
+                if ps["teardown_confirmed"]:
+                    continue
+                try:
+                    result = await self.request(ps["worker_id"], "POST", "/stop", {
+                        "epoch": ps["epoch"], "terminate": True, "reason": "human_reconciliation"})
+                    ps["teardown_confirmed"] = result.get("teardown_confirmed") is True
+                    if ps["teardown_confirmed"]:
+                        ps.update(phase="ended", launched=False)
+                    results.append({"player_id": pid, "confirmed": ps["teardown_confirmed"]})
+                except Exception as exc:
+                    results.append({"player_id": pid, "confirmed": False, "reason": type(exc).__name__})
+            if all(p["teardown_confirmed"] for p in run["players"].values()):
+                self.store.release(run_id)
+                run.pop("human_control", None)
+            self.save_run(run)
+            self.store.event(run_id, "teardown_reconciled", {"results": results, "actor": "human"})
+            await self.collect_evidence(run_id)
+            return self.store.require("runs", run_id)
 
     def save_run(self, run):
         if self.ticks.get(run["id"]) is asyncio.current_task():
@@ -150,6 +194,8 @@ class Coordinator:
             cached = self.store.command("launch", idempotency_key)
             if cached:
                 return self.store.require("runs", cached["run_id"])
+            if self.draining or self.stopping:
+                raise ValueError("The controller is draining; new instances are blocked.")
             scenario = self.store.require("scenarios", f"{scenario_id}:{revision}")
             await self.ai.validate(Plan.model_validate(scenario["plan"]).model)
             checked = validate_plan(scenario["plan"], self.store, self.credentials, check_credentials=True)
@@ -199,6 +245,16 @@ class Coordinator:
             return run
 
     async def admit(self, run):
+        async with self.run_lock(run["id"]), self.lock:
+            if self.draining or self.stopping:
+                return
+            # Re-read after locking: Stop may have ended a previously queued snapshot.
+            run = self.store.require("runs", run["id"])
+            if run["state"] != "Queued":
+                return
+            await self._admit(run)
+
+    async def _admit(self, run):
         settings = self.store.get("settings", "main", {})
         active = [r for r in self.store.list("runs") if r["state"] in ACTIVE_STATES]
         if len(active) >= settings.get("concurrent_sessions", 1):
@@ -897,6 +953,8 @@ class Coordinator:
                         self.store.command(run_id, command_id, {"acknowledged": True})
                         return run
             if resuming:
+                if self.draining or self.stopping:
+                    raise ValueError("The controller is draining; bot resume is blocked.")
                 status = await self.ai.validate(run.get("model") or run["plan"].get("model", MODEL))
                 if status.get("status") != "ready":
                     raise ValueError(status.get("message") or "Connect your ChatGPT subscription before resuming.")

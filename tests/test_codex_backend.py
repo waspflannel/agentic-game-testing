@@ -75,6 +75,34 @@ async def test_only_chatgpt_auth_can_start_a_request(store, auth, status, operat
 
 
 @pytest.mark.asyncio
+async def test_positive_status_is_reused_briefly_and_rechecked_after_auth_changes_or_errors(store, monkeypatch):
+    client = Client()
+    backend = CodexBackend(store, client=client)
+    now = [1000.0]
+    monkeypatch.setattr(module.time, "monotonic", lambda: now[0])
+    await backend.select("evidence", QUESTIONS)
+    await backend.select("evidence", QUESTIONS)
+    assert client.account.await_count == client.models.await_count == 1  # Not two account+models checks per turn.
+    now[0] += module.READY_TTL_SECONDS
+    await backend.select("evidence", QUESTIONS)
+    assert client.account.await_count == 2
+    await backend.logout()
+    client.account.return_value = Obj(account=None)
+    with pytest.raises(CodexError) as signed_out:
+        await backend.select("evidence", QUESTIONS)
+    assert signed_out.value.status == "configuration_required" and client.thread_start.await_count == 3
+    client.account.return_value = Obj(account=Obj(root=Obj(type="chatgpt", plan_type="pro")))
+    await backend.select("evidence", QUESTIONS)
+    client.handle.error = RuntimeError("401 unauthorized")
+    with pytest.raises(CodexError):
+        await backend.select("evidence", QUESTIONS)
+    checks = client.account.await_count
+    client.handle.error = None
+    await backend.select("evidence", QUESTIONS)
+    assert client.account.await_count == checks + 1  # A provider failure forces a fresh check.
+
+
+@pytest.mark.asyncio
 async def test_missing_luna_model_has_no_substitution(store):
     client = Client(models=("another-model",))
     backend = CodexBackend(store, client=client)

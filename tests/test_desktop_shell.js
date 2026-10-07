@@ -5,13 +5,14 @@ const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
 const vm = require('node:vm');
+const { execFileSync } = require('node:child_process');
 const rules = require('../desktop/shell.cjs');
 const { PYTHON_SHA256, PYTHON_VERSION } = require('../desktop/prepare.cjs');
 const origin = 'http://127.0.0.1:32123';
 const idle = () => ({ owners: [], operations: [], draining: false, viewer_urls: [] });
 
-// Tests are pure main/preload boundary checks: no Electron, Python, credentials,
-// controller, existing runtime data, network, workers or provider are started.
+// Tests are main/preload boundary checks with stubbed Electron and a loopback fixture: no real Electron, Python, credentials,
+// controller, existing runtime data, external network, workers or provider are started.
 test('diagnostic user-data option requires an explicit absolute path, no silent checkout fallback', () => {
   assert.equal(rules.diagnosticDataRoot(path.resolve('desktop', 'output', 'fixture with spaces')),
     path.resolve('desktop', 'output', 'fixture with spaces'));
@@ -43,12 +44,14 @@ test('startup trusts exact private announcement and authenticated ready identity
   const config = rules.launchConfig('fixture');
   assert.equal(rules.announcement(JSON.stringify({ protocol: rules.PROTOCOL, instance_id: config.instance_id,
     port: 32123 }), config.instance_id), origin);
-  for (const value of [{ status: 'ok' }, { protocol: 'other', instance_id: config.instance_id, port: 32123 },
-    { protocol: rules.PROTOCOL, instance_id: 'another owner', port: 32123 },
-    { protocol: rules.PROTOCOL, instance_id: config.instance_id, port: 0 },
-    { protocol: rules.PROTOCOL, instance_id: config.instance_id, port: '32123' }]) {
+  // [rejected announcement, whether its identity alone would pass authenticated readiness]
+  for (const [value, identity] of [[{ status: 'ok' }, false],
+    [{ protocol: 'other', instance_id: config.instance_id, port: 32123 }, false],
+    [{ protocol: rules.PROTOCOL, instance_id: 'another owner', port: 32123 }, false],
+    [{ protocol: rules.PROTOCOL, instance_id: config.instance_id, port: 0 }, true],
+    [{ protocol: rules.PROTOCOL, instance_id: config.instance_id, port: '32123' }, true]]) {
     assert.throws(() => rules.announcement(JSON.stringify(value), config.instance_id));
-    assert.equal(rules.readyIdentity(value, config.instance_id) && value.protocol !== rules.PROTOCOL, false);
+    assert.equal(rules.readyIdentity(value, config.instance_id), identity);
   }
   assert.equal(rules.readyIdentity({ status: 'ok' }, config.instance_id), false);
   assert.equal(rules.readyIdentity({ protocol: rules.PROTOCOL, instance_id: config.instance_id }, config.instance_id), true);
@@ -146,7 +149,8 @@ test('dirty-only quit prompts discard; idle quit still drains; work quits need p
   for (const status of [idle(), { ...idle(), owners: [{ run_id: 'run', state: 'Running', reason: 'active' }],
     operations: [{ kind: 'planning' }] }]) {
     assert.equal(await rules.confirmDrain(async () => status, false, async () => 0, async body => {
-      assert.deepEqual(body, { stop_runs: Boolean(status.owners.length), cancel_operations: Boolean(status.operations.length) });
+      assert.deepEqual(body, { stop_runs: Boolean(status.owners.length), cancel_operations: Boolean(status.operations.length),
+        expected_run_ids: status.owners.map(owner => owner.run_id) });
       return { drained: true };
     }), true);
   }
@@ -195,7 +199,200 @@ test('packaging pins exact tooling/full Python and keeps subprocess resources ou
   assert.ok(packageFile.build.extraResources.some(item => item.from === 'runtime/python' && item.to === 'python'));
   assert.equal(PYTHON_VERSION, '3.13.16');
   assert.equal(PYTHON_SHA256, 'bbf675bb5e763c1efbb09a3a461b259d81598a63c30c4b0d7ea11b9f063df159');
-  const pins = (await fs.readFile(path.join(__dirname, '../desktop/python-requirements.lock'), 'utf8')).trim().split('\n');
-  assert.equal(pins.length, 49);
-  assert.ok(pins.every(line => /^[A-Za-z0-9_.-]+==[0-9.]+$/.test(line)));
+  const pins = (await fs.readFile(path.join(__dirname, '../desktop/python-requirements.lock'), 'utf8')).trim().split(/\r?\n/);
+  assert.equal(pins.length, 43);
+  assert.ok(pins.every(line => /^[A-Za-z0-9_.-]+==[0-9.]+( --hash=sha256:[0-9a-f]{64})+$/.test(line)), 'every pin is hash-locked');
+  const names = pins.map(line => line.split('==')[0].toLowerCase());
+  for (const devOnly of ['pytest', 'pytest-asyncio', 'pluggy', 'iniconfig', 'pygments', 'colorama', 'pip']) assert.ok(!names.includes(devOnly), devOnly);
+  const prepare = await fs.readFile(path.join(__dirname, '../desktop/prepare.cjs'), 'utf8');
+  for (const flag of ["'--isolated'", "'--index-url', 'https://pypi.org/simple'", "'--require-hashes'", "'--no-deps'", "'--only-binary=:all:'"]) {
+    assert.ok(prepare.includes(flag), flag);
+  }
+  // Build-time pip/ensurepip never ship; Electron itself cannot be repurposed as Node or a debug target.
+  const python = packageFile.build.extraResources.find(item => item.from === 'runtime/python');
+  for (const excluded of ['!Lib/ensurepip/**', '!Lib/site-packages/pip/**', '!Lib/site-packages/pip-*.dist-info/**']) {
+    assert.ok(python.filter.includes(excluded), excluded);
+  }
+  assert.deepEqual(packageFile.build.electronFuses, { runAsNode: false, enableNodeOptionsEnvironmentVariable: false,
+    enableNodeCliInspectArguments: false });
+});
+
+test('packaging copies Git-tracked sources only, never ignored or untracked local files', async t => {
+  const target = await fs.mkdtemp(path.join(os.tmpdir(), 'ashad tracked copy '));
+  t.after(() => fs.rm(target, { recursive: true, force: true }));
+  const { copyTracked } = require('../desktop/prepare.cjs');
+  const tracked = execFileSync('git', ['ls-files', '-z', '--', 'worker'], { cwd: path.join(__dirname, '..'), encoding: 'utf8' })
+    .split('\0').filter(Boolean).map(file => path.relative('worker', file)).sort();
+  await copyTracked('worker', target);
+  const copied = (await fs.readdir(target, { recursive: true, withFileTypes: true })).filter(entry => entry.isFile())
+    .map(entry => path.relative(target, path.join(entry.parentPath, entry.name))).sort();
+  assert.ok(tracked.includes('Dockerfile'));
+  assert.deepEqual(copied, tracked);
+  assert.ok(!copied.some(file => file.split(path.sep).includes('__pycache__')));
+});
+
+// Real main.cjs against stubbed Electron and a fake controller child. The only "controller"
+// is a loopback fixture answering the owner protocol; no Python, data or worker is involved.
+async function loadMain(t, { announce = 'valid', status = idle(), drainExit = 0 } = {}) {
+  const Module = require('node:module');
+  const { EventEmitter } = require('node:events');
+  const { PassThrough } = require('node:stream');
+  const http = require('node:http');
+  const syncFs = require('node:fs');
+  const mainPath = require.resolve('../desktop/main.cjs');
+  const calls = { quit: 0, kills: 0, reloads: 0, dialogs: [], shutdowns: [] };
+  const responses = [];
+  let config, menu;
+  const child = Object.assign(new EventEmitter(), { pid: 4242, exitCode: null, signalCode: null,
+    stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough(),
+    kill() { calls.kills++; setImmediate(() => exit(null, 'SIGTERM')); return true; } });
+  function exit(code, signal) { Object.assign(child, { exitCode: code, signalCode: signal }); child.emit('exit', code, signal); }
+  const server = http.createServer((request, response) => {
+    let body = '';
+    request.on('data', chunk => { body += chunk; });
+    request.on('end', () => {
+      if (request.headers['x-ashad-owner'] !== config.owner_key) return response.writeHead(401).end('{}');
+      const reply = value => response.writeHead(200, { 'Content-Type': 'application/json' }).end(JSON.stringify(value));
+      if (request.url === '/_desktop/ready') return reply({ protocol: rules.PROTOCOL, instance_id: config.instance_id });
+      if (request.url === '/_desktop/status') return reply(status);
+      calls.shutdowns.push(JSON.parse(body));
+      reply({ drained: true });
+      setImmediate(() => exit(drainExit, null));
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); if (child.exitCode === null && !child.signalCode) exit(0, null); });
+  child.stdin.on('data', chunk => {
+    config = JSON.parse(chunk);
+    const identity = announce === 'foreign' ? 'another owner' : config.instance_id;
+    if (announce !== 'none') child.stdout.write(JSON.stringify({ protocol: rules.PROTOCOL, instance_id: identity, port: server.address().port }) + '\n');
+  });
+  const contents = Object.assign(new EventEmitter(), { mainFrame: { url: '' }, setWindowOpenHandler() {}, reload() { calls.reloads++; } });
+  class BrowserWindow extends EventEmitter {
+    constructor() { super(); this.webContents = contents; }
+    isDestroyed() { return false; } isMinimized() { return false; } show() {} focus() {}
+    loadFile() { return Promise.resolve(); }
+    loadURL(url) { contents.mainFrame.url = url; return Promise.resolve(); }
+  }
+  const fakeSession = { setPermissionRequestHandler() {}, setPermissionCheckHandler() {},
+    webRequest: { onBeforeSendHeaders() {}, onBeforeRequest() {} } };
+  const handlers = new Map();
+  const app = Object.assign(new EventEmitter(), { isPackaged: false, commandLine: { hasSwitch: () => false },
+    setName() {}, requestSingleInstanceLock: () => true, whenReady: () => Promise.resolve(),
+    getPath: () => path.join(os.tmpdir(), 'ashad never created'), quit() { calls.quit++; }, exit() {} });
+  const electron = { app, BrowserWindow, Menu: { buildFromTemplate: template => template, setApplicationMenu: value => { menu = value; } },
+    session: { fromPartition: () => fakeSession }, ipcMain: { handle: (name, handler) => handlers.set(name, handler) }, shell: {},
+    dialog: { showMessageBox: async (_window, options) => {
+      calls.dialogs.push(options);
+      return { response: options.type === 'warning' ? responses.shift() ?? 1 : 0 };
+    } } };
+  const load = Module._load;
+  Module._load = function (request, parent, ...rest) {
+    if (parent?.filename === mainPath) {
+      if (request === 'electron') return electron;
+      if (request === 'node:child_process') return { spawn: () => child };
+      if (request === 'node:fs') return { ...syncFs, existsSync: () => true, mkdirSync() {} };
+    }
+    return load.call(this, request, parent, ...rest);
+  };
+  try {
+    delete require.cache[mainPath];
+    require(mainPath);
+  } finally { Module._load = load; }
+  async function until(condition) {
+    for (let i = 0; i < 400 && !condition(); i++) await new Promise(resolve => setTimeout(resolve, 5));
+    assert.ok(condition(), 'condition not reached');
+  }
+  const ipc = (name, ...args) => handlers.get(name)({ sender: contents, senderFrame: contents.mainFrame }, ...args);
+  async function closeWindow() { // A void quit path, e.g. the window close button before readiness.
+    const seen = calls.dialogs.length;
+    app.emit('before-quit', { preventDefault() {} });
+    await until(() => calls.dialogs.length > seen);
+    return calls.dialogs.at(-1);
+  }
+  const reload = () => menu[1].submenu[0].click();
+  if (announce === 'valid') await until(() => contents.mainFrame.url.startsWith('http://127.0.0.1:'));
+  else await until(() => config);
+  return { app, calls, responses, exit, contents, ipc, closeWindow, reload, until };
+}
+
+test('crashed controller after readiness can be quit after a stale-records confirmation, exactly once', async t => {
+  const main = await loadMain(t);
+  main.exit(3, null);
+  await main.until(() => main.calls.dialogs.some(item => item.title === 'ASHAD controller disconnected'));
+  main.responses.push(1);
+  assert.equal(await main.ipc('ashad:request-quit'), false);
+  assert.match(main.calls.dialogs.at(-1).message, /no longer running \(3\).*stale.*watchdog/s);
+  assert.equal(main.calls.quit, 0);
+  main.responses.push(0);
+  assert.equal(await main.ipc('ashad:request-quit'), true);
+  assert.equal(await main.ipc('ashad:request-quit'), true);
+  assert.equal(main.calls.quit, 1);
+  assert.deepEqual(main.calls.shutdowns, []);
+});
+
+test('a live child still starting refuses quit; once startup fails and it exits, quit needs no drain', async t => {
+  const main = await loadMain(t, { announce: 'none' });
+  const refused = await main.closeWindow();
+  assert.equal(refused.title, 'ASHAD could not safely quit');
+  assert.match(refused.message, /still starting/);
+  assert.equal(main.calls.kills, 0);
+  main.exit(1, null);
+  await main.until(() => main.calls.dialogs.some(item => item.title === 'ASHAD startup failed'));
+  const seen = main.calls.dialogs.length;
+  main.app.emit('before-quit', { preventDefault() {} });
+  await main.until(() => main.calls.quit === 1);
+  assert.equal(main.calls.dialogs.length, seen); // It never became ready, so no records were at risk.
+  assert.equal(main.calls.kills, 0);
+});
+
+test('a never-ready child after startup failure is terminated only after confirmation', async t => {
+  const main = await loadMain(t, { announce: 'foreign' });
+  await main.until(() => main.calls.dialogs.some(item => item.title === 'ASHAD startup failed'));
+  main.responses.push(1);
+  assert.match((await main.closeWindow()).message, /never became ready and accepted no work/);
+  assert.equal(main.calls.kills, 0);
+  assert.equal(main.calls.quit, 0);
+  main.responses.push(0);
+  await main.closeWindow();
+  await main.until(() => main.calls.quit === 1);
+  assert.equal(main.calls.kills, 1);
+});
+
+test('concurrent quit requests drain once; an unclean exit after drain then allows a confirmed quit', async t => {
+  const clean = await loadMain(t);
+  assert.deepEqual(await Promise.all([clean.ipc('ashad:request-quit'), clean.ipc('ashad:request-quit')]), [true, false]);
+  assert.equal(clean.calls.quit, 1);
+  assert.deepEqual(clean.calls.shutdowns, [{ stop_runs: false, cancel_operations: false, expected_run_ids: [] }]);
+  const unclean = await loadMain(t, { drainExit: 1 });
+  assert.equal(await unclean.ipc('ashad:request-quit'), false);
+  assert.match(unclean.calls.dialogs.at(-1).message, /exited uncleanly/);
+  assert.equal(unclean.calls.quit, 0);
+  unclean.responses.push(0);
+  assert.equal(await unclean.ipc('ashad:request-quit'), true);
+  assert.match(unclean.calls.dialogs.at(-1).message, /no longer running \(1\)/);
+  assert.equal(unclean.calls.quit, 1);
+  assert.equal(unclean.calls.shutdowns.length, 1);
+});
+
+test('dirty draft prompts before View reload and resets on main-frame navigation or renderer loss', async t => {
+  const main = await loadMain(t);
+  await main.ipc('ashad:set-dirty-draft', true);
+  main.contents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: true });
+  main.contents.emit('did-start-navigation', { isMainFrame: false, isSameDocument: false });
+  main.responses.push(1);
+  main.reload();
+  await main.until(() => main.calls.dialogs.some(item => item.title === 'Reload ASHAD?'));
+  assert.equal(main.calls.reloads, 0);
+  main.contents.emit('did-start-navigation', { isMainFrame: true, isSameDocument: false });
+  main.reload();
+  await main.until(() => main.calls.reloads === 1);
+  await main.ipc('ashad:set-dirty-draft', true);
+  main.contents.emit('render-process-gone', {}, { reason: 'crashed' });
+  main.reload();
+  await main.until(() => main.calls.reloads === 2);
+  assert.equal(main.calls.dialogs.filter(item => item.title === 'Reload ASHAD?').length, 1);
+  // A reset draft no longer produces a discard prompt on quit.
+  assert.equal(await main.ipc('ashad:request-quit'), true);
+  assert.ok(!main.calls.dialogs.some(item => item.title === 'Quit ASHAD?'));
 });

@@ -22,10 +22,16 @@
     "electronVersion": "44.6.0",
     "asar": true,
     "npmRebuild": false,
+    "electronFuses": {
+      "runAsNode": false,
+      "enableNodeOptionsEnvironmentVariable": false,
+      "enableNodeCliInspectArguments": false
+    },
     "directories": { "output": "output" },
     "files": ["main.cjs", "preload.cjs", "shell.cjs", "status.html", "package.json"],
     "extraResources": [
-      { "from": "runtime/python", "to": "python", "filter": ["**/*", "!**/__pycache__/**", "!**/*.pyc"] },
+      { "from": "runtime/python", "to": "python", "filter": ["**/*", "!**/__pycache__/**", "!**/*.pyc",
+        "!Lib/ensurepip/**", "!Lib/site-packages/pip/**", "!Lib/site-packages/pip-*.dist-info/**", "!Scripts/pip*"] },
       { "from": "python-requirements.lock", "to": "python-requirements.lock" }
     ],
     "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "signAndEditExecutable": false },

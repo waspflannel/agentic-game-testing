@@ -9,7 +9,7 @@ import time
 from .codex_backend import TUNING_MANUAL_LIMIT, TUNING_PROMPT_VERSION
 from .models import MODEL, SUPPORTED_MODELS
 from .repository import Repository, sha256_file
-from .projects import Projects
+from .projects import Projects, _identifier, _name
 from .store import uid
 
 
@@ -88,12 +88,10 @@ class AgentProfiles:
         self.lock = asyncio.Lock()
 
     async def tune(self, build_id, model=MODEL, *, request_id=None, name=None, project_id=None):
-        if request_id is not None and (not isinstance(request_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", request_id)):
-            raise ValueError("Tuning requires a safe, stable request ID")
+        if request_id is not None:
+            _identifier(request_id, "Tuning request ID")
         if name is not None:
-            if not isinstance(name, str) or not name.strip() or len(name.strip()) > 200 or not name.isprintable():
-                raise ValueError("Agent configuration name must be 1–200 printable characters")
-            name = name.strip()
+            name = _name(name, "Agent configuration name")
         payload = {"build_id": build_id, "model": model, "name": name, "project_id": project_id}
         if model not in SUPPORTED_MODELS:
             raise ValueError("Select a supported Codex model.")

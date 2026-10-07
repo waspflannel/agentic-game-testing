@@ -1,6 +1,8 @@
 """Human control owns the paused desktop, never the bot's action channel."""
 import asyncio
 import json
+import os
+from pathlib import Path
 import signal
 import time
 from unittest.mock import AsyncMock, Mock
@@ -157,9 +159,7 @@ async def test_viewer_uses_authentication_clears_keys_and_persists_owned_process
     password = tmp_path / "password"
     password.write_text("do-not-expose-password")
     monkeypatch.setenv("ASHAD_VNC_PASSWORD_FILE", str(password))
-    stored = ViewerProcess(1, returncode=0)
-    stored.wait = AsyncMock(return_value=0)
-    processes = [stored, ViewerProcess(123), ViewerProcess(456)]
+    processes = [ViewerProcess(123), ViewerProcess(456)]
     spawn = AsyncMock(side_effect=processes)
     monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
     writer = Mock(wait_closed=AsyncMock())
@@ -167,11 +167,17 @@ async def test_viewer_uses_authentication_clears_keys_and_persists_owned_process
     worker._start_desktop_viewer = Runtime._start_desktop_viewer.__get__(worker)
     result = await worker.start_desktop(command)
     assert "do-not-expose-password" not in json.dumps(result)
-    vnc_args = spawn.call_args_list[1].args
-    assert "-rfbauth" in vnc_args and "-localhost" in vnc_args and "-clear_all" in vnc_args
+    vnc_args = spawn.call_args_list[0].args
+    assert "-passwdfile" in vnc_args and "-localhost" in vnc_args and "-clear_all" in vnc_args
+    # The password never appears on any argv; x11vnc reads it from an owner-only file.
+    assert not any("do-not-expose-password" in str(arg) for call in spawn.call_args_list for arg in call.args)
+    stored = Path(vnc_args[vnc_args.index("-passwdfile") + 1])
+    assert stored.read_text().strip() == "do-not-expose-password"
+    if os.name != "nt":
+        assert stored.stat().st_mode & 0o777 == 0o600
     state = json.loads((tmp_path / "worker-state.json").read_text())
     assert state["human_control"] is True and state["desktop_pids"] == [123, 456]
-    assert spawn.call_args_list[1].kwargs["env"]["ASHAD_DESKTOP_SESSION"] == state["desktop_session"]
+    assert spawn.call_args_list[0].kwargs["env"]["ASHAD_DESKTOP_SESSION"] == state["desktop_session"]
     await worker.finish_desktop(command)
     state = json.loads((tmp_path / "worker-state.json").read_text())
     assert state["human_control"] is False and not state["desktop_pids"] and state["desktop_session"] is None

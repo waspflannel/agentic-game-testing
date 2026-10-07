@@ -4,6 +4,7 @@ delete process.env.ELECTRON_RUN_AS_NODE;
 const { app, BrowserWindow, dialog, ipcMain, Menu, session, shell } = require('electron');
 const { spawn } = require('node:child_process');
 const { randomUUID } = require('node:crypto');
+const { once } = require('node:events');
 const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
@@ -79,12 +80,10 @@ function launchController() {
   controller.stdin.on('error', () => {});
   controller.stdin.end(JSON.stringify(config) + '\n');
   controller.on('exit', (code, signal) => {
-    if (ready && !quitApproved && !drainConfirmed) {
-      ready = false;
-      if (quitting) return; // The quit handshake reports any failure itself.
+    if (ready && !quitApproved && !drainConfirmed && !quitting) { // The quit handshake reports its own failures.
       void showError('ASHAD controller disconnected',
         `The owned controller exited (${signal || code}). Retained records may now be stale. No bot was resumed and no replacement controller was adopted.\n\n` +
-        'Keep the application open and use the existing watchdog/recovery procedure before restarting. A viewer closing does not hand back control.');
+        'Use the existing watchdog/recovery procedure before restarting. A viewer closing does not hand back control.');
     }
   });
   return new Promise((resolve, reject) => {
@@ -115,19 +114,35 @@ async function waitUntilReady() {
   const deadline = Date.now() + 60000;
   let lastError;
   while (Date.now() < deadline) {
-    if (controller.exitCode !== null || controller.signalCode) throw new Error(`Private controller exited during readiness. ${stderr}`);
-    try {
-      const identity = await ownerRequest('/_desktop/ready');
+    if (!controllerRunning()) throw new Error(`Private controller exited during readiness. ${stderr}`);
+    let identity;
+    try { identity = await ownerRequest('/_desktop/ready'); } catch (error) { lastError = error; }
+    if (identity) {
+      // A mismatched authenticated identity is not an invitation to adopt/retry another process.
       if (!rules.readyIdentity(identity, config.instance_id)) throw new Error('Owned controller identity/protocol mismatch; no generic health endpoint was trusted.');
       return;
-    } catch (error) {
-      // A mismatched authenticated identity is not an invitation to adopt/retry another process.
-      if (error.message.includes('identity/protocol mismatch')) throw error;
-      lastError = error;
     }
     await delay(150);
   }
   throw new Error(`Controller was not ready: ${lastError?.message || 'no authenticated response'}. ${stderr}`);
+}
+
+function controllerRunning() {
+  return Boolean(controller?.pid) && controller.exitCode === null && !controller.signalCode;
+}
+
+async function confirmed(title, message, action) {
+  focusWindow();
+  const { response } = await dialog.showMessageBox(window, { type: 'warning', title, message,
+    detail: dirtyDraft ? 'The unsent draft will be discarded.' : '', buttons: [action, 'Keep open'], defaultId: 1, cancelId: 1, noLink: true });
+  return response === 0;
+}
+
+function approveQuit() {
+  quitApproved = true;
+  for (const viewer of viewers) if (!viewer.isDestroyed()) viewer.close();
+  app.quit();
+  return true;
 }
 
 async function requestQuit() {
@@ -135,13 +150,25 @@ async function requestQuit() {
   if (quitting) return false;
   quitting = true;
   try {
-    // Missing resources/failed launch created no running controller to stop.
-    if (startupFailure && (!controller || !controller.pid || controller.exitCode !== null)) {
-      quitApproved = true;
-      app.quit();
-      return true;
+    if (!controllerRunning()) {
+      // Nothing left to drain: missing resources, failed launch, crash, or unclean exit after drain.
+      if (!ready) return approveQuit();
+      return await confirmed('Quit ASHAD?', `The owned controller is no longer running (${controller.signalCode || controller.exitCode}). ` +
+        'Retained run records may be stale and were not reconciled. The independent watchdog stays running for recovery.',
+      'Quit anyway') && approveQuit();
     }
-    if (!origin || !ready) throw new Error('Controller readiness/ownership is unknown. Quit cannot report a safe stop. Keep ASHAD open and recover the controller; no child was force-killed.');
+    if (!ready) {
+      if (!startupFailure) throw new Error('The private controller is still starting. Wait for it to become ready or for startup to fail, then quit.');
+      // It never passed authenticated readiness: the app never loaded it, so it accepted no work.
+      if (!await confirmed('Quit ASHAD?', 'The private controller never became ready and accepted no work. Terminate it and quit? ' +
+        'Existing records, locks and any watchdog are left for recovery.', 'Terminate and quit')) return false;
+      if (controllerRunning()) {
+        const exited = once(controller, 'exit');
+        controller.kill();
+        await exited;
+      }
+      return approveQuit();
+    }
     const drained = await rules.confirmDrain(() => ownerRequest('/_desktop/status'), dirtyDraft,
       async prompt => (await dialog.showMessageBox(window, prompt)).response,
       body => ownerRequest('/_desktop/shutdown', body, 0));
@@ -153,13 +180,9 @@ async function requestQuit() {
       await new Promise(resolve => controller.once('exit', resolve));
     }
     if (!rules.cleanControllerExit(controller.exitCode, controller.signalCode)) {
-      ready = false;
       throw new Error(`Controller acknowledged drain but exited uncleanly (${controller.signalCode || controller.exitCode}). Resource cleanup was not confirmed; no successful quit was reported.`);
     }
-    quitApproved = true;
-    for (const viewer of viewers) if (!viewer.isDestroyed()) viewer.close();
-    app.quit();
-    return true;
+    return approveQuit();
   } catch (error) {
     await showError('ASHAD could not safely quit', safeMessage(error.message) +
       '\n\nThe application stays open. Review the listed owning runs and recovery/reconciliation controls; retry only after confirmed teardown.');
@@ -222,6 +245,13 @@ async function openApprovedLink(url) {
   } catch (error) { await showError('Link blocked', safeMessage(error.message)); }
 }
 
+// Desktop mode disables the renderer's beforeunload, so a dirty draft is confirmed here.
+async function reloadView() {
+  if (dirtyDraft && !await confirmed('Reload ASHAD?', 'Reload the view?', 'Discard draft and reload')) return;
+  dirtyDraft = false;
+  window.webContents.reload();
+}
+
 function createWindow() {
   applicationSession = session.fromPartition(`ashad-app-${randomUUID()}`); // In-memory, isolated from viewer/auth contexts.
   applicationSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
@@ -248,13 +278,18 @@ function createWindow() {
     // A dirty browser beforeunload may not veto an already confirmed, drained quit.
     if (quitApproved) event.preventDefault();
   });
+  window.webContents.on('did-start-navigation', details => {
+    // A new main-frame document has no draft; only same-document (hash) changes keep it.
+    if (details.isMainFrame && !details.isSameDocument) dirtyDraft = false;
+  });
   window.webContents.on('render-process-gone', () => {
+    dirtyDraft = false;
     // Only recreate the view. The owned controller is never relaunched here.
     void showError('ASHAD view disconnected', 'The renderer exited. Use View → Reload to reconnect to the same controller. No game was started or resumed.');
   });
   Menu.setApplicationMenu(Menu.buildFromTemplate([
     { label: 'File', submenu: [{ label: 'Quit', accelerator: 'Alt+F4', click: () => { void requestQuit(); } }] },
-    { label: 'View', submenu: [{ role: 'reload' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
+    { label: 'View', submenu: [{ label: 'Reload', accelerator: 'CmdOrCtrl+R', click: () => { void reloadView(); } }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { role: 'togglefullscreen' }] },
   ]));
   return window.loadFile(path.join(__dirname, 'status.html'));
 }

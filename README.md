@@ -30,9 +30,9 @@ npm --prefix desktop run build:dir
 npm --prefix desktop run build:nsis
 ```
 
-Build preparation downloads verified private Python 3.13.16 and pinned dependencies; game files and Docker Desktop remain separately supplied prerequisites. The application writes to `%APPDATA%\ASHAD\controller`, not its installation directory. For isolated diagnostic testing only, pass `--user-data-dir="C:\absolute\fresh test data"`; this changes the store, not authentication or runtime safeguards. Do not point it at live legacy data as a substitute for migration.
+Build preparation requires Git (only tracked sources are packaged) and downloads verified private Python 3.13.16 plus hash-locked runtime wheels from PyPI, ignoring local pip configuration; pip and test tooling are not shipped; game files and Docker Desktop remain separately supplied prerequisites. The application writes to `%APPDATA%\ASHAD\controller`, not its installation directory. For isolated diagnostic testing only, pass `--user-data-dir="C:\absolute\fresh test data"`; this changes the store, not authentication or runtime safeguards. Do not point it at live legacy data as a substitute for migration.
 
-Quit lists owning instances and in-flight work. **Cancel** leaves them unchanged; **Stop/cancel and quit** waits for confirmed teardown and clean controller exit. Failed teardown keeps the app open for reconciliation. Closing a human viewer never hands control back automatically. See the [execution log](<docs/electron-workspace-refactor-plan.md#p1-execution-record--2026-10-07-offline-packaged-scope-complete>) for precise verified scope and remaining gates.
+Quit lists owning instances and in-flight work. **Cancel** leaves them unchanged; **Stop/cancel and quit** waits for confirmed teardown and clean controller exit. Failed teardown keeps the app open for reconciliation. If the controller has already exited, Quit asks for confirmation rather than trapping the window; the watchdog keeps its authority. Closing a human viewer never hands control back automatically. See the [execution log](<docs/electron-workspace-refactor-plan.md#p1-execution-record--2026-10-07-offline-packaged-scope-complete>) for precise verified scope and remaining gates.
 
 ## Start locally
 
@@ -42,7 +42,7 @@ From PowerShell in your clone directory:
 .\scripts\start.ps1
 ```
 
-Open [ASHAD](http://127.0.0.1:8740). Keep the controller running during a session; closing the dashboard does not stop the game. Stop active runs and confirm teardown before restarting after a code update.
+Open [ASHAD](http://127.0.0.1:8740). The controller accepts only loopback `Host` headers, which blocks DNS-rebinding pages. Keep the controller running during a session; closing the dashboard does not stop the game. Stop active runs and confirm teardown before restarting after a code update.
 
 For a fresh environment, run `scripts/setup.ps1` first. The controller requires Python 3.11+; local game desktops require Docker Desktop's Linux engine. The dashboard has no npm build step. Build registration, desktop health and Steam account setup remain in Settings; see [worker setup](docs/workers.md) for infrastructure details.
 
@@ -67,7 +67,7 @@ Optional **Import existing workspace…** requires an empty owned target, a stop
 3. Explicitly **Start instance**. ASHAD freshly revalidates authentication, exact supported build pins and actual idle desktop/render/capture/input capabilities, then accepts one host bot in a fresh world. Failed/blocked drafts never auto-launch. Lost replies reconcile the same request; restoring prepared inputs asks first and still requires another Start click.
 4. Follow the live view. Pause, resume, stop, or take over if the bot needs help. Each instance retains its own run ID and evidence.
 
-**Desktop prerequisites:** Docker Desktop's Linux engine and separately supplied supported game files are required. Confirmed preparation may build a content-addressed bundled worker image and create one owner-labelled desktop, persistent volumes and local service/desktop credential references; it never starts gameplay or recreates/adopts unrelated containers. Changed/legacy artifacts lacking exact supported pins require a new registration. Provisioning completion alone is not readiness.
+**Desktop prerequisites:** Docker Desktop's Linux engine and separately supplied supported game files are required. Confirmed preparation may build a content-addressed bundled worker image and create one owner-labelled desktop, persistent volumes and local service/desktop credential references; it never starts gameplay or recreates/adopts unrelated containers. Changed/legacy artifacts lacking exact supported pins require a new registration. Each Prepare request reconciles one desktop per project and build. Provisioning completion alone is not readiness.
 
 **Steam limitation:** Steam is unavailable until fresh actual matching identity, real App ID and licence are proven. The current idle passive worker cannot supply that proof without application initialization, so copied account readiness or an old verification never enables it. ASHAD never substitutes App ID 480, ENet or offline transport. Supported owned Steam-start/integration work and live acceptance remain separate gates; ENet is an explicit user choice.
 

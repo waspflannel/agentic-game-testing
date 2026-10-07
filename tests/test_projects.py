@@ -185,17 +185,13 @@ def test_migration_backup_preserves_raw_evidence_snapshots_counts_and_historical
     codex = tmp_path / "codex-fixture"
     codex.mkdir()
     (codex / "auth.json").write_text('"DO-NOT-COPY-CODEX-CREDENTIAL"')
-    registration = tmp_path / "workers-fixture.json"
-    registration.write_text('{"token":"DO-NOT-READ-REGISTRATION-CREDENTIAL"}')
-    result = migrate(projects, groups, tmp_path, codex_home=codex, registration_paths=[registration])
+    result = migrate(projects, groups, tmp_path, codex_home=codex)
     assert result["version"] == 1
     backup = tmp_path / "backup"
     inventory = json.loads((backup / "inventory.json").read_text(encoding="utf-8"))
     assert inventory["codex_home"] == {"path": str(codex.resolve()), "exists": True, "copied": False}
-    assert inventory["registration_paths"][0]["copied"] is False
     assert "DO-NOT-" not in (backup / "inventory.json").read_text()
     assert not (backup / "codex-fixture").exists()
-    assert not (backup / "workers-fixture.json").exists()
     assert "not copied" in " ".join(inventory["limitations"])
     for relative, content in evidence.items():
         assert (store.root / relative).read_bytes() == (backup / relative).read_bytes() == content
@@ -296,7 +292,7 @@ def test_invalid_ambiguous_or_conflicting_groups_do_not_mutate(workspace, tmp_pa
     changed[0]["name"] = "Different"
     with pytest.raises(ValueError, match="cannot rename"):
         projects.preview(changed)
-    with pytest.raises(ValueError, match="different grouping"):
+    with pytest.raises(ValueError, match="already belongs to another project"):
         migrate(projects, [grouping("build-a", project_id="another")], tmp_path)
 
 
@@ -328,7 +324,7 @@ def test_backup_failure_changes_no_metadata_and_never_overwrites_partial_backup(
     before = projects._token()
     def failed_copy(*args):
         raise OSError("fixture backup disk error")
-    monkeypatch.setattr("ashad.projects.shutil.copy2", failed_copy)
+    monkeypatch.setattr("ashad.projects._copy_file", failed_copy)
     with pytest.raises(OSError, match="disk error"):
         migrate(projects, groups, tmp_path)
     assert projects._token() == before
@@ -407,7 +403,7 @@ def test_edited_inventory_cannot_authorize_migration(workspace, tmp_path, damage
     store, projects = workspace
     groups = seed(store)
     preview = projects.preview(groups)
-    backup = projects._backup(tmp_path / "backup", preview, None, ())
+    backup = projects._backup(tmp_path / "backup", preview, None)
     manifest = backup / "inventory.json"
     inventory = json.loads(manifest.read_text())
     entries = inventory["copied_files"]
@@ -443,7 +439,7 @@ def test_edited_inventory_cannot_authorize_migration(workspace, tmp_path, damage
 def test_backup_is_compared_with_actual_source_and_complete_file_tree(workspace, tmp_path, damage):
     store, projects = workspace
     groups = seed(store)
-    backup = projects._backup(tmp_path / "backup", projects.preview(groups), None, ())
+    backup = projects._backup(tmp_path / "backup", projects.preview(groups), None)
     if damage in {"missing-db", "missing-evidence"}:
         removed = backup / ("ashad.sqlite3" if damage == "missing-db" else "runs/run-a/ledger.jsonl")
         assert removed.resolve().is_relative_to((tmp_path / "backup").resolve())
@@ -491,7 +487,7 @@ def test_backup_is_closed_before_hashing_and_uses_verified_standalone_delete_jou
         return real_hash(path)
     monkeypatch.setattr(module.sqlite3, "connect", connect)
     monkeypatch.setattr(module, "_file_hash", checked_hash)
-    backup = projects._backup(tmp_path / "backup", projects.preview(groups), None, ())
+    backup = projects._backup(tmp_path / "backup", projects.preview(groups), None)
     assert len(connections) == 2 and all(connection.closed for connection in connections)
     with closing(real_connect(backup / "ashad.sqlite3")) as database:
         assert database.execute("PRAGMA journal_mode").fetchone()[0] == "delete"
@@ -509,7 +505,7 @@ def test_hardlinked_backup_or_source_files_are_rejected(workspace, tmp_path, loc
         target.write_text("fixture-only outside evidence")
         (store.run_dir("run-a") / "linked.txt").hardlink_to(target)
     else:
-        backup = projects._backup(tmp_path / "backup", projects.preview(groups), None, ())
+        backup = projects._backup(tmp_path / "backup", projects.preview(groups), None)
         target = backup / ("ashad.sqlite3" if location == "backup-database" else "inventory.json")
         (tmp_path / "hardlink-fixture").hardlink_to(target)
     original = target.read_bytes()
@@ -558,12 +554,12 @@ def test_identical_backup_retry_tolerates_passive_diagnostics_refresh(workspace,
     store, projects = workspace
     groups = seed(store)
     preview = projects.preview(groups)
-    backup = projects._backup(tmp_path / "backup", preview, None, ())
+    backup = projects._backup(tmp_path / "backup", preview, None)
     inventory = (backup / "inventory.json").read_bytes()
     store.put("settings", {"timestamp": 999}, "coordinator_heartbeat")
     store.put("settings", {"status": "refreshed"}, "ai_status")
     result = projects.apply(groups, preview_token=preview["preview_token"], backup_dir=backup, confirmed=True)
-    assert result["id"] == MIGRATION_ID
+    assert result["id"] == f"{MIGRATION_ID}-{preview['grouping_hash']}"
     assert (backup / "inventory.json").read_bytes() == inventory
 
 
@@ -571,7 +567,7 @@ def test_reused_wal_database_is_not_accepted_as_standalone_even_with_matching_ha
     from contextlib import closing
     store, projects = workspace
     groups = seed(store)
-    backup = projects._backup(tmp_path / "backup", projects.preview(groups), None, ())
+    backup = projects._backup(tmp_path / "backup", projects.preview(groups), None)
     database = backup / "ashad.sqlite3"
     with closing(sqlite3.connect(database, isolation_level=None)) as connection:
         assert connection.execute("PRAGMA journal_mode=WAL").fetchone()[0] == "wal"
@@ -588,7 +584,7 @@ def test_boolean_size_in_edited_inventory_is_not_an_integer_measurement(workspac
     store, projects = workspace
     groups = seed(store)
     (store.run_dir("run-a") / "empty-evidence.txt").write_bytes(b"")
-    backup = projects._backup(tmp_path / "backup", projects.preview(groups), None, ())
+    backup = projects._backup(tmp_path / "backup", projects.preview(groups), None)
     manifest = backup / "inventory.json"
     inventory = json.loads(manifest.read_text())
     next(item for item in inventory["copied_files"] if item["path"].endswith("empty-evidence.txt"))["bytes"] = False
@@ -596,3 +592,99 @@ def test_boolean_size_in_edited_inventory_is_not_an_integer_measurement(workspac
     with pytest.raises(ValueError, match="invalid file inventory"):
         migrate(projects, groups, tmp_path)
     assert not store.list("projects")
+
+
+def test_store_stays_responsive_while_migration_copies_evidence(workspace, tmp_path, monkeypatch):
+    import threading
+    import time
+    from ashad import projects as module
+    store, projects = workspace
+    groups = seed(store)
+    copying, release = threading.Event(), threading.Event()
+    original = module._copy_file
+    def slow_copy(*args):
+        copying.set()
+        release.wait(5)
+        return original(*args)
+    monkeypatch.setattr(module, "_copy_file", slow_copy)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(migrate, projects, groups, tmp_path)
+        assert copying.wait(5)
+        started = time.perf_counter()
+        assert store.get("settings", "main")["concurrent_sessions"] == 12
+        store.put("settings", {"timestamp": 1}, "coordinator_heartbeat")  # Passive refresh mid-copy.
+        elapsed = time.perf_counter() - started
+        release.set()
+        result = future.result(timeout=30)
+    assert elapsed < 0.2
+    assert result["assignments"]["runs"]["run-a"] == "game-a"
+
+
+def test_leftover_history_can_be_grouped_later_without_moving_grouped_records(workspace, tmp_path):
+    store, projects = workspace
+    groups = seed(store)
+    first_groups = groups[:1]
+    first = projects.apply(first_groups, preview_token=projects.preview(first_groups)["preview_token"],
+                           backup_dir=tmp_path / "first", confirmed=True)
+    assert "project_id" not in store.require("builds", "build-b")
+    raw_run = lambda: tuple(store.db.execute("SELECT data,updated FROM records WHERE kind='runs' AND id='run-a'").fetchone())
+    grouped_run = raw_run()
+    preview = projects.preview(groups)
+    assert not preview["blockers"] and preview["already_applied"] is False
+    second = projects.apply(groups, preview_token=preview["preview_token"], backup_dir=tmp_path / "second", confirmed=True)
+    assert first["id"] != second["id"]
+    assert store.require("builds", "build-b")["project_id"] == "game-b"
+    assert store.require("builds", "build-a")["project_id"] == "game-a"
+    assert raw_run() == grouped_run  # Already grouped history is never rewritten.
+    # Exact replays stay idempotent, even with a stale token, and write nothing.
+    unchanged = projects._token()
+    assert projects.apply(first_groups, preview_token="stale", backup_dir=tmp_path / "first", confirmed=True) == first
+    assert projects.apply(groups, preview_token="stale", backup_dir=tmp_path / "second", confirmed=True) == second
+    assert projects._token() == unchanged
+    remap = [grouping("build-b", project_id="game-a")]
+    with pytest.raises(ValueError, match="already belongs to another project"):
+        projects.apply(remap, preview_token=projects.preview(remap)["preview_token"], backup_dir=tmp_path / "remap", confirmed=True)
+    assert store.require("builds", "build-b")["project_id"] == "game-b"
+    assert not (tmp_path / "remap").exists()
+
+
+def test_legacy_single_marker_still_replays_and_does_not_block_new_groupings(workspace, tmp_path):
+    store, projects = workspace
+    groups = seed(store)
+    legacy = {"id": MIGRATION_ID, "version": 1, "grouping_hash": projects.preview(groups[:1])["grouping_hash"]}
+    store.put("migrations", legacy)
+    assert projects.preview(groups[:1])["already_applied"] is True
+    assert projects.apply(groups[:1], preview_token="stale", backup_dir=tmp_path / "unused", confirmed=True) == legacy
+    assert not (tmp_path / "unused").exists()
+    assert not projects.preview(groups)["blockers"]
+
+
+def test_credential_like_backup_path_is_refused_before_any_write(workspace, tmp_path):
+    store, projects = workspace
+    groups = seed(store)
+    destination = tmp_path / "sk-backup-2026-10-07-operator"
+    with pytest.raises(ValueError, match="credential-like"):
+        projects.apply(groups, preview_token=projects.preview(groups)["preview_token"], backup_dir=destination, confirmed=True)
+    assert not destination.exists()
+    assert not store.list("projects") and not store.list("migrations")
+
+
+@pytest.mark.skipif(__import__("sys").platform != "win32", reason="Windows trailing-dot path alias")
+def test_trailing_dot_alias_of_data_root_is_not_outside_it(workspace):
+    from pathlib import Path
+    store, projects = workspace
+    groups = seed(store)
+    destination = Path(str(store.root) + ".") / "backup-inside"
+    with pytest.raises(ValueError, match="outside"):
+        projects.apply(groups, preview_token=projects.preview(groups)["preview_token"], backup_dir=destination, confirmed=True)
+    assert not (store.root / "backup-inside").exists()
+
+
+@pytest.mark.parametrize("players", [["bot"], None, "bot", {"bot": "bound"}])
+def test_unknown_legacy_player_shapes_block_instead_of_crashing(workspace, tmp_path, players):
+    store, projects = workspace
+    groups = seed(store)
+    store.put("runs", {"id": "legacy-players", "state": "Ended", "players": players})
+    assert any("legacy-players" in blocker for blocker in projects.preview(groups)["blockers"])
+    with pytest.raises(ValueError, match="unresolved ownership"):
+        migrate(projects, groups, tmp_path)

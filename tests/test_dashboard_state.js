@@ -10,14 +10,15 @@ const {test} = require('node:test');
 const source = fs.readFileSync(path.join(__dirname, '../ashad/static/app.js'), 'utf8');
 const loaders = source.slice(source.indexOf('async function loadEvents('), source.indexOf('function controlDialog('));
 const routing = source.slice(source.indexOf('async function route()'), source.indexOf("document.addEventListener('click'"));
+const feedSource = source.slice(source.indexOf('const feedStaleSeconds'), source.indexOf('\n', source.indexOf('function feed(')));
+const timeHelpers = source.split('\n').filter(line=>/^const (dateObj|ago) =/.test(line)).join('\n');
 
 test('live camera URL stays connected through polling and follows player ownership', () => {
- const start=source.indexOf('function feed(');
  const app=vm.createContext({
   state:{run:{id:'run',state:'Running'}}, esc:String, icon:()=>'', badge:()=>'',
-  active:r=>r.state==='Running', structuredInspector:()=>'', agentDiagnostics:()=>'', button:()=>'',
+  active:r=>r.state==='Running', agentDiagnostics:()=>'', button:()=>'', Date,
  });
- vm.runInContext(source.slice(start,source.indexOf('\n',start)),app);
+ vm.runInContext(timeHelpers+'\n'+feedSource,app);
  const player={id:'player',name:'Bot',role:'host',initial:true};
  const status={launched:true,epoch:'epoch',feed_captured_at:1};
  const url=html=>html.match(/<img[^>]*src="([^"]+)"/)[1];
@@ -27,6 +28,42 @@ test('live camera URL stays connected through polling and follows player ownersh
  assert.notEqual(url(app.feed(player,{...status,epoch:'new-owner'})),first);
  app.state.run.state='Ended';
  assert.doesNotMatch(app.feed(player,status),/<img/);
+});
+
+test('camera overlay shows capture age, turns stale without new captures, and never claims live without a capture time', () => {
+ const app=vm.createContext({state:{run:{id:'run',state:'Running'}},esc:String,icon:()=>'',badge:()=>'',active:r=>r.state==='Running',agentDiagnostics:()=>'',button:()=>'',Date});
+ vm.runInContext(timeHelpers+'\n'+feedSource,app);
+ const player={id:'player',initial:true},now=Date.now()/1000,overlay=html=>html.match(/<div class="feed-overlays">([^]*?)<\/div>/)[1];
+ const fresh=overlay(app.feed(player,{launched:true,feed_captured_at:now-2}));
+ assert.match(fresh,/LIVE VIEW/);assert.match(fresh,new RegExp(`data-age="${now-2}"`));assert.match(fresh,/data-stale-at="[\d.]+" data-stale-text="STALE · capture stopped"/);
+ assert.equal(Number(fresh.match(/data-stale-at="([\d.]+)"/)[1]),now-2+20);
+ const stalled=overlay(app.feed(player,{launched:true,feed_captured_at:now-60}));
+ assert.match(stalled,/STALE · capture stopped/);assert.doesNotMatch(stalled,/LIVE VIEW/);
+ const unknown=overlay(app.feed(player,{launched:true}));
+ assert.match(unknown,/NO CAPTURE TIME/);assert.doesNotMatch(unknown,/LIVE/);
+ app.state.run.state='Ended';assert.match(overlay(app.feed(player,{launched:true,feed_captured_at:now})),/OFFLINE/);
+});
+
+test('the 1s ticker ages capture/observation times and flips expired freshness labels to stale', () => {
+ const fresh={dataset:{staleAt:String(Date.now()/1000+60),staleText:'STALE'},textContent:'LIVE VIEW'};
+ const expired={dataset:{staleAt:String(Date.now()/1000-1),staleText:'STALE · capture stopped'},textContent:'LIVE VIEW'};
+ const age={dataset:{age:String(Date.now()/1000-90)},textContent:'0s ago'};
+ let tick;const app=vm.createContext({Date,isNaN,Number,setInterval:fn=>{tick=fn;},countdown:String,
+  $$:selector=>selector==='[data-stale-at]'?[fresh,expired]:selector==='[data-age]'?[age]:[]});
+ vm.runInContext(timeHelpers+'\n'+source.split('\n').find(line=>line.startsWith('setInterval(()=>{')),app);
+ tick();
+ assert.equal(fresh.textContent,'LIVE VIEW');assert.equal(expired.textContent,'STALE · capture stopped');assert.equal(expired.dataset.stale,'true');
+ assert.equal(age.textContent,'1m ago');
+});
+
+test('a failed live image skipped while hidden is retried when the page becomes visible', () => {
+ const listeners={},failed={hidden:true,src:'',getAttribute:()=>'/live?epoch=e',closest:()=>null},inClosedDialog={hidden:true,src:'',getAttribute:()=>'/live',closest:()=>({open:false})};
+ const app=vm.createContext({document:{hidden:true,addEventListener:(name,fn)=>{listeners[name]=fn;}},$$:selector=>selector==='img[data-live][hidden]'?[failed,inClosedDialog]:[]});
+ const start=source.indexOf("document.addEventListener('visibilitychange'");
+ vm.runInContext(source.slice(start,source.indexOf('\n',start)),app);
+ listeners.visibilitychange();assert.equal(failed.src,'');
+ app.document.hidden=false;listeners.visibilitychange();
+ assert.equal(failed.src,'/live?epoch=e');assert.equal(inClosedDialog.src,'');
 });
 
 function deferred() {
@@ -125,9 +162,9 @@ test('pause warning names the trigger, affected bot, recovery and expiry', () =>
 
 test('takeover controls appear only for launched live players and show who has control', () => {
  const app=controls();
- Object.assign(app,{badge:()=>'',structuredInspector:()=>'',agentDiagnostics:()=>'',
+ Object.assign(app,{badge:()=>'',agentDiagnostics:()=>'',Date,
   active:r=>r.state!=='Ended',button:(label,action,_icon,_class,attrs)=>`<button data-action="${action}" ${attrs}>${label}</button>`});
- vm.runInContext(source.split('\n').find(line=>line.startsWith('function feed(')),app);
+ vm.runInContext(timeHelpers+'\n'+feedSource,app);
  const player={id:'bot',name:'Solo <bot>',initial:true};
  for(const state of ['Running','Paused','Investigating']){
   app.state.run.state=state;
@@ -241,11 +278,11 @@ test('historical Decisions player requests count as gameplay with retained API c
  assert.match(html,/0.20s/);
  assert.match(html,/<th>Output tokens<\/th>/);
  assert.match(html,/Recorded API cost/);
- assert.equal(app.apiEstimate(app.state.data.usage[0]),0.0000042);
+ assert.equal(app.apiEstimate(app.state.usage[0]),0.0000042);
 });
 
 function usageDashboard(usage=[],runs=[]) {
- const app=vm.createContext({state:{data:{usage,runs,settings:{},ai:{}},draft:{}},
+ const app=vm.createContext({state:{usage,data:{runs,settings:{},ai:{}}},notice:copy=>copy,
   arr:value=>Array.isArray(value)?value:[],heading:()=>'',number:value=>value==null?'Unknown':value.toLocaleString('en-US'),title:String,
   hardwareView:()=>'',icon:()=>'',date:()=>'',money:value=>value==null?'Unknown':`$${value}`,empty:(title,copy)=>`${title} ${copy}`,
  });
@@ -289,6 +326,29 @@ test('missing usage and incomplete cache breakdown keep known subtotals and expl
  assert.equal(app.summaryValue(app.usageSummary([missing]),'cost'),'Unknown');
  assert.equal(app.apiEstimate(subscriptionRow({usage:{...good.usage,cached_input_tokens:1100}})),null);
  assert.equal(app.usageTokens(subscriptionRow({usage:{input_tokens:-1,output_tokens:NaN}})).input,null);
+});
+
+test('run usage summarizes every request but renders a bounded ledger on each poll', () => {
+ const app=usageDashboard(),rows=Array.from({length:10000},(_,i)=>subscriptionRow({id:`u${i}`,run_id:'r',created_at:i}));
+ const html=app.runUsageView({usage:rows});
+ assert.match(html,/10000 recorded requests/);
+ assert.equal((html.match(/Request details/g)||[]).length,50);
+ assert.match(html,/9950 older requests — see <a href="#\/usage">Usage<\/a>/);
+ assert.match(html,/&quot;id&quot;: &quot;u0&quot;/);assert.doesNotMatch(html,/&quot;u50&quot;/);
+ assert.ok(html.length<100000,`bounded run usage view: ${html.length}`);
+});
+
+test('pricing source is a link in browser mode and selectable text in the desktop shell', () => {
+ const app=usageDashboard();
+ assert.match(app.pricingNote(),/<a href="https:\/\/developers\.openai\.com\/api\/docs\/pricing" target="_blank"/);
+ app.window={ashadDesktop:{}};
+ assert.doesNotMatch(app.pricingNote(),/<a /);
+ assert.match(app.pricingNote(),/https:\/\/developers\.openai\.com\/api\/docs\/pricing/);
+});
+
+test('Usage page without loaded usage rows reports unavailable instead of an empty ledger', () => {
+ const app=usageDashboard();app.state.usage=null;
+ assert.match(app.usageView(),/Usage records are not loaded/);assert.doesNotMatch(app.usageView(),/No usage yet/);
 });
 
 test('old Codex last-request records retain reported amounts with a partial-scope notice', () => {
@@ -340,30 +400,18 @@ test('live run displays dominant computer and inspector tokens using its frozen 
  assert.match(html,/<select id="inspected-player"/);
 });
 
-test('agent model selection defaults to Luna, respects known account availability, and supports offline editing', () => {
- const app=usageDashboard();
- app.state.data.model_options=['gpt-6-luna','gpt-6-sol','gpt-6.1-sol','gpt-6-astra'].map(id=>({id,label:id}));
- app.state.data.ai={configured:false,available_models:[]};
- assert.match(app.modelSelector(),/value="gpt-6-luna" selected/);
- assert.doesNotMatch(app.modelSelector(),/ disabled/);
- app.state.draft.model='gpt-6-sol';
- app.state.data.ai={configured:true,status:'ready',available_models:['gpt-6-luna','gpt-6-sol']};
- assert.match(app.modelSelector(),/value="gpt-6-sol" selected/);
- assert.match(app.modelSelector(),/value="gpt-6-astra"  disabled/);
- app.state.data.model_options=undefined;
- assert.doesNotMatch(app.modelSelector(),/<select/);
- assert.match(app.modelSelector(),/controller update/);
-});
-
-test('Usage polling renders updated totals and cannot rerender a newer route', async () => {
- const response=deferred();let renders=0;
- const app=vm.createContext({state:{data:{},route:'usage',parts:['usage'],renderEpoch:1,polling:false},
-  document:{hidden:false},$:()=>({open:false}),refresh:()=>response.promise,render:()=>renders++,updateStatusUI(){}});
+test('Usage polling fetches /api/usage, renders updated totals and cannot rerender a newer route', async () => {
+ let renders=0,usageResponse=deferred();const requests=[];
+ const app=vm.createContext({state:{data:{},route:'usage',parts:['usage'],renderEpoch:1,polling:false},arr:value=>Array.isArray(value)?value:[],
+  document:{hidden:false},$:()=>({open:false}),refresh:async()=>{},render:()=>renders++,updateStatusUI(){},
+  api:url=>{requests.push(url);return usageResponse.promise;}});
+ vm.runInContext(source.slice(source.indexOf('async function loadUsage()'),source.indexOf('async function startTakeover(')),app);
  vm.runInContext(source.slice(source.indexOf('async function poll()'),source.indexOf('setInterval(poll,')),app);
- const pending=app.poll();response.resolve();await pending;assert.equal(renders,1);
- const delayed=deferred();app.refresh=()=>delayed.promise;
- const late=app.poll();app.state.renderEpoch++;app.state.route='new';delayed.resolve();await late;
- assert.equal(renders,1);
+ const pending=app.poll();await new Promise(setImmediate);usageResponse.resolve({usage:[{id:'row'}]});await pending;
+ assert.deepEqual(requests,['/api/usage']);assert.equal(app.state.usage[0].id,'row');assert.equal(renders,1);
+ usageResponse=deferred();
+ const late=app.poll();await new Promise(setImmediate);app.state.renderEpoch++;app.state.route='projects';usageResponse.resolve({usage:[{id:'late'}]});await late;
+ assert.equal(renders,1);assert.equal(app.state.usage[0].id,'row');
 });
 
 test('subscription usage remains separate from historical metered cost', () => {
@@ -438,60 +486,6 @@ test('late sign-in checks cannot undo logout and automatic checks stop after fiv
  assert.equal(polls,1);
 });
 
-function agentWorkflow(api) {
- const profile={id:'agent-1',name:'Agronauts',build_id:'build-1',model:'gpt-6-sol',instructions:'Escape closes the active window.',source_files:[{path:'ui.gd'}]};
- const app=vm.createContext({api,crypto:require('node:crypto'),
-  state:{data:{agents:[profile],builds:[{id:'build-1',name:'Agronauts'}],runs:[],model_options:[],ai:{}},dataRevision:0,parts:['new','agent-1'],route:'new',renderEpoch:1,draft:{primary_goal:'  Explore the beach  ',transport:'steam',request_id:'same-request'}},
-  arr:value=>Array.isArray(value)?value:[],render(){},toast(){},errorMessage:error=>error.message,
-  navigate(route){app.destination=route;},
- });
- vm.runInContext(source.slice(source.indexOf('function markDraftDirty('),source.indexOf('const activeStates ='))+source.slice(source.indexOf('function selectedAgent('),source.indexOf('function feed(')),app);
- return app;
-}
-
-test('tuning uses the selected build and model once, and retains a reusable profile', async () => {
- const response=deferred(),requests=[];
- const app=agentWorkflow(async(...args)=>{requests.push(args);return response.promise;});
- Object.assign(app.state,{route:'agents',parts:['agents'],draft:{build_id:'build-1',model:'gpt-6-sol'}});
- const pending=app.tuneAgent();await app.tuneAgent();
- assert.equal(requests.length,1);assert.equal(app.state.tuning,true);
- assert.equal(requests[0][0],'/api/agents/tune');
- const submitted=JSON.parse(JSON.stringify(requests[0][2]));assert.match(submitted.request_id,/^[a-f0-9-]{36}$/);delete submitted.request_id;
- assert.deepEqual(submitted,{build_id:'build-1',model:'gpt-6-sol'});
- response.resolve({id:'agent-new',model:'gpt-6-sol',instructions:'Use the controls.'});await pending;
- assert.equal(app.state.tuning,false);assert.equal(app.state.data.agents[0].instructions,'Use the controls.');
- assert.equal(app.destination,'agents/agent-new');
-});
-
-test('instances launch with only the objective, transport and agent, and retry the same request after failure', async () => {
- const response=deferred(),requests=[];
- const app=agentWorkflow(async(...args)=>{requests.push(args);if(requests.length===1){await response.promise;throw new Error('Environment unavailable');}return {id:'run-new'};});
- const pending=app.startInstance();await app.startInstance();assert.equal(requests.length,1);
- response.resolve();await assert.rejects(pending,/Environment unavailable/);
- assert.equal(app.state.launchError,'Environment unavailable');assert.equal(app.state.launching,false);
- await app.startInstance();
- assert.deepEqual(JSON.parse(JSON.stringify(requests[1])),['/api/instances','POST',{agent_id:'agent-1',primary_goal:'Explore the beach',transport:'steam',request_id:'same-request'}]);
- assert.equal(app.destination,'runs/run-new');assert.equal(app.state.data.runs[0].id,'run-new');
-});
-
-test('failed tuning retries stable inputs once and changed configuration uses a new key', async()=>{
- const requests=[],app=agentWorkflow(async(...args)=>{if(args[0].startsWith('/api/agents/tuning/'))return {status:'unknown'};requests.push(args);throw new Error('Lost response');});
- app.state.data.builds[0].project_id='game-one';app.state.draft={build_id:'build-1',model:'gpt-6-sol',agent_name:' Beach scout '};
- await assert.rejects(app.tuneAgent(),/Lost response/);await assert.rejects(app.tuneAgent(),/Lost response/);
- assert.equal(requests[0][2].request_id,requests[1][2].request_id);
- assert.equal(requests[0][2].project_id,'game-one');assert.equal(requests[0][2].name,'Beach scout');
- app.state.draft.agent_name='Fisher';await assert.rejects(app.tuneAgent(),/Lost response/);
- assert.notEqual(requests[2][2].request_id,requests[0][2].request_id);
-});
-
-test('lost tuning response reconciles completed saved profile without repeating a POST',async()=>{
- const requests=[],app=agentWorkflow(async(path,method,payload)=>{requests.push([path,method]);if(method==='POST')throw new Error('Lost saved response');return {status:'completed',agent:{id:'saved-profile',instructions:'Retained manual'}};});
- app.state.draft={build_id:'build-1'};
- await assert.rejects(app.tuneAgent(),/Lost saved response/);await app.tuneAgent();
- assert.equal(requests.filter(([,method])=>method==='POST').length,1);
- assert.equal(app.state.data.agents[0].id,'saved-profile');assert.equal(app.destination,'agents/saved-profile');
-});
-
 test('operating settings render a disabled fixed cap and explain retained legacy values',()=>{
  const app=vm.createContext({state:{parts:['settings','operation'],data:{settings:{concurrent_sessions:1,saved_concurrent_sessions:12}}},
  heading:()=>'',section:(name,copy,body)=>`${copy}${body}`,hardwareView:()=>'',icon:()=>'',esc:value=>String(value??'')});
@@ -500,38 +494,11 @@ test('operating settings render a disabled fixed cap and explain retained legacy
  assert.doesNotMatch(html,/name="concurrent_sessions"/);assert.match(html,/legacy value: 12 \(not enforced\)/i);
 });
 
-test('an occupied slot retains goal and request ID without silently queuing or auto-starting', async()=>{
- let calls=0;const app=agentWorkflow(async()=>{calls++;return {id:'new'};});
- app.state.data.instance_slot={available:false,owners:[{run_id:'owned',state:'Paused'}]};
- const before=JSON.stringify(app.state.draft);
- await assert.rejects(app.startInstance(),/global slot/);
- assert.equal(calls,0);assert.equal(JSON.stringify(app.state.draft),before);
- app.state.data.instance_slot.available=true;assert.equal(calls,0);
- await app.startInstance();assert.equal(calls,1);
-});
-
-test('late tuning or launch completion never navigates away from a newer page', async () => {
- for(const method of ['tuneAgent','startInstance']){
-  const response=deferred(),app=agentWorkflow(()=>response.promise);
-  if(method==='tuneAgent')app.state.draft={build_id:'build-1'};
-  const pending=app[method]();app.state.renderEpoch++;app.state.route='usage';
-  response.resolve({id:'completed'});await pending;assert.equal(app.destination,undefined);
- }
-});
-
 test('polling cannot erase an agent saved while its bootstrap request was pending', async () => {
- const response=deferred(),app=agentWorkflow(()=>response.promise);
+ const response=deferred(),app=vm.createContext({api:()=>response.promise,state:{data:{agents:[]},dataRevision:0}});
  vm.runInContext(source.slice(source.indexOf('async function refresh()'),source.indexOf('function navigate(')),app);
  const pending=app.refresh();app.state.dataRevision++;app.state.data.agents=[{id:'new-profile'}];
  response.resolve({agents:[]});await pending;assert.equal(app.state.data.agents[0].id,'new-profile');
-});
-
-test('new instance offers exactly objective and transport, and removed workflows have no routes or handlers', () => {
- const app=agentWorkflow(()=>{});
- Object.assign(app,{heading:()=>'',esc:String,icon:()=>'',field:(_label,path)=>`<textarea data-path="${path}"></textarea>`,select:(_label,path)=>`<select data-path="${path}"></select>`,notice:()=>''});
- const html=app.draftView();
- assert.equal((html.match(/data-path=/g)||[]).length,2);assert.match(html,/primary_goal/);assert.match(html,/data-path="transport"/);
- assert.doesNotMatch(source,/\/api\/(?:scenarios|plan\b|validate|launch|compare|fixtures)|data-action="(?:review|change-goal|rerun)|function (?:scenariosView|globalReview|compareView)/);
 });
 
 function goalDashboard() {

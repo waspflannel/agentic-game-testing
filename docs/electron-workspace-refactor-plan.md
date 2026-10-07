@@ -791,6 +791,19 @@ Use this section as the durable handoff. For each completed slice, record what c
 - Managed quit returned exit code 0; no owned package/controller processes remained. Private Store reopened with both actual controller/watchdog locks acquired, SQLite integrity `ok`, all 260 events retained, ended/reconciled ownership and zero usage/leases. No real data import, credentials, inference, Docker provisioning, viewer session, Steam or gameplay occurred. All relevant jobs were collected; diagnostic helpers/package/captures remain ignored and unstaged.
 - **User stop boundary:** finish and commit P4, then stop for review. P5 remains not started/unchecked. Installed/non-admin behavior, clean release provenance, authenticated tuning, live desktop/camera/viewer/gameplay and controlled fault acceptance require a separate user kickoff and explicit authorization. Do not begin those gates automatically.
 
+### Review-fix record — 2026-10-07 (code/fixture scope)
+
+- A whole-codebase review produced 3 High, 19 Medium and numerous Low findings; this batch fixes them on branch `fix/review-findings`. P5 remains unstarted and unchecked; no live Docker, sign-in, inference or gameplay was run.
+- **Highs fixed:** provisioning under Windows PowerShell 5.1 no longer aborts on the first missing network/volume/container (`NativeCommandError` from redirected stderr) and keeps `--format` label quoting intact — a real 5.1 run of the script against a stub docker now covers it; every request must carry a loopback `Host` (DNS-rebinding defense); definite 4xx worker refusals are recorded as rejected and replanned instead of unknown/investigation.
+- **Lifecycle/admission:** lost-reply start lookup now finds the stored `instance_` launch; ticks finish runs left in Stopping; control command IDs are bound to their command; `recover()` is idempotent; reconcile downloads evidence outside the coordinator lock; the Electron shell can quit after controller loss and binds Stop-and-quit to the listed run IDs.
+- **Preparation:** one desktop per project/build (new request IDs reconcile it), tree-kill on timeout, startup wait, hashing off the event loop, `DOCKER_*` stripped, worker watchdog survives failed ticks (pausing the run), X errors no longer exit the probe.
+- **Persistence:** migration/import no longer hold the store lock across backups; migration groupings are repeatable per grouping hash; redaction-altered paths, post-commit journal residue and path aliases are handled; non-finite JSON is refused at the store.
+- **Planner/loop:** controller-clock freshness, ready flips no longer reset the review budget, `world_ready` limited to setup goals, waits count as attempts.
+- **Performance/UI:** bootstrap carries `usage_count` (full ledger via `GET /api/usage`), worker requests use an epoch index, bounded instance ledgers/raw previews, honest camera capture age, legacy composer/agent pages removed in favour of the project composer.
+- **Packaging:** hash-locked isolated pip install (43 runtime pins; pip/pytest/dev tooling not shipped), tracked-files-only resource copy, atomic Python extraction, Electron fuses disabling RunAsNode/NODE_OPTIONS/inspect; `.gitattributes` enforces LF so clean clones pass.
+- Exact checks: `.venv/Scripts/python.exe -B -m pytest tests -q` **676 passed, 38 subtests** (includes the locally ignored game-integration file), node syntax checks passed, `node --test` (seven dashboard/desktop files) **129 passed**, `git diff --check` clean. One unchanged Starlette/httpx TestClient deprecation warning. Packaging changes were not rebuilt here (`build:dir` downloads); P5 must rebuild from a clean commit.
+- Deliberately not changed: worker-token isolation from the same-user game process and `no-new-privileges` (Steam setuid needs unverified), base-image digest pinning (registry access), merging the three behaviourally different pending-action reconcilers.
+
 ### Decision entry template
 
 ```text

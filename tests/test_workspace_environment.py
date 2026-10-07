@@ -2,6 +2,7 @@
 import asyncio
 from copy import deepcopy
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -48,7 +49,8 @@ class FakeWorker:
 
     async def health(self):
         self.owner.calls.append("health")
-        if self.owner.unreachable:
+        if self.owner.unreachable or self.owner.starting:
+            self.owner.starting = max(0, self.owner.starting - 1)
             raise RuntimeError(self.owner.secret)
         return deepcopy(self.owner.snapshot)
 
@@ -70,7 +72,9 @@ class FakeDocker:
         self.secret = "fixture-secret-" * 4
         self.snapshot = probe(build)
         self.unreachable = False
+        self.starting = 0
         self.existing = None
+        self.names = set()
         self.collision = False
         self.fail_script = False
         self.linux = True
@@ -103,6 +107,7 @@ class FakeDocker:
                      "desktop_url": f"http://127.0.0.1:{desktop}/vnc.html", "token_file": str(secrets / "worker_token"),
                      "vnc_password_file": str(secrets / "vnc_password")}
             Path(argument("-RegistrationFile")).write_text(json.dumps([entry]), encoding="utf-8")
+            self.names.add("ashad-" + worker_id)
             self.existing = {"Config": {"Image": argument("-Image"), "Labels": {"ashad.managed": "true", "ashad.environment-owner": argument("-ManagedOwner")}},
                              "State": {"Running": True}, "Mounts": [
                                  {"Destination": "/game", "Source": argument("-BuildPath"), "RW": False},
@@ -124,8 +129,9 @@ class FakeDocker:
         elif argv[1:3] == ["image", "inspect"]:
             result.stdout = "[{}]"
         elif argv[1:3] == ["container", "ls"]:
-            if self.existing or self.collision:
-                result.stdout = argv[argv.index("--filter") + 1].removeprefix("name=^/").removesuffix("$")
+            name = argv[argv.index("--filter") + 1].removeprefix("name=^/").removesuffix("$")
+            if self.collision or (self.existing and name in self.names):
+                result.stdout = name
         elif argv[1:3] == ["container", "inspect"]:
             result.stdout = json.dumps([self.existing])
         elif argv[1] == "cp":
@@ -242,7 +248,44 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.fake.secret, public_and_store)
         self.assertNotIn("human-only-password", public_and_store)
         self.assertNotIn("token_file", public_and_store)
-        self.assertEqual(self.fake.calls, ["health", "status", "probe"])
+        # Bounded startup wait, then exactly one passive readiness probe.
+        self.assertEqual(self.fake.calls, ["health", "health", "status", "probe"])
+
+    async def test_startup_is_awaited_before_the_readiness_probe(self):
+        self.fake.starting = 2
+        result = await self.prepare()
+        self.assertTrue(result["environment"]["ready"])
+        self.assertEqual(self.fake.calls, ["health"] * 4 + ["status", "probe"])
+
+    async def test_new_request_for_same_build_reconciles_same_desktop_volumes_and_ports(self):
+        first = await self.prepare()
+        self.fake.snapshot["desktop"]["rendered"] = False  # Not reusable as-is: provisioning must reconcile.
+        second = await self.prepare(request_id="request-2")
+        scripts = [argv for argv in self.fake.argv if "-File" in argv]
+        self.assertEqual(len(scripts), 2)
+        for option in ("-WorkerPrefix", "-ManagedOwner", "-ApiBasePort", "-DesktopBasePort", "-SecretsRoot", "-NetworkName"):
+            self.assertEqual(scripts[0][scripts[0].index(option) + 1], scripts[1][scripts[1].index(option) + 1])
+        records = [self.store.require("environment_preparations", key) for key in ("request-1", "request-2")]
+        for key in ("owner", "worker_id", "container", "url", "desktop_url"):
+            self.assertEqual(records[0][key], records[1][key])
+        self.assertEqual(second["worker_id"], first["worker_id"])
+        self.assertEqual(len(self.store.list("workers")), 1)
+        # A busy adopted desktop is never remounted, whatever the request ID.
+        self.fake.snapshot["human_control"] = True
+        with self.assertRaisesRegex(ValueError, "busy"):
+            await self.prepare(request_id="request-3")
+        self.assertEqual(self.fake.scripts, 2)
+        # Exact replay of a completed request stays read-only.
+        self.assertEqual(await self.prepare(request_id="request-2"), second)
+        self.assertEqual(self.fake.scripts, 2)
+
+    async def test_different_build_gets_its_own_desktop(self):
+        first = await self.prepare()
+        self.fake.snapshot["desktop"]["rendered"] = False
+        second = await self.prepare(build={**self.build, "id": "build-2"}, request_id="request-2")
+        self.assertNotEqual(second["worker_id"], first["worker_id"])
+        owners = [argv[argv.index("-ManagedOwner") + 1] for argv in self.fake.argv if "-File" in argv]
+        self.assertEqual(len(set(owners)), 2)
 
     async def test_completed_retry_has_no_resources_credentials_or_worker_calls(self):
         first = await self.prepare()
@@ -265,7 +308,8 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_unreachable_probe_is_truthful_and_secret_safe(self):
         self.fake.unreachable = True
-        result = await self.prepare()
+        with patch("ashad.workspace_environment.STARTUP_SECONDS", 0):
+            result = await self.prepare()
         self.assertFalse(result["environment"]["ready"])
         self.assertNotIn(self.fake.secret, json.dumps(result))
         self.assertFalse(result["environment"]["checks"]["reachable"]["ready"])
@@ -373,6 +417,15 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(self.fake.secret, str(raised.exception))
         self.assertEqual(self.store.require("environment_preparations", "request-2")["status"], "error")
 
+    def test_image_tag_hashes_only_the_docker_build_context(self):
+        from ashad.workspace_environment import _image
+        (self.resources / "worker/.dockerignore").write_text("__pycache__\n*.pyc\n*.log\n")
+        tag = _image(self.resources)
+        (self.resources / "worker/build.log").write_text("excluded by .dockerignore")
+        self.assertEqual(_image(self.resources), tag)
+        (self.resources / "worker/added.py").write_text("in the build context")
+        self.assertNotEqual(_image(self.resources), tag)
+
     async def test_resource_version_change_does_not_rebind_incomplete_request(self):
         self.fake.fail_script = True
         with self.assertRaises(ValueError):
@@ -429,12 +482,13 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         self.tools.stop()
         try:
             from ashad.workspace_environment import _tools
-            with patch.dict("os.environ", {"SystemRoot": r"C:\Windows", "ProgramFiles": r"C:\Program Files", "PATH": r"C:\global Python;C:\global Node"}), patch("pathlib.Path.is_file", return_value=True), patch("ashad.workspace_environment._safe_path", side_effect=Path):
+            with patch.dict("os.environ", {"SystemRoot": r"C:\Windows", "ProgramFiles": r"C:\Program Files", "PATH": r"C:\global Python;C:\global Node", "DOCKER_HOST": "tcp://elsewhere:2375"}), patch("pathlib.Path.is_file", return_value=True), patch("ashad.workspace_environment._safe_path", side_effect=Path):
                 powershell, docker, env = _tools()
             self.assertEqual(powershell, Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"))
             self.assertEqual(docker, Path(r"C:\Program Files\Docker\Docker\resources\bin\docker.exe"))
             self.assertNotIn("global Python", env["PATH"])
             self.assertNotIn("global Node", env["PATH"])
+            self.assertNotIn("DOCKER_HOST", env)
         finally:
             self.tools.start()
 
@@ -477,6 +531,28 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
             await task
         self.assertEqual(self.store.require("environment_preparations", "request-1")["status"], "unknown")
         self.assertEqual(self.fake.scripts, 1)
+
+
+class CommandTimeoutTests(unittest.IsolatedAsyncioTestCase):
+    @unittest.skipUnless(os.name == "nt", "taskkill tree semantics are Windows-only")
+    async def test_timeout_kills_tree_even_when_grandchild_inherits_output(self):
+        import ctypes
+        import sys
+        import time
+        from ashad.workspace_environment import _execute, _run
+        with tempfile.TemporaryDirectory() as directory:
+            spawn = ("import subprocess, sys, time; child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
+                     "open('grandchild.pid', 'w').write(str(child.pid)); time.sleep(60)")
+            started = time.monotonic()
+            with self.assertRaises(subprocess.TimeoutExpired):
+                await _run(_execute, [sys.executable, "-c", spawn], directory, dict(os.environ), timeout=3)
+            self.assertLess(time.monotonic() - started, 20)
+            handle = ctypes.windll.kernel32.OpenProcess(0x00100000, False, int(Path(directory, "grandchild.pid").read_text()))  # SYNCHRONIZE
+            try:
+                self.assertTrue(not handle or ctypes.windll.kernel32.WaitForSingleObject(handle, 5000) == 0)
+            finally:
+                if handle:
+                    ctypes.windll.kernel32.CloseHandle(handle)
 
 
 class ProvisionScriptTests(unittest.TestCase):

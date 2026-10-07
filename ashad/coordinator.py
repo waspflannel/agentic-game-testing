@@ -49,6 +49,9 @@ class Coordinator:
         self.ticks = {}
         self.command_locks = {}
         self.clients = {}
+        self.finishing = {}
+        self.bindings = {}  # (worker_id, epoch) -> (run_id, player_id); epochs are immutable per run player.
+        self.storage = {}  # run_id -> (checked_at, bytes)
         self.stopping = False
         self.draining = False
         from .structured import StructuredPlayers
@@ -64,7 +67,7 @@ class Coordinator:
                               (ps.get("bound") or ps.get("launched") or ps.get("phase") == "teardown_unknown"))
                              for ps in run.get("players", {}).values())
             terminal = str(run.get("state", "Unknown")).lower() in {"ended", "completed", "failed", "terminated", "cancelled"}
-            if not terminal or run["id"] in leases or unresolved or run.get("human_control") or run.get("external_control"):
+            if not terminal or run["id"] in leases or unresolved or run.get("human_control"):
                 owners.append({"run_id": run["id"], "state": run["state"],
                                "reason": "teardown_unconfirmed" if run["state"] == "Ended" else
                                          "human_control" if run.get("human_control") else run["state"].lower()})
@@ -106,8 +109,8 @@ class Coordinator:
                 run.pop("human_control", None)
             self.save_run(run)
             self.store.event(run_id, "teardown_reconciled", {"results": results, "actor": "human"})
-            await self.collect_evidence(run_id)
-            return self.store.require("runs", run_id)
+        await self.collect_evidence(run_id)  # Downloads must not hold the admission lock.
+        return self.store.require("runs", run_id)
 
     def save_run(self, run):
         if self.ticks.get(run["id"]) is asyncio.current_task():
@@ -187,15 +190,19 @@ class Coordinator:
         if body is not None and path != "/bind" and not path.startswith("/setup/"):
             body = dict(body)
             if "run_id" not in body:
-                for run in self.store.list("runs"):
-                    ps = next((p for p in run.get("players", {}).values() if p["worker_id"] == worker_id and p["epoch"] == body.get("epoch")), None)
-                    if ps:
-                        body.update(run_id=run["id"], player_id=ps["id"])
-                        if path == "/heartbeat":
-                            body["investigation_deadline"] = body.pop("deadline", run.get("investigation_deadline"))
-                            duration = run["plan"]["limits"]["duration_seconds"]
-                            body["run_deadline"] = run["started_at"] + duration if duration and run.get("started_at") else None
-                        break
+                owner = self.bindings.get((worker_id, body.get("epoch")))
+                if not owner:
+                    for run in self.store.list("runs"):
+                        for p in run.get("players", {}).values():
+                            self.bindings[(p["worker_id"], p["epoch"])] = (run["id"], p["id"])
+                    owner = self.bindings.get((worker_id, body.get("epoch")))
+                run = owner and self.store.get("runs", owner[0])
+                if run:
+                    body.update(run_id=owner[0], player_id=owner[1])
+                    if path == "/heartbeat":
+                        body["investigation_deadline"] = body.pop("deadline", run.get("investigation_deadline"))
+                        duration = run["plan"]["limits"]["duration_seconds"]
+                        body["run_deadline"] = run["started_at"] + duration if duration and run.get("started_at") else None
         return await client.request(method, path, data=body)
 
     def save_scenario(self, raw, scenario_id=None):
@@ -372,10 +379,12 @@ class Coordinator:
 
     async def recover(self):
         for run in self.store.list("runs"):
-            gaps = self.store.recover_ledger(run["id"])
+            gaps = [gap for gap in self.store.recover_ledger(run["id"]) if gap not in run["limitations"]]
             if gaps:
                 run["limitations"].extend(gaps)
                 run["evidence_status"] = "incomplete"
+            elif run["state"] not in ACTIVE_STATES:
+                continue  # Unchanged history keeps its timestamps, order and report.
             if run["state"] in ACTIVE_STATES:
                 if run.get("investigation_deadline") and run["investigation_deadline"] <= time.time():
                     await self.finish(run["id"], "investigation_expired", terminate=True)
@@ -420,10 +429,9 @@ class Coordinator:
                 if time.monotonic() >= next_task_retry:
                     publish_pending(self.store)
                     next_task_retry = time.monotonic() + 30
-                for run in reversed(self.store.list("runs")):
-                    if run["state"] == "Queued":
-                        await self.admit(run)
-                active = [r for r in self.store.list("runs") if r["state"] in ACTIVE_STATES]
+                for run in reversed(self.store.list("runs", states={"Queued"})):
+                    await self.admit(run)
+                active = self.store.list("runs", states=ACTIVE_STATES)
                 for run in active:
                     if not self.run_lock(run["id"]).locked() and (run["id"] not in self.ticks or self.ticks[run["id"]].done()):
                         self.ticks[run["id"]] = asyncio.create_task(self.tick_runner(run["id"]))
@@ -435,6 +443,12 @@ class Coordinator:
 
     async def tick(self, run):
         now = time.time()
+        if run["state"] == "Stopping":
+            # A control command may have cancelled a tick-owned finish after it persisted Stopping.
+            owner = self.finishing.get(run["id"])
+            if not owner or owner.done():
+                await self.finish(run["id"], run.get("ending_reason", "infrastructure_failure"), terminate=True)
+            return
         if run.get("investigation_deadline") and now >= run["investigation_deadline"]:
             await self.finish(run["id"], "investigation_expired", terminate=True)
             return
@@ -556,15 +570,20 @@ class Coordinator:
         if limits["duration_seconds"] is not None and run.get("started_at") and time.time() - run["started_at"] >= limits["duration_seconds"]:
             await self.finish(run["id"], "limit_reached", limitation="Configured run duration reached.")
             return True
-        usages = [u for u in self.store.list("usage") if u.get("run_id") == run["id"] and u.get("billing") != "subscription"]
-        if limits["spend_usd"] is not None and usages:
+        # Subscription calls have no dollar cost; only historical metered usage can reach a ceiling.
+        usages = [u for u in self.store.list("usage") if u.get("run_id") == run["id"] and u.get("billing") != "subscription"] if limits["spend_usd"] is not None else []
+        if usages:
             if any(u.get("estimated_cost_usd") is None for u in usages):
                 await self.finish(run["id"], "limit_reached", limitation="Spend ceiling cannot be safely enforced because a call has unknown cost.")
                 return True
             if sum(u["estimated_cost_usd"] for u in usages) >= limits["spend_usd"]:
                 await self.finish(run["id"], "limit_reached", limitation="Configured estimated API spend ceiling reached.")
                 return True
-        size = sum(p.stat().st_size for p in self.store.run_dir(run["id"]).rglob("*") if p.is_file())
+        checked_at, size = self.storage.get(run["id"], (None, 0))
+        if checked_at is None or time.monotonic() - checked_at >= 30:
+            # ponytail: local evidence size may be 30s stale; track per-write growth if the budget needs exactness.
+            size = sum(p.stat().st_size for p in self.store.run_dir(run["id"]).rglob("*") if p.is_file())
+            self.storage[run["id"]] = (time.monotonic(), size)
         size += sum((ps.get("worker_status", {}).get("resources", {}).get("evidence_bytes") or 0) for ps in run["players"].values())
         reserve = self.store.get("settings", "main", {}).get("storage_reserve_bytes", 1024**3)
         if size >= limits["storage_bytes"] or shutil.disk_usage(self.store.root).free < reserve:
@@ -978,6 +997,8 @@ class Coordinator:
             await self.cancel_tick(run_id)
             cached = self.store.command(run_id, command_id)
             if cached:
+                if cached.get("command", command) != command:
+                    raise ValueError("Lifecycle command ID already belongs to a different command")
                 return self.store.require("runs", run_id)
             run = self.store.require("runs", run_id)
             if run["state"] == "Ended":
@@ -1006,7 +1027,7 @@ class Coordinator:
                     if status.get("human_control") is True and status.get("lifecycle") == "paused":
                         run["human_control"]["status"] = "active"
                         self.save_run(run)
-                        self.store.command(run_id, command_id, {"acknowledged": True})
+                        self.store.command(run_id, command_id, {"acknowledged": True, "command": command})
                         return run
             if resuming:
                 if self.draining or self.stopping:
@@ -1152,7 +1173,7 @@ class Coordinator:
                 run["players"][player["id"]]["generation"] += 1
                 self.save_run(run)
                 self.store.event(run_id, "goal_changed", {"player_id": player["id"], "goal": player["goal"]})
-            self.store.command(run_id, command_id, {"acknowledged": True})
+            self.store.command(run_id, command_id, {"acknowledged": True, "command": command})
             generate_report(self.store, run_id)
             return self.store.require("runs", run_id)
 
@@ -1161,6 +1182,7 @@ class Coordinator:
         run = self.store.require("runs", run_id)
         if run["state"] == "Ended":
             return run
+        self.finishing[run_id] = asyncio.current_task()
         run.update(state="Stopping", ending_reason=reason)
         if limitation:
             run["limitations"].append(limitation)
@@ -1221,10 +1243,10 @@ class Coordinator:
         for player_id, ps in run["players"].items():
             if not ps["bound"]:
                 continue
-            client = self.client(ps["worker_id"])
-            if not hasattr(client, "evidence_index"):
-                continue
             try:
+                client = self.client(ps["worker_id"])
+                if not hasattr(client, "evidence_index"):
+                    continue
                 listing = await client.evidence_index(run_id)
                 for item in listing.get("files", []):
                     relative = Path(item["path"])

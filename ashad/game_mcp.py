@@ -21,7 +21,7 @@ class GameMCP:
             run_id, player_id = session["run_id"], session["player_id"]
             service = coordinator.structured
             observation = await service.observe(run_id, player_id)
-            mutating = name in {"perform_action", "cancel_action", "wait_for_change", "remember", "team_message"}
+            mutating = name in {"perform_action", "cancel_action", "wait_for_change"}
             if mutating and not session["control"]:
                 raise ValueError("This MCP session is observation-only")
             result = observation

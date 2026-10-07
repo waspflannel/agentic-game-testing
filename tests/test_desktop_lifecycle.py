@@ -81,6 +81,23 @@ async def test_stop_and_quit_drains_all_legacy_owners_and_blocks_racing_start(en
 
 
 @pytest.mark.asyncio
+async def test_stop_and_quit_consent_is_bound_to_the_listed_owners(environment):
+    store, coord, _, desktops = environment
+    run = await new_run(environment)
+    await coord.admit(run)
+    before, calls = store.require("runs", run["id"]), list(desktops["worker-1"].calls)
+    quit, _, server = lifecycle(environment)
+    # The user confirmed an idle quit (or a different run) before this owner appeared.
+    for shown in ([], ["other-run"], [run["id"], run["id"]]):
+        result = await quit.shutdown(stop_runs=True, expected_run_ids=shown)
+        assert result["drained"] is False and "changed" in result["detail"]
+        assert result["owners"][0]["run_id"] == run["id"]
+    assert store.require("runs", run["id"]) == before and desktops["worker-1"].calls == calls
+    assert not coord.draining and not server.should_exit
+    assert await quit.shutdown(stop_runs=True, expected_run_ids=[run["id"]]) == {"drained": True}
+
+
+@pytest.mark.asyncio
 async def test_failed_teardown_keeps_service_and_ownership_for_reconciliation(environment):
     store, coord, _, desktops = environment
     run = await new_run(environment)
@@ -187,7 +204,7 @@ async def test_http_tuning_cancellation_returns_conflict_and_releases_operation(
     server = SimpleNamespace(should_exit=False)
     quit = DesktopLifecycle(app, server)
     async with app.router.lifespan_context(app):
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://fixture") as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
             request = asyncio.create_task(client.post("/api/agents/tune", json={}, headers={"X-ASHAD-Request": "1"}))
             await entered.wait()
             assert quit.status()["operations"][0]["kind"] == "tuning"

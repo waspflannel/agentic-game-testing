@@ -16,6 +16,16 @@ MAX_GOALS = 64
 MAX_DEPTH = 8
 ACTION_REVIEW_INTERVAL = 8
 MAX_UNPRODUCTIVE_REVIEWS = 3
+MAX_OBSERVATION_AGE = 5
+
+
+def stale(stamp, now=None):
+    """One freshness rule. Callers pass controller receipt time when they have it; game clocks may be skewed."""
+    return type(stamp) not in (int, float) or not math.isfinite(stamp) or (now or time.time()) - stamp > MAX_OBSERVATION_AGE
+
+
+def numbers(text):
+    return {int(n) for n in re.findall(r"\b[1-9][0-9]*\b", text)}
 
 
 class Contract(BaseModel):
@@ -163,10 +173,10 @@ def validate_quantity(condition, references, context, objective, parent):
     if condition["kind"] not in {"inventory_quantity", "observed_count"}:
         return
     quantity, target = condition["quantity"], condition["target"]
-    explicit = {int(n) for n in re.findall(r"\b[1-9][0-9]*\b", objective)}
+    explicit = numbers(objective)
     if len(explicit) == 1 and quantity < next(iter(explicit)):
         raise ValueError("Completion threshold is below the goal's explicit quantity")
-    supported = {1} | {int(n) for n in re.findall(r"\b[1-9][0-9]*\b", context["goal"])}
+    supported = {1} | numbers(context["goal"])
     if parent and parent["kind"] in {"inventory_quantity", "observed_count"}:
         supported.add(parent["quantity"])
     recipes = []
@@ -183,7 +193,7 @@ def validate_quantity(condition, references, context, objective, parent):
                     supported.add(count)
             for key, item in value.items():
                 if key in {"description", "requirements"} and isinstance(item, str):
-                    supported.update(int(n) for n in re.findall(r"\b[1-9][0-9]*\b", item))
+                    supported.update(numbers(item))
                 elif isinstance(item, (dict, list)):
                     collect(item)
     for ref in references:
@@ -191,11 +201,11 @@ def validate_quantity(condition, references, context, objective, parent):
             value = pointer(context["observation"], ref["path"])
             collect(value)
             if isinstance(value, str):
-                supported.update(int(n) for n in re.findall(r"\b[1-9][0-9]*\b", value))
+                supported.update(numbers(value))
             elif ref["path"].endswith("/count") and type(value) is int and value > 0:
                 supported.add(value)
         else:
-            supported.update(int(n) for n in re.findall(r"\b[1-9][0-9]*\b", ref["quote"]))
+            supported.update(numbers(ref["quote"]))
     # Scale a cited recipe's ingredient requirement to its parent's still-missing output.
     if target and parent and parent["kind"] == "inventory_quantity":
         _, held = check_completion(parent, context["observation"])
@@ -225,6 +235,8 @@ def validate_condition(condition, references, context, previous=None, *, objecti
         if old_check != new_check:
             raise ValueError("A grounded goal's completion condition cannot be weakened by replanning")
         return
+    if condition["kind"] == "world_ready" and context["observation"].get("ready") is True:
+        raise ValueError("World readiness is only a setup goal while the world is not yet ready")
     validate_quantity(condition, references, context, objective, parent)
     target = condition.get("target")
     if target and target not in text:
@@ -314,7 +326,7 @@ def knowledge_signature(plan, observation):
     seen = set(plan.get("known_recipe_signatures", []))
     seen.update(hashlib.sha256(json.dumps(r, sort_keys=True).encode()).hexdigest() for r in records(observation, "recipes") or [])
     plan["known_recipe_signatures"] = sorted(seen)[:128]
-    return hashlib.sha256(json.dumps([observation.get("ready"), quests, plan["known_recipe_signatures"]], sort_keys=True).encode()).hexdigest()
+    return hashlib.sha256(json.dumps([quests, plan["known_recipe_signatures"]], sort_keys=True).encode()).hexdigest()
 
 
 def select_active(plan):
@@ -333,11 +345,9 @@ def select_active(plan):
             if candidate:
                 return candidate
         return goal
-    selected = descend(nodes[plan["root_id"]])
-    plan["active_goal_id"] = selected["id"] if selected else None
-    if selected is None:
-        plan.update(status="completed", reason="The primary goal is marked complete. Review the recorded evidence and Stop when appropriate.")
-    elif selected["status"] == "blocked":
+    selected = descend(nodes[plan["root_id"]])  # The manual-acceptance root never completes.
+    plan["active_goal_id"] = selected["id"]
+    if selected["status"] == "blocked":
         plan.update(status="blocked", reason=selected.get("blocked_reason", "This goal needs help."))
     else:
         selected["status"] = "active"
@@ -348,8 +358,7 @@ def select_active(plan):
 def reconcile(plan, observation, control_generation):
     """Refresh verified progress without inference, retaining history across pause/restart."""
     now = time.time()
-    timestamp = observation.get("timestamp")
-    if type(timestamp) not in (int, float) or not math.isfinite(timestamp) or not -1 <= now - timestamp <= 5:
+    if stale(observation.get("received_at", observation.get("timestamp")), now):
         raise ValueError("Planner requires a fresh observation")
     if (not observation.get("observation_id") or observation.get("player_id") != plan["player_id"]
             or (plan.get("run_id") and observation.get("run_id") != plan["run_id"])):
@@ -402,11 +411,13 @@ def reconcile(plan, observation, control_generation):
         selected["activated_at"] = now
         # A sibling may have lost its prerequisites while another goal was being pursued.
         selected["actionable"] = False
-    signature = knowledge_signature(plan, observation)
-    if selected and plan.get("knowledge_signature") not in (None, signature):
-        selected.update(actionable=False, reviews=0)
-        plan["reason"] = "Observed objectives or recipes changed; reassess the active goal."
-    plan["knowledge_signature"] = signature
+    # Loading screens are not new knowledge; new knowledge replans without resetting the no-progress cap.
+    if observation.get("ready") is True:
+        signature = knowledge_signature(plan, observation)
+        if selected and plan.get("knowledge_signature") not in (None, signature):
+            selected["actionable"] = False
+            plan["reason"] = "Observed objectives or recipes changed; reassess the active goal."
+        plan["knowledge_signature"] = signature
     plan["last_observation"] = observation_ref(observation)
     if completed:
         plan["revision"] += 1

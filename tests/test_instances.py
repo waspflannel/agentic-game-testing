@@ -107,7 +107,7 @@ def test_public_workflow_and_retired_routes(tmp_path, monkeypatch):
     with TestClient(app) as client:
         bootstrap = client.get("/api/bootstrap").json()
         assert bootstrap["agents"] == []
-        assert "usage" in bootstrap and "leases" in bootstrap
+        assert "usage_count" in bootstrap and "usage" not in bootstrap and "leases" in bootstrap
         assert "scenarios" not in bootstrap and "fixtures" not in bootstrap
         assert client.post("/api/agents/tune", json={"build_id": "build-1"}).status_code == 403
         result = client.post("/api/agents/tune", json={"build_id": "build-1", "model": "gpt-6-sol"}, headers=headers)

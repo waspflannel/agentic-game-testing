@@ -22,6 +22,8 @@ After changing worker code, rebuild and replace *idle* managed containers withou
 .\scripts\provision-workers.ps1 -Count 4 -Recreate
 ```
 
+Desktop setup in the app (**Prepare desktop**) runs this script with Windows PowerShell 5.1 for one desktop per project and build. Each new request for the same project/build reconciles that desktop rather than creating another; completed request IDs replay read-only. Preparation ignores inherited `DOCKER_*` variables, kills the whole process tree on timeout, and waits up to 30 seconds for the worker to answer before its passive readiness probe. Desktops from earlier request-scoped preparation are never adopted.
+
 `-Recreate` checks worker state and refuses active games, leases, and human setup sessions. `-SkipBuild` reuses the already built image. The script writes `.data\workers.local.json` with connection details and paths to credentials. Worker tokens and separate VNC passwords are generated under `.data\worker-secrets`; ACLs restrict that directory to the current Windows account and SYSTEM. The backend imports service tokens and desktop-only passwords into its credential store; desktop passwords use `desktop:<worker_id>`. Never paste these files into a scenario, agent context, evidence, or source control.
 
 Default endpoints:
@@ -58,7 +60,7 @@ Human takeover cancels an existing investigation deadline and enters a manual pa
 
 The game executor applies normal gameplay input and UI actions. Pause holds the game executor and invalidates prior observations; resume requires fresh game context. The old desktop `/action` API and screenshot-based inference are removed. Desktop capture is retained for human viewing and evidence. Steam login and graceful window closure still use the worker desktop.
 
-The coordinator sends heartbeats at least every five seconds. The default worker watchdog pauses and releases inputs after 15 seconds without a heartbeat. A binding can configure this between 5 and 120 seconds. Source-observation age is configurable from 1 to 60 seconds to account for model latency; old input never executes merely because inference was slow.
+If a worker watchdog tick itself fails, a running instance is paused with `watchdog_tick_failed`; like other infrastructure faults, it must be stopped and reconciled rather than resumed. The coordinator sends heartbeats at least every five seconds. The default worker watchdog pauses and releases inputs after 15 seconds without a heartbeat. A binding can configure this between 5 and 120 seconds. Source-observation age is configurable from 1 to 60 seconds to account for model latency; old input never executes merely because inference was slow.
 
 Investigation and optional run deadlines are stored in `worker-state.json`. A separate watchdog process enforces those persisted deadlines even if the HTTP event loop stalls. It verifies process ownership using the run environment before terminating the process group. It also releases expired held controls independently of the HTTP service. A worker restart releases keys and reconciles/terminates its prior game rather than silently authorizing the old controller.
 

@@ -247,7 +247,7 @@ def test_request_reconciliation_apis_return_saved_outputs_without_work(tmp_path)
     app.state.store.put("agents", {"id": "saved", "instructions": "Immutable manual"})
     app.state.store.command("tuning", "tune-saved", {"agent_id": "saved", "request": {"build_id": "missing", "model": "gpt-6-luna", "name": None, "project_id": None}})
     app.state.store.put("runs", {"id": "saved-run", "state": "Ended", "players": {}})
-    app.state.store.command("launch", "start-saved", {"run_id": "saved-run"})
+    app.state.store.command("launch", "instance_start-saved", {"run_id": "saved-run"})  # Instances.start's real key.
     app.state.store.command("instance", "start-legacy", {"run_id": "saved-run"})
     app.state.store.command("instance", "prepared", {"request": {"agent_id": "saved", "primary_goal": "Retained draft", "token": "fixture-private"}})
     with TestClient(app) as client:
@@ -265,6 +265,20 @@ def test_request_reconciliation_apis_return_saved_outputs_without_work(tmp_path)
         assert app.state.tuning_task is not None  # Never clear the other live tuning task.
         app.state.tuning_task = None
         assert not app.state.store.list("usage") and not app.state.store.leases()
+
+
+@pytest.mark.asyncio
+async def test_lost_reply_lookup_finds_run_accepted_through_real_instance_start(environment, profile):
+    store, coord, _, _ = environment
+    run = await Instances(coord).start(InstanceRequest(agent_id=profile["id"], primary_goal="Lost reply", request_id="lost-reply"))
+    app = offline_app(store.root)
+    try:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://127.0.0.1") as client:
+            found = (await client.get("/api/instances/requests/lost-reply")).json()
+        assert found["status"] == "accepted" and found["run"]["id"] == run["id"]
+    finally:
+        app.state.store.close()
 
 
 def test_interrupted_import_exposes_history_but_blocks_all_mutations(tmp_path):

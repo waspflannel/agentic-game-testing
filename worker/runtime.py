@@ -707,7 +707,19 @@ class Runtime:
 
     async def _watchdog(self) -> None:
         while not self.closed:
-            await self.watchdog_tick()
+            try:
+                await self.watchdog_tick()
+            except Exception as exc:
+                # Supervision must outlive a failed tick; an unsupervised run is paused, never left running.
+                self.infrastructure_error = self.infrastructure_error or f"watchdog_tick_failed: {type(exc).__name__}"
+                if self.lifecycle == "running":
+                    self.interrupt.set()
+                    self.lifecycle = "paused"
+                    try:
+                        await self.release_inputs("watchdog_tick_failed")
+                        self._event("infrastructure_failure", {"reason": self.infrastructure_error})
+                    except Exception:
+                        pass  # Best effort; the paused lifecycle and recorded error already block input and resume.
             await asyncio.sleep(0.25)
 
     async def watchdog_tick(self) -> None:
@@ -904,25 +916,20 @@ class Runtime:
 
     async def _start_desktop_viewer(self) -> None:
         password = Path(os.environ.get("ASHAD_VNC_PASSWORD_FILE", "/run/secrets/vnc_password"))
-        if not password.is_file() or not password.read_text().strip():
+        secret = password.read_text().strip() if password.is_file() else ""
+        if not secret:
             raise HTTPException(503, "A private VNC password file must be provisioned first")
+        # Never on argv (visible in ps). A -rfbauth file is only obscured with a fixed key, so plaintext 0600 is equivalent.
         stored_password = self.root / "private" / "vnc-password"
         stored_password.parent.mkdir(exist_ok=True)
-        proc = await asyncio.create_subprocess_exec("x11vnc", "-storepasswd", password.read_text().strip(), str(stored_password),
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-        try:
-            await asyncio.wait_for(proc.wait(), 5)
-            if proc.returncode:
-                raise RuntimeError("Could not configure VNC authentication")
-        finally:
-            if proc.returncode is None:
-                proc.kill()
-                await proc.wait()
+        stored_password.unlink(missing_ok=True)
+        with os.fdopen(os.open(stored_password, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w") as stream:
+            stream.write(secret + "\n")
         self.desktop_session = secrets.token_hex(16)
         env = {**os.environ, "DISPLAY": self.desktop.display, "ASHAD_DESKTOP_SESSION": self.desktop_session}
         try:
             for command in (
-                ["x11vnc", "-display", self.desktop.display, "-localhost", "-rfbauth", str(stored_password),
+                ["x11vnc", "-display", self.desktop.display, "-localhost", "-passwdfile", str(stored_password),
                  "-forever", "-shared", "-clear_all", "-rfbport", "5900"],
                 ["websockify", "--web=/usr/share/novnc", "6080", "127.0.0.1:5900"],
             ):

@@ -15,6 +15,7 @@ import re
 import socket
 import stat
 import subprocess
+import tempfile
 import time
 
 from .repository import sha256_file
@@ -23,6 +24,7 @@ from .worker_client import WorkerClient
 CONTRACT = "ashad-worker/1"
 IMAGE = "ashad-workspace-worker"
 ENGINE = "GodotSteam 4.5.1 / 4.17 / Steamworks 1.63"
+STARTUP_SECONDS = 30
 
 
 class PreparationError(ValueError):
@@ -101,7 +103,7 @@ async def inspect_fresh_environment(build, worker, credentials, *, occupied=Fals
     """Fresh health/status plus passive mounted-build/desktop probe, never game launch."""
     health = status = None
     try:
-        token = credentials.get(worker.get("credential_ref") or worker.get("token_ref") or "worker:" + worker["id"])
+        token = await asyncio.to_thread(credentials.get, worker.get("credential_ref") or worker.get("token_ref") or "worker:" + worker["id"])
         if token:
             async with client_factory(worker["url"], token) as client:
                 health, status = await client.health(), await client.status()
@@ -173,10 +175,13 @@ def validate_build(build):
 def _image(resources):
     """Content-address the approved bundled worker, never overwrite a legacy image."""
     context = resources / "worker"
+    ignore = context / ".dockerignore"
+    # Docker's root-anchored .dockerignore semantics (no "!" exceptions are used), so the tag hashes the actual build context.
+    patterns = [line.strip().strip("/") for line in (ignore.read_text(encoding="utf-8").splitlines() if ignore.is_file() else ()) if line.strip() and not line.lstrip().startswith("#")]
     digest = hashlib.sha256()
     for path in sorted(context.rglob("*")):
         relative = path.relative_to(context)
-        if "__pycache__" in relative.parts or path.suffix in {".pyc", ".pyo"}:
+        if any(PurePosixPath(*relative.parts[:depth]).full_match(pattern) for depth in range(1, len(relative.parts) + 1) for pattern in patterns):
             continue
         path = _safe_path(path)
         if path.is_file():
@@ -195,15 +200,33 @@ def _tools():
     if os.name != "nt" or not powershell.is_file() or not docker.is_file():
         raise PreparationError("Windows PowerShell 5.1 and official Docker Desktop CLI are required")
     # Native Windows tools only. No dependency on global Python/Node or shell lookup.
-    env = dict(os.environ)
+    # Ambient DOCKER_HOST/CONTEXT/CONFIG must not redirect owned resources to another engine.
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("DOCKER_")}
     env["PATH"] = os.pathsep.join(map(str, (system / "System32", system, powershell.parent, docker.parent)))
     return powershell, docker, env
 
 
+def _execute(argv, *, cwd, env, shell=False, timeout):
+    """No inherited pipes: Docker grandchildren cannot block a timed-out read; the whole tree is killed."""
+    with tempfile.TemporaryFile(dir=cwd) as output:
+        process = subprocess.Popen(argv, cwd=cwd, env=env, shell=shell, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.DEVNULL)
+        try:
+            process.wait(timeout)
+        except BaseException:
+            if os.name == "nt":
+                taskkill = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/taskkill.exe"
+                subprocess.run([str(taskkill), "/T", "/F", "/PID", str(process.pid)], stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=False)
+            process.kill()
+            process.wait()
+            raise
+        output.seek(0)
+        return subprocess.CompletedProcess(argv, process.returncode, output.read().decode("utf-8", "replace"), "")
+
+
 async def _run(runner, argv, root, env, *, timeout=120):
     def call():
-        result = runner(list(map(str, argv)), cwd=str(root), env=env, shell=False,
-                        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout)
+        result = runner(list(map(str, argv)), cwd=str(root), env=env, shell=False, timeout=timeout)
         if result.returncode:
             # Script/CLI stderr can contain generated credentials. Never expose it.
             reason = "Docker preparation command failed; reconcile this request's retained resources"
@@ -229,7 +252,7 @@ def _ports():
         return api.getsockname()[1], desktop.getsockname()[1]
 
 
-def _import_worker(store, credentials, entry, record, directory):
+async def _import_worker(store, credentials, entry, record, directory):
     worker_id = record["worker_id"]
     if entry.get("id") != worker_id or entry.get("container") != record["container"] or entry.get("url") != record["url"] or entry.get("desktop_url") != record["desktop_url"]:
         raise PreparationError("Owned worker registration does not match the preparation request")
@@ -245,9 +268,11 @@ def _import_worker(store, credentials, entry, record, directory):
         if not secret or (field == "token_file" and len(secret) < 24):
             raise PreparationError("Provisioned credential is missing or invalid")
         secrets.append((reference + worker_id, secret))
-    for reference, secret in secrets:
-        if credentials.get(reference) != secret:
-            credentials.save(reference, secret)
+    def save():
+        for reference, secret in secrets:
+            if credentials.get(reference) != secret:
+                credentials.save(reference, secret)
+    await asyncio.to_thread(save)
     worker = {"id": worker_id, "name": "Project desktop", "url": record["url"], "desktop_url": record["desktop_url"],
               "credential_ref": "worker:" + worker_id,
               "host_address": record["container"], "container": record["container"], "enabled": True,
@@ -256,10 +281,27 @@ def _import_worker(store, credentials, entry, record, directory):
     return worker
 
 
+async def _await_startup(worker, credentials, client_factory):
+    """Bounded, cancellable wait for a just-started worker before the single readiness probe."""
+    token = await asyncio.to_thread(credentials.get, worker["credential_ref"])
+    deadline = time.monotonic() + STARTUP_SECONDS
+    while time.monotonic() < deadline:
+        try:
+            async with client_factory(worker["url"], token) as client:
+                if (await client.health()).get("worker_id") == worker["id"]:
+                    return
+        except Exception:
+            pass
+        await asyncio.sleep(0.5)
+
+
 async def prepare_environment(store, credentials, *, project_id, build, request_id,
                               confirmed=False, target_drained=False, resource_root=None,
-                              runner=subprocess.run, client_factory=WorkerClient):
+                              runner=_execute, client_factory=WorkerClient):
     """Prepare one desktop, without starting a game; completed retries are read-only.
+
+    Resources are owned by store/project/build, not request: a new request ID for the
+    same build reconciles the same container, profile volumes and ports.
 
     target_drained MUST be a server assertion, never copied from renderer input.
     Status completed means provisioning finished, NOT that environment.ready is
@@ -283,7 +325,7 @@ async def prepare_environment(store, credentials, *, project_id, build, request_
             raise PreparationError("Preparation request ID cannot be rebound to another payload")
         if previous["status"] == "completed":
             return previous["result"]
-    root = validate_build(build)
+    root = await asyncio.to_thread(validate_build, build)
     if not previous:
         for worker in store.list("workers"):
             if worker.get("enabled", True) is not True:
@@ -299,7 +341,7 @@ async def prepare_environment(store, credentials, *, project_id, build, request_
     script = _safe_path(resources / "scripts/provision-workers.ps1")
     if not script.is_file() or not (resources / "worker/Dockerfile").is_file():
         raise PreparationError("Packaged worker and provisioning script resources are missing")
-    image = _image(resources)
+    image = await asyncio.to_thread(_image, resources)
     if previous and previous.get("image") != image:
         raise PreparationError("Bundled worker version changed during an incomplete request; reconcile its retained resources before making a new preparation request")
     target = _safe_path(store.root)
@@ -309,9 +351,12 @@ async def prepare_environment(store, credentials, *, project_id, build, request_
         # Checkout developer data is allowed only outside the immutable resource tree too.
         raise PreparationError("Preparation data must be outside the installation/resource directory")
     powershell, docker, env = _tools()
-    owner = hashlib.sha256((str(target) + "\0" + project_id + "\0" + request_id).encode()).hexdigest()[:32]
+    # Incomplete legacy (request-derived) owners keep reconciling their own resources.
+    owner = previous["owner"] if previous else hashlib.sha256((str(target) + "\0" + project_id + "\0" + build["id"]).encode()).hexdigest()[:32]
     directory = _safe_path(target / "environments" / owner)
     directory.mkdir(parents=True, exist_ok=True)
+    prior = previous or max((item for item in store.list("environment_preparations") if item.get("owner") == owner and "api_port" in item),
+                            key=lambda item: item.get("updated_at", 0), default=None)
     if previous:
         record = dict(previous)
     else:
@@ -338,8 +383,10 @@ async def prepare_environment(store, credentials, *, project_id, build, request_
         await _run(runner, [docker, "image", "inspect", image], directory, env)
         names = await _run(runner, [docker, "container", "ls", "--all", "--filter", "name=^/" + record["container"] + "$", "--format", "{{.Names}}"], directory, env)
         if names:
-            if not previous or names != record["container"]:
+            if not prior or names != record["container"]:
                 raise PreparationError("Container name collision; unrelated resources cannot be adopted")
+            # The existing container publishes the ports of the latest attempt that created it.
+            record.update({key: prior[key] for key in ("api_port", "desktop_port", "url", "desktop_url")})
             inspected = json.loads(await _run(runner, [docker, "container", "inspect", record["container"]], directory, env))[0]
             labels = inspected["Config"].get("Labels") or {}
             mounts = {item["Destination"]: item for item in inspected.get("Mounts", [])}
@@ -370,7 +417,8 @@ async def prepare_environment(store, credentials, *, project_id, build, request_
         entries = json.loads(registration.read_text(encoding="utf-8-sig"))
         if not isinstance(entries, list) or len(entries) != 1:
             raise PreparationError("Provisioning registration must contain exactly this one desktop")
-        worker = _import_worker(store, credentials, entries[0], record, directory)
+        worker = await _import_worker(store, credentials, entries[0], record, directory)
+        await _await_startup(worker, credentials, client_factory)
         environment = await inspect_fresh_environment(build, worker, credentials, client_factory=client_factory)
         result = {"request_id": request_id, "project_id": project_id, "build_id": build["id"],
                   "status": "completed", "worker_id": worker["id"], "environment": environment}

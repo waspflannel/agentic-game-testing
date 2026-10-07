@@ -9,6 +9,7 @@
  const list=value=>C().arr(value);
  const e=value=>C().esc(value);
  const url=value=>encodeURIComponent(value);
+ const invalid=(field,message)=>Object.assign(new Error(message),{field});
  const action=(label,name,project='',extra='')=>`<button type="button" class="button ghost small" data-w-action="${name}" data-project="${e(project)}" ${extra}>${e(label)}</button>`;
  const link=(route,label,current=false)=>`<a href="#/${route}" ${current?'aria-current="page"':''}>${e(label)}</a>`;
  const project=id=>list(data().projects).find(item=>item.id===id);
@@ -98,6 +99,14 @@
   const inspected=checks.get(checkKey(id,a?.build_id,a?.id))?.result,steamReady=inspected?.steam?.ready===true;
   return C().heading('New instance',p.name,'One selected profile, one goal, one fresh world.')+slotView()+(d.reconciledRun?C().notice(`An earlier start was accepted. ${link(`runs/${url(d.reconciledRun)}`,'Review earlier accepted instance')}. Your changed goal draft is retained; starting it requires another explicit click.`):'')+`<form data-workspace="composer" data-project="${e(id)}" class="instance-form" aria-busy="${Boolean(d.busy)}"><fieldset ${d.busy?'disabled':''}><div class="field-grid">${input('Agent configuration','agent_id',d.agent_id,{required:true,error:d.errorField==='agent_id'?d.error:'',options:agents.map(a=>[a.id,`${a.name||a.id} · ${a.model}`])})}${input('Primary goal','primary_goal',d.primary_goal,{textarea:true,required:true,max:4000,error:d.errorField==='primary_goal'?d.error:''})}${input('Transport','transport',d.transport,{error:d.errorField==='transport'?d.error:'',options:[['enet','ENet'],['steam',steamReady?'Steam — fresh licensed identity verified':'Steam — unavailable until fresh licensed identity is proven',!steamReady]]})}</div><p class="section-note">${e(a?.model||'Choose a profile')} · ${e(a?.build_id||'Build unknown')} · Fresh world. Model and build are fixed by this saved profile.</p><div class="form-actions"><button class="button primary" type="submit" ${data().instance_slot?.available===false||d.busy?'disabled':''}>${d.busy?'Checking / starting…':'Start instance'}</button>${action('Check readiness','composer-inspect',id)}${attempts.has(`start:${id}`)?action('Reconcile pending start','reconcile-start',id):''}</div></fieldset>${d.error?`<p class="danger-text" role="alert">${e(d.error)}</p>`:''}${preparedIntentView(d.preparedRequest,id)}${readinessView(checks.get(checkKey(id,a?.build_id,a?.id)))}</form>`;
  }
+ // Legacy #/new/<agent> links open the project composer; agents without stable membership need explicit grouping.
+ function workspaceNewInstanceRoute(agentId){
+  const a=list(data().agents).find(a=>a.id===agentId),id=a&&membership(a);
+  if(!a)return 'projects';
+  if(!id||!profiles(id).some(p=>p.id===agentId))return 'history/unassigned';
+  const d=composer(id);if(!d.busy)d.agent_id=agentId;
+  return `projects/${url(id)}/new`;
+ }
  function buildIdentityView(build){
   if(!build)return '';
   return `<details class="workspace-checks"><summary>Pinned build identity · ${e(build.id)}</summary><dl class="definition-list"><dt>Revision</dt><dd>${e(build.source_revision||'Unknown')}</dd><dt>Artifact SHA-256</dt><dd><code>${e(build.artifact_sha256||'Unknown — inspection required')}</code></dd><dt>Engine SHA-256</dt><dd><code>${e(build.engine_sha256||'Unknown — inspection required')}</code></dd><dt>Manifest</dt><dd>${e(build.manifest_path||'Unknown')}</dd></dl><p class="section-note">Validated registration is immutable metadata, not deployment or desktop readiness.</p></details>`;
@@ -168,28 +177,28 @@
  async function setupOperation(operation){
   const s=setup;if(!s||s.busy)return;
   s.busy=true;s.error='';C().markDraftDirty(true);showSetup();
-  try{await operation(s);}catch(error){s.error=C().errorMessage(error);s.errorField=s.stage==='project'?'project_name':s.stage==='build'?'manifest_path':s.stage==='configure'?(/model|account|provider|sign in/i.test(s.error)?'model':'name'):'';}finally{s.busy=false;if(setup===s){C().markDraftDirty(s.dirty||underlyingDirty);if(document.querySelector('#workspace-setup')){showSetup();if(s.errorField)document.querySelector(`#workspace-${s.errorField}`)?.focus();}}}
+  try{await operation(s);}catch(error){s.error=C().errorMessage(error);s.errorField=error.field||'';}finally{s.busy=false;if(setup===s){C().markDraftDirty(s.dirty||underlyingDirty);if(document.querySelector('#workspace-setup')){showSetup();if(s.errorField)document.querySelector(`#workspace-${s.errorField}`)?.focus();}}}
  }
  async function create(s){
-  const name=s.project_name.trim();if(!name||name.length>200)throw new Error('Enter a project name, up to 200 characters.');
+  const name=s.project_name.trim();if(!name||name.length>200)throw invalid('project_name','Enter a project name, up to 200 characters.');
   const payload={name},key=await attempt('create',payload);sent(key);
   const p=await C().api('/api/projects','POST',{...payload,request_id:key.id});remember('projects',p);s.project_id=p.id;s.stage='build';s.dirty=false;attempts.delete('create');saveAttempts();
  }
  async function register(s){
-  if(!s.manifest_path)throw new Error('Choose a supported manifest or folder path first.');
+  if(!s.manifest_path)throw invalid('manifest_path','Choose a supported manifest or folder path first.');
   const payload={project_id:s.project_id,name:s.build_name.trim()||'Pinned revision',manifest_path:s.manifest_path};
   const key=await attempt(`build:${s.project_id}`,payload);sent(key);
   const b=await C().api('/api/builds','POST',{...payload,id:`build_${key.id}`});remember('builds',b);s.build_id=b.id;s.manifest_path='';s.stage='inspect';s.dirty=false;
  }
  async function tune(s){
-  if(!s.name.trim()||!s.model)throw new Error('Enter a configuration name and select an account-supported model.');
+  if(!s.name.trim()||!s.model)throw invalid(s.name.trim()?'model':'name','Enter a configuration name and select an account-supported model.');
   const payload={project_id:s.project_id,build_id:s.build_id,name:s.name.trim(),model:s.model},key=await attempt(`tune:${s.project_id}`,payload);
   let a;
   if(key.tried){const saved=await C().api(`/api/agents/tuning/${url(key.id)}`);if(saved.status==='completed')a=saved.agent;else if(saved.status==='in_progress')throw new Error('This tuning attempt is still in progress. Wait, then retry to reconcile; no second inference was started.');}
   if(!a){const r=await inspect(s.project_id,s.build_id);if(!setupReady(r))throw new Error(r.provider?.message||r.build_validation?.reason||'Build, provider or compatible desktop not ready. Inspect checks and Settings.');
-   if(Array.isArray(data().ai?.available_models)&&!data().ai.available_models.includes(s.model))throw new Error('This model is unavailable for the connected account. Choose another supported model explicitly.');
+   if(Array.isArray(data().ai?.available_models)&&!data().ai.available_models.includes(s.model))throw invalid('model','This model is unavailable for the connected account. Choose another supported model explicitly.');
    sent(key);a=await C().api('/api/agents/tune','POST',{...payload,request_id:key.id});}
-  remember('agents',a);s.agent_id=a.id;s.stage='review';s.dirty=false;
+  remember('agents',a);attempts.delete(`tune:${s.project_id}`);saveAttempts();s.agent_id=a.id;s.stage='review';s.dirty=false;
  }
  async function pick(s,kind){
   const bridge=globalThis.window?.ashadDesktop;
@@ -202,6 +211,8 @@
   if(!await workspaceConfirm('Prepare an ASHAD-managed Docker desktop for this pinned build? This can create/start a managed container, mount the selected build read-only and create or reuse persistent account volumes and backend worker credentials. Docker permissions are required. Existing active or unconfirmed desktops must not be repurposed. No game is launched and no system software is silently installed.','Prepare desktop'))return;
   const payload={build_id:s.build_id},key=await attempt(`prepare:${s.project_id}`,payload);sent(key);
   await C().api(`/api/projects/${url(s.project_id)}/environments/prepare`,'POST',{...payload,request_id:key.id,confirmed:true});
+  // A completed prepare is not retried; the next explicit click is a new request the backend may reconcile.
+  attempts.delete(`prepare:${s.project_id}`);saveAttempts();
   await inspect(s.project_id,s.build_id);
  }
  async function closeSetup(){
@@ -242,8 +253,8 @@
     run=saved.run;
    }
    else{
-    const a=profiles(id).find(a=>a.id===d.agent_id);if(!a)throw new Error('Choose a saved configuration in this project.');
-    if(!d.primary_goal.trim())throw new Error('Enter a primary goal.');
+    const a=profiles(id).find(a=>a.id===d.agent_id);if(!a)throw invalid('agent_id','Choose a saved configuration in this project.');
+    if(!d.primary_goal.trim())throw invalid('primary_goal','Enter a primary goal.');
     const payload={agent_id:a.id,project_id:id,primary_goal:d.primary_goal.trim(),transport:d.transport};
     // Editing a lost start cannot discard its key before GET establishes its outcome.
     if(key?.tried){
@@ -258,13 +269,13 @@
     if(!run)key=await attempt(`start:${id}`,payload);
 
     if(!run){if(data().instance_slot?.available===false)throw new Error(`${data().instance_slot.blocked_reason||'Another instance owns the slot.'} This draft is retained and never auto-launched.`);
-     const r=await inspect(id,a.build_id,a.id);if(!launchReady(r,d.transport))throw new Error(d.transport==='steam'?'Steam requires fresh verified licensed identity, a compatible idle desktop, provider, validated build and free slot. Review exact checks; no ENet fallback.':'Not ready to start. Review exact provider, build, desktop and slot checks.');
+     const r=await inspect(id,a.build_id,a.id);if(!launchReady(r,d.transport))throw d.transport==='steam'&&launchReady(r,'enet')?invalid('transport','Steam requires fresh verified licensed identity on a compatible idle desktop. Review exact checks; no ENet fallback.'):new Error(`Not ready to start${d.transport==='steam'?' with Steam':''}. Review exact provider, build, desktop and slot checks; no ENet fallback.`);
      sent(key);run=await C().api('/api/instances','POST',{...payload,request_id:key.id});}
    }
    if(!run?.id)throw new Error('Accepted start has no retained run identity. Reconcile this request before retrying.');
    remember('runs',run);attempts.delete(`start:${id}`);saveAttempts();d.dirty=false;
    if(epoch===C().state.renderEpoch&&C().state.parts.join('/')===`projects/${id}/new`){C().markDraftDirty(false);C().navigate(`runs/${run.id}`);}
-  }catch(error){d.error=C().errorMessage(error);d.errorField=/primary goal/i.test(d.error)?'primary_goal':/saved configuration/i.test(d.error)?'agent_id':d.transport==='steam'?'transport':'';if(error.code==='active_instance_conflict')data().instance_slot={available:false,owners:list(error.owning_instances),limit:1};}
+  }catch(error){d.error=C().errorMessage(error);d.errorField=error.field||'';if(error.code==='active_instance_conflict')data().instance_slot={available:false,owners:list(error.owning_instances),limit:1};}
   finally{d.busy=false;if(epoch===C().state.renderEpoch&&C().state.parts.join('/')===`projects/${id}/new`){C().markDraftDirty(d.dirty);C().render(true);if(d.errorField)document.querySelector(`#workspace-${d.errorField}`)?.focus();}}
  }
  function migrationBuildIds(){
@@ -275,7 +286,7 @@
  }
  function migrationView(){
   const m=migration,groups=[...list(data().projects),...m.newGroups];
-  return `<div id="workspace-migration" aria-busy="${m.busy}"><fieldset ${m.busy?'disabled':''}><p class="section-note">Assign stable build IDs explicitly. Duplicate project names never merge. Leave ambiguous builds unassigned; frozen evidence is not rewritten.</p>${migrationBuildIds().map(id=>input(id,`map:${id}`,m.mapping[id]||'',{options:[['','Keep unassigned'],...groups.map(p=>[p.id,`${p.name} · ${p.id}`])]})).join('')}${input('New project group name','group_name',m.group_name,{max:200})}${action('Add separate group','migration-add')}${action('Preview grouping','migration-preview')}${m.preview?`<details open><summary>Reviewed preview</summary><pre class="json-details">${e(JSON.stringify(m.preview,null,2))}</pre></details>${input('Fresh absolute backup directory','backup_dir',m.backup_dir)}<label class="checkbox-row"><input type="checkbox" data-w-field="confirmed" ${m.confirmed?'checked':''}> I reviewed this preview and backup scope and confirm metadata/evidence backup and grouping.</label>${action('Back up and apply reviewed grouping','migration-apply','',list(m.preview.blockers).length||!m.confirmed?'disabled':'')}`:''}${m.error?`<p class="danger-text" role="alert">${e(m.error)}</p>`:''}${m.busy?'<p role="status">Waiting for the real operation result…</p>':''}</fieldset>${action('Cancel','close')}</div>`;
+  return `<div id="workspace-migration" aria-busy="${m.busy}"><fieldset ${m.busy?'disabled':''}><p class="section-note">Assign stable build IDs explicitly. Duplicate project names never merge. Leave ambiguous builds unassigned; frozen evidence is not rewritten.</p>${migrationBuildIds().map(id=>input(id,`map:${id}`,m.mapping[id]||'',{options:[['','Keep unassigned'],...groups.map(p=>[p.id,`${p.name} · ${p.id}`])]})).join('')}${input('New project group name','group_name',m.group_name,{max:200})}${action('Add separate group','migration-add')}${action('Preview grouping','migration-preview')}${m.preview?`<details open><summary>Reviewed preview</summary><pre class="json-details">${e(JSON.stringify(m.preview,null,2))}</pre></details>${input('Fresh absolute backup directory','backup_dir',m.backup_dir)}<label class="checkbox-row"><input type="checkbox" data-w-field="confirmed" ${m.confirmed?'checked':''}> I reviewed this preview and backup scope and confirm metadata/evidence backup and grouping.</label>${action('Back up and apply reviewed grouping','migration-apply','',list(m.preview.blockers).length||!m.confirmed||m.applied?'disabled':'')}`:''}${m.error?`<p class="danger-text" role="alert">${e(m.error)}</p>`:''}${m.busy?'<p role="status">Waiting for the real operation result…</p>':''}</fieldset>${action('Cancel','close')}</div>`;
  }
  function showMigration(){
   const root=document.querySelector('#workspace-migration');if(root){C().patchHTML(root.parentElement,migrationView());return;}
@@ -306,11 +317,11 @@
   if(name==='migration'){if(setup?.busy||migration?.busy)return;if(document.querySelector('#workspace-setup')&&!await closeSetup())return;underlyingDirty=Boolean(C().state.dirtyDraft);opener=document.activeElement;migration={mapping:{},newGroups:[],group_name:'',backup_dir:'',confirmed:false,preview:null,busy:false,dirty:false,error:''};showMigration();return;}
   if(name==='migration-add'){const m=migration;if(m.busy||!m.group_name.trim())return;m.newGroups.push({id:`project_${crypto.randomUUID()}`,name:m.group_name.trim()});m.group_name='';m.preview=null;m.dirty=true;showMigration();return;}
   if(name==='migration-preview')return migrationOperation(async m=>{m.preview=await C().api('/api/projects/migration/preview','POST',{groups:migrationGroups()});m.confirmed=false;});
-  if(name==='migration-apply')return migrationOperation(async m=>{if(!m.preview||!m.confirmed||list(m.preview.blockers).length)throw new Error('Review a valid preview and explicitly confirm backup first.');await C().api('/api/projects/migration/apply','POST',{groups:migrationGroups(),preview_token:m.preview.preview_token,backup_dir:m.backup_dir,confirmed:true});m.dirty=false;await C().refresh();document.querySelector('#dialog')?.close();C().render(true);});
+  if(name==='migration-apply')return migrationOperation(async m=>{if(m.applied)return;if(!m.preview||!m.confirmed||list(m.preview.blockers).length)throw new Error('Review a valid preview and explicitly confirm backup first.');await C().api('/api/projects/migration/apply','POST',{groups:migrationGroups(),preview_token:m.preview.preview_token,backup_dir:m.backup_dir,confirmed:true});m.dirty=false;m.applied=true;try{await C().refresh();}catch{m.error='Applied. Refreshing the workspace failed; reload to see the new grouping. Do not apply again.';return;}document.querySelector('#dialog')?.close();C().render(true);});
   if(!setup||setup.busy)return;
   if(name==='pick')return setupOperation(s=>pick(s,el.dataset.kind||'manifest'));
   if(name==='register')return setupOperation(register);
-  if(name==='reconcile-tune')return setupOperation(async s=>{const key=attempts.get(`tune:${s.project_id}`);if(!key)return;const result=await C().api(`/api/agents/tuning/${url(key.id)}`);if(result.status!=='completed'||!result.agent)throw new Error(`Tuning status: ${result.status}. No additional inference was started. Retain the fields and retry the same attempt if needed.`);remember('agents',result.agent);s.agent_id=result.agent.id;s.build_id=result.agent.build_id;s.name=result.agent.name;s.model=result.agent.model;s.stage='review';s.dirty=false;});
+  if(name==='reconcile-tune')return setupOperation(async s=>{const key=attempts.get(`tune:${s.project_id}`);if(!key)return;const result=await C().api(`/api/agents/tuning/${url(key.id)}`);if(result.status!=='completed'||!result.agent)throw new Error(`Tuning status: ${result.status}. No additional inference was started. Retain the fields and retry the same attempt if needed.`);remember('agents',result.agent);attempts.delete(`tune:${s.project_id}`);saveAttempts();s.agent_id=result.agent.id;s.build_id=result.agent.build_id;s.name=result.agent.name;s.model=result.agent.model;s.stage='review';s.dirty=false;});
   if(name==='setup-inspect')return setupOperation(s=>inspect(s.project_id,s.build_id));
   if(name==='prepare')return setupOperation(prepare);
   if(name==='back'){setup.stage={build:'project',inspect:'build',configure:'inspect'}[setup.stage]||'build';if(setup.project_id&&setup.stage==='project')setup.stage='build';showSetup();return;}
@@ -345,6 +356,6 @@
   document.addEventListener('submit',async event=>{if(!event.target.dataset.workspace)return;event.preventDefault();await workspaceSubmit(event.target);});
   document.querySelector('#dialog')?.addEventListener('cancel',event=>{if(document.querySelector('#workspace-setup')||document.querySelector('#workspace-migration')){event.preventDefault();closeSetup();}});
  }
- Object.assign(globalThis,{initializeWorkspace,workspaceSidebarView,workspaceUpdateSidebar,projectOverviewView,unassignedHistoryView,projectComposerView,openProjectSetup,workspaceBeforeNavigate,workspaceDispatch,workspaceInput,workspaceSubmit});
+ Object.assign(globalThis,{initializeWorkspace,workspaceNewInstanceRoute,workspaceSidebarView,workspaceUpdateSidebar,projectOverviewView,unassignedHistoryView,projectComposerView,openProjectSetup,workspaceBeforeNavigate,workspaceDispatch,workspaceInput,workspaceSubmit});
  if(globalThis.ashadWorkspaceContext)initializeWorkspace(globalThis.ashadWorkspaceContext);
 })();

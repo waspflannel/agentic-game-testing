@@ -230,11 +230,12 @@ def test_keyboard_interrupt_rolls_back_sql_and_published_evidence(workspace, mon
 
 def test_evidence_changed_during_backup_leaves_target_untouched(workspace, monkeypatch):
     source, target, arguments = workspace
-    original = importer.shutil.copyfileobj
+    original = importer._copy_file
     def changing(reader, writer):
-        original(reader, writer)
+        result = original(reader, writer)
         (source / "runs" / "run-1" / "added.bin").write_bytes(b"changed")
-    monkeypatch.setattr(importer.shutil, "copyfileobj", changing)
+        return result
+    monkeypatch.setattr(importer, "_copy_file", changing)
     with pytest.raises(ValueError, match="changed"):
         importer.import_workspace(target, **arguments)
     assert not target.list("runs") and not list((target.root / "runs").iterdir())
@@ -305,3 +306,62 @@ def test_abrupt_process_death_rolls_back_sql_and_blocks_partial_replay(workspace
     with pytest.raises(ValueError, match="Interrupted import"):
         importer.import_workspace(target, **arguments)
     assert importer._snapshot(target.db) == before
+
+
+def test_target_store_stays_responsive_while_import_copies_evidence(workspace, monkeypatch):
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+    source, target, arguments = workspace
+    copying, release = threading.Event(), threading.Event()
+    original = importer._copy_file
+    def slow_copy(*args):
+        copying.set()
+        release.wait(5)
+        return original(*args)
+    monkeypatch.setattr(importer, "_copy_file", slow_copy)
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(importer.import_workspace, target, **arguments)
+        assert copying.wait(5)
+        started = time.perf_counter()
+        assert target.get("settings", "main")["concurrent_sessions"] == 1
+        target.put("settings", {"id": "coordinator_heartbeat", "timestamp": 1})  # Passive refresh mid-copy.
+        elapsed = time.perf_counter() - started
+        release.set()
+        result = future.result(timeout=30)
+    assert elapsed < 0.2
+    assert result["readiness_verified"] is False
+    assert target.require("runs", "run-1")["state"] == "Ended"
+
+
+def test_credential_like_paths_are_refused_before_any_write(workspace, tmp_path):
+    source, target, arguments = workspace
+    arguments["backup_dir"] = tmp_path / "sk-operatorbackup2026"
+    before = importer._snapshot(target.db)
+    with pytest.raises(ValueError, match="credential-like"):
+        importer.import_workspace(target, **arguments)
+    assert not arguments["backup_dir"].exists()
+    assert importer._snapshot(target.db) == before
+
+
+def test_lost_journal_cleanup_after_commit_is_recovered_by_identical_retry(workspace, monkeypatch):
+    source, target, arguments = workspace
+    journal = target.root / ".workspace-import-in-progress.json"
+    original = Path.unlink
+    def av_locked(path, *args, **kwargs):
+        if path == journal:
+            raise PermissionError("fixture antivirus lock on the journal")
+        return original(path, *args, **kwargs)
+    monkeypatch.setattr(Path, "unlink", av_locked)
+    with pytest.raises(PermissionError):
+        importer.import_workspace(target, **arguments)
+    monkeypatch.setattr(Path, "unlink", original)
+    marker = target.get("migrations", importer.IMPORT_ID)
+    assert marker and journal.is_file()
+    assert importer.import_workspace(target, **arguments) == marker
+    assert not journal.exists()
+    # A journal that does not name this committed import still needs operator recovery.
+    journal.write_text(json.dumps({"source_identity": marker["source_identity"], "backup_dir": "C:/elsewhere"}))
+    with pytest.raises(ValueError, match="Interrupted import"):
+        importer.import_workspace(target, **arguments)
+    assert journal.is_file()

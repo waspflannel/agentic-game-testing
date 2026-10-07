@@ -87,6 +87,36 @@ class WorkerContractTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.worker.lifecycle, "paused")
         self.assertEqual(self.worker.infrastructure_error, "controller_heartbeat_lost")
 
+    async def test_failed_watchdog_tick_pauses_and_supervision_continues(self):
+        failures = [RuntimeError("injected xdotool failure")]
+
+        async def release_all(keys, buttons):
+            if failures:
+                raise failures.pop()
+        self.desktop.release_all = release_all
+        self.worker.held_keys.add("W")
+        self.worker.held_input_expires_at = time.time() - 1
+        task = asyncio.create_task(self.worker._watchdog())
+
+        async def until(predicate):
+            for _ in range(100):
+                if predicate():
+                    return
+                await asyncio.sleep(0.02)
+        try:
+            await until(lambda: self.worker.infrastructure_error)
+            self.assertEqual(self.worker.lifecycle, "paused")
+            self.assertIn("watchdog_tick_failed", self.worker.infrastructure_error)
+            await until(lambda: not self.worker.held_keys)
+            self.assertFalse(task.done())
+            self.worker.infrastructure_error, self.worker.lifecycle = None, "running"
+            self.worker.last_heartbeat -= 100
+            await until(lambda: self.worker.lifecycle == "paused")
+            self.assertEqual(self.worker.infrastructure_error, "controller_heartbeat_lost")
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
     async def test_capture_failure_does_not_claim_game_freeze(self):
         self.worker.capture_error = "ffmpeg failed"
         await self.worker.watchdog_tick()

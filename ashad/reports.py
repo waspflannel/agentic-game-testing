@@ -5,6 +5,9 @@ import json
 from .store import redact
 
 
+PART_EVENTS = 1000
+
+
 def stamp(value):
     return datetime.fromtimestamp(value, timezone.utc).isoformat() if value else "unknown"
 
@@ -53,21 +56,29 @@ def generate_report(store, run_id):
         lines.append(f"- [{artifact['player_id']} · {artifact['name']}]({quote(artifact['name'])}) ({artifact['kind']}, {artifact.get('bytes', 'unknown')} bytes)")
     lines += ["", "## Complete chronological action appendix", "", "All retained events appear below or in linked parts. Operational reasons do not contain private model reasoning.", ""]
     directory = store.run_dir(run_id)
+    try:
+        previous = {p["part"]: p for p in json.loads((directory / "evidence-index.json").read_text(encoding="utf-8"))["appendix"]}
+    except (OSError, ValueError, KeyError, TypeError):
+        previous = {}
     index = []
     after, part = 0, 0
     while True:
-        events = store.events(run_id, after=after, limit=1000)
-        if not events:
-            break
         part += 1
         name = f"actions-{part:04d}.md"
-        appendix = [f"# Action ledger part {part}", ""]
-        for event in events:
-            appendix += [f"## {event['seq']} {event['id']}", "", f"{stamp(event['timestamp'])} — {event['kind']}", "", "```json", json.dumps(event, ensure_ascii=False, indent=2), "```", ""]
-        (directory / name).write_text("\n".join(appendix), encoding="utf-8")
-        lines.append(f"- [{events[0]['seq']}–{events[-1]['seq']} ({name})]({name})")
-        after = events[-1]["seq"]
-        index.append({"part": name, "first": events[0]["seq"], "last": after})
+        cached = previous.get(name)
+        if cached and (directory / name).exists() and store.count_events(run_id, after=after, before=cached["last"] + 1) == PART_EVENTS:
+            first, after = cached["first"], cached["last"]  # Full parts are append-only history; rewrite only the newest.
+        else:
+            events = store.events(run_id, after=after, limit=PART_EVENTS)
+            if not events:
+                break
+            appendix = [f"# Action ledger part {part}", ""]
+            for event in events:
+                appendix += [f"## {event['seq']} {event['id']}", "", f"{stamp(event['timestamp'])} — {event['kind']}", "", "```json", json.dumps(event, ensure_ascii=False, indent=2), "```", ""]
+            (directory / name).write_text("\n".join(appendix), encoding="utf-8")
+            first, after = events[0]["seq"], events[-1]["seq"]
+        lines.append(f"- [{first}–{after} ({name})]({name})")
+        index.append({"part": name, "first": first, "last": after})
     index_record = {"run_id": run_id, "ledger": "ledger.jsonl", "entries": count, "appendix": index, "incidents": incidents, "evidence": run.get("evidence", []), "retained_files": run.get("retained_files", []), "gaps": run.get("limitations", []), "status": run.get("evidence_status", "unknown")}
     (directory / "evidence-index.json").write_text(json.dumps(index_record, indent=2), encoding="utf-8")
     (directory / "run.json").write_text(json.dumps(run, indent=2, ensure_ascii=False), encoding="utf-8")

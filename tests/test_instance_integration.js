@@ -52,9 +52,16 @@ test('production click handler awaits real older-page action and re-enables nati
  assert.equal(prevented,true);assert.equal(element.disabled,false);assert.equal(app.state.activityPage.events[0].seq,61);
 });
 test('scroll ownership scopes distinguish runs and explicit pages, quiet polls preserve only same scope',()=>{
- assert.match(source,/scrollScope===currentScroll.dataset.scope/);assert.match(source,/scope.includes\(':history:'\)\?0:currentScroll.scrollHeight/);
- const app=renderer();assert.match(app.instanceLiveView(app.state.run,app.state.run.plan.players),/data-scope="r:latest"/);
+ const app=renderer();const html=app.instanceLiveView(app.state.run,app.state.run.plan.players);
+ assert.match(html,/id="instance-activity-scroll" data-scope="r:latest" tabindex="0" role="region" aria-label="Scrollable agent activity"/);
  app.state.run.id='second';assert.match(app.instanceLiveView(app.state.run,app.state.run.plan.players),/data-scope="second:latest"/);
+ vm.runInContext(source.split('\n').find(line=>line.startsWith('function render(background=')),app);
+ Object.assign(app,{shell(){},runView:()=>'',settingsView:()=>'',usageView:()=>'',title:String,document:{title:''}});app.state.route='runs';
+ const node=(scope,scrollTop=0)=>({dataset:{scope},scrollTop,scrollHeight:900,clientHeight:100,getBoundingClientRect:()=>({top:0}),querySelectorAll:()=>[],querySelector:()=>null});
+ const poll=(before,after)=>{const nodes=[before,after];app.$=()=>nodes.shift();app.render(true);return after.scrollTop;};
+ assert.equal(poll(node('r:latest',300),node('r:latest')),300,'quiet poll keeps the reader position');
+ assert.equal(poll(node('r:latest',300),node('other:latest')),900,'another run starts at its live edge');
+ assert.equal(poll(node('r:latest',300),node('r:history:5',400)),0,'an explicit older page starts at its top');
 });
 test('legacy full-ledger pagination keeps at most 200 records instead of accumulating history',async()=>{
  const app=renderer();app.state.search='';app.state.events=[];let page=0;
@@ -63,8 +70,22 @@ test('legacy full-ledger pagination keeps at most 200 records instead of accumul
  await app.loadEvents();for(let i=0;i<6;i++)await app.loadEvents(true);
  assert.equal(app.state.events.length,200);assert.equal(app.state.events[0].seq,1201);assert.equal(app.state.eventNext,1400);
 });
-test('production deferred module order and evidence click avoid route hash mutation',()=>{
+test('production deferred module order and evidence click scroll to the card without route hash mutation',async()=>{
  const html=fs.readFileSync('ashad/static/index.html','utf8');assert.ok(html.indexOf('/static/app.js')<html.indexOf('/static/instance-workspace.js'));assert.match(html,/instance-workspace.js" defer/);
- assert.match(source,/activityScrollSnapshot\?\.\(scrollNode\)/);assert.match(source,/restoreActivityScroll\?\.\(currentScroll,scrollSnapshot\)/);
- const handler=source.slice(source.indexOf("document.addEventListener('click'"),source.indexOf("document.addEventListener('change'"));assert.match(handler,/evidence\)\{event.preventDefault\(\)/);assert.match(handler,/getElementById\(evidence.dataset.activityAnchor\)/);assert.doesNotMatch(handler,/location.hash\s*=/);
+ const app=renderer();let click,renders=0;const scrolled=[];app.location={hash:'#/runs/r'};app.render=()=>{renders++;app.cards.add('activity-old');};
+ app.cards=new Set(['activity-live']);
+ app.document={addEventListener:(kind,handler)=>{if(kind==='click')click=handler;},getElementById:id=>app.cards.has(id)?{scrollIntoView(){scrolled.push(id);},focus(){}}:null};
+ const start=source.indexOf("document.addEventListener('click'"),end=source.indexOf("document.addEventListener('input'",start);vm.runInContext(source.slice(start,end),app);
+ const evidence=id=>({target:{closest:selector=>selector==='[data-activity-anchor]'?{dataset:{activityAnchor:id}}:null},preventDefault(){this.prevented=true;}});
+ let event=evidence('activity-live');await click(event);assert.equal(event.prevented,true);assert.deepEqual(scrolled,['activity-live']);assert.equal(renders,0);
+ app.state.activityPage={runId:'r',events:[]};event=evidence('activity-old');await click(event);
+ assert.equal(app.state.activityPage,null,'a card outside the retained page returns to the latest page first');assert.equal(renders,1);assert.deepEqual(scrolled,['activity-live','activity-old']);
+ assert.equal(app.location.hash,'#/runs/r');
+});
+test('100 heavy activity events render a bounded page on each poll',()=>{
+ const app=renderer(),observation=i=>({observation_id:`o${i}`,revision:i,timestamp:1,complete:true,state:{player:{inventory:Array.from({length:30},(_,k)=>({item:`i${k}`,count:k}))},objectives:[{text:'x'.repeat(300)}]},entities:Array.from({length:60},(_,k)=>({id:`e${k}`,kind:'npc',label:`Entity ${k}`,position:{x:k,y:k},actions:['talk','inspect']}))});
+ app.state.run.events=Array.from({length:100},(_,i)=>({id:`ev${i}`,seq:i+1,run_id:'r',kind:'structured_decision_context',timestamp:1,payload:{player_id:'p',request_id:`rq${i}`,context:{observation:observation(i)},reason:'r'.repeat(5000)}}));
+ const html=app.instanceLiveView(app.state.run,app.state.run.plan.players);
+ assert.equal((html.match(/class="activity-card"/g)||[]).length,100);assert.match(html,/2000-character text budget/);
+ assert.ok(html.length<500000,`activity page is bounded: ${html.length}`);
 });

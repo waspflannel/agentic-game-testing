@@ -28,4 +28,3 @@
 .recent-activity li{padding:8px 0;border-bottom:1px solid var(--border,#334155);font-size:.78rem;line-height:1.5}
 .instance-activity .activity-new{position:sticky;bottom:8px;padding:8px 12px;background:var(--surface,#17202f);color:inherit;border:1px solid var(--border,#64748b);border-radius:6px;cursor:pointer;font:inherit}
 .instance-activity :focus-visible,.observed-world :focus-visible,.recent-activity :focus-visible{outline:2px solid var(--accent,#a5b4fc);outline-offset:3px}
-.instance-activity .activity-card:target{outline:2px solid var(--accent,#a5b4fc);outline-offset:2px}

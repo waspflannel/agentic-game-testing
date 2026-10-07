@@ -1,6 +1,7 @@
 # Publish only the ASHAD app; game sources, builds, local data and reports stay local.
 /*
 !/.gitignore
+!/.gitattributes
 !/README.md
 !/requirements.txt
 !/ashad/

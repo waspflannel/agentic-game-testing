@@ -14,7 +14,7 @@ function deferred(){let resolve;const promise=new Promise(done=>resolve=done);re
 function fixture(options={}){
  const listeners={},calls=[],storage=options.storage||new Map();
  const state={dataRevision:0,renderEpoch:0,route:'projects',parts:['projects','p1'],dirtyDraft:false,data:{projects:[{id:'p1',name:'Same name'},{id:'p2',name:'Same name'}],builds:[{id:'b1',name:'Build',project_id:'p1'},{id:'b2',name:'Build',project_id:'p2'}],agents:[{id:'a1',name:'Scout',build_id:'b1',project_id:'p1',model:'model-a',instructions:'Use <safe> controls',status:'ready'},{id:'a2',name:'Scout',build_id:'b2',project_id:'p2',model:'model-b',instructions:'Other',status:'ready'}],runs:[],model_options:[{id:'model-a',label:'Model A'},{id:'model-b',label:'Model B'}],ai:{model:'model-a',available_models:['model-a','model-b']},instance_slot:{available:true,owners:[],limit:1}},...options.state};
- let modalHTML='',mainHTML='',form=null,composerForm=null,confirmations=[],confirmationWaiters=[],renders=0,sidebarPatches=0;
+ let modalHTML='',mainHTML='',form=null,composerForm=null,confirmations=[],confirmationWaiters=[],renders=0,sidebarPatches=[];
  const active={isConnected:true,focus(){document.activeElement=this;}};
  const body={append(node){confirmations.push(node);confirmationWaiters.shift()?.(node);}};
  const dialog={open:false,dataset:{},querySelector(selector){return selector.includes('close-dialog')?{dataset:{},removeAttribute(){}}:null;},addEventListener(name,fn){listeners[`dialog:${name}`]=fn;},close(){this.open=false;modalHTML='';}};
@@ -29,7 +29,7 @@ function fixture(options={}){
   return null;
  },createElement(tag){assert.equal(tag,'dialog');const events={};const cancel={focus(){document.activeElement=cancel;}};return {innerHTML:'',setAttribute(){},addEventListener(name,fn){events[name]=fn;},querySelector(){return cancel;},showModal(){this.open=true;},close(){this.open=false;},remove(){this.removed=true;},answer(yes){events.click({target:{closest(){return {dataset:{answer:yes?'yes':'cancel'}};}}});},escape(){events.cancel({preventDefault(){}});}};}};
  const sandbox=vm.createContext({document,window:{ashadDesktop:{chooseBuild:async()=>options.pickerResult??null}},sessionStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value)},crypto:{subtle:webcrypto.subtle,randomUUID},TextEncoder,Uint8Array,Date,console});
- const shared={state,arr:v=>Array.isArray(v)?v:[],esc,heading:(_a,b,c,actions='')=>`<h1>${esc(b)}</h1><p>${esc(c)}</p>${actions}`,section:(a,b,c)=>`<section><h2>${a}</h2><p>${b}</p>${c}</section>`,notice:(copy,type='')=>`<div class="notice ${type}">${copy}</div>`,errorMessage:error=>error.detail||error.message||String(error),toast(){},markDraftDirty(value){state.dirtyDraft=Boolean(value);},navigate(route){state.destination=route;},refresh:async()=>state.data,api:async (url,method='GET',payload)=>{calls.push({url,method,payload:plain(payload||{})});if(options.api)return options.api(url,method,payload);if(url.includes('/readiness'))return plain(ready);throw new Error(`Unexpected API: ${method} ${url}`);},modal(_name,html){modalHTML=html;dialog.open=true;form=makeForm('setup');},patchHTML(root,html){if(root.kind==='nav'){sidebarPatches++;return;}modalHTML=html;},render(){renders++;if(state.parts[2]==='new'){mainHTML=sandbox.projectComposerView(state.parts[1]);composerForm=makeForm('composer',state.parts[1]);}}};
+ const shared={state,arr:v=>Array.isArray(v)?v:[],esc,heading:(_a,b,c,actions='')=>`<h1>${esc(b)}</h1><p>${esc(c)}</p>${actions}`,section:(a,b,c)=>`<section><h2>${a}</h2><p>${b}</p>${c}</section>`,notice:(copy,type='')=>`<div class="notice ${type}">${copy}</div>`,errorMessage:error=>error.detail||error.message||String(error),toast(){},markDraftDirty(value){state.dirtyDraft=Boolean(value);},navigate(route){state.destination=route;},refresh:async()=>state.data,api:async (url,method='GET',payload)=>{calls.push({url,method,payload:plain(payload||{})});if(options.api)return options.api(url,method,payload);if(url.includes('/readiness'))return plain(ready);throw new Error(`Unexpected API: ${method} ${url}`);},modal(_name,html){modalHTML=html;dialog.open=true;form=makeForm('setup');},patchHTML(root,html){if(root.kind==='nav'){sidebarPatches.push({root,html});return;}modalHTML=html;},render(){renders++;document.activeElement=body;if(state.parts[2]==='new'){mainHTML=sandbox.projectComposerView(state.parts[1]);composerForm=makeForm('composer',state.parts[1]);}}};
  sandbox.ashadWorkspaceContext=shared;vm.runInContext(source,sandbox);
  function field(key,value,kind='setup'){
   const html=kind==='setup'?modalHTML:kind==='migration'?modalHTML:mainHTML;
@@ -75,6 +75,12 @@ test('existing stages reuse builds without automatic inspection, tuning or start
 test('compatible desktop is required; registration and enabled metadata are insufficient',async()=>{
  const f=fixture({api:async()=>({...ready,environments:[{id:'unknown',ready:false,reason:'Artifact hash absent'}],ready:false})});await f.app.openProjectSetup('p1');await f.app.workspaceSubmit(f.form);await f.dispatch('setup-inspect');await f.app.workspaceSubmit(f.form);assert.match(f.html,/Artifact hash absent/);assert.doesNotMatch(f.html,/Tune and save named profile/);assert.ok(f.calls.every(c=>c.method==='GET'));
 });
+test('each explicit prepare after a completed one sends a new request ID',async()=>{
+ const f=fixture({api:async(url)=>url.includes('/prepare')?{prepared:true}:ready});await f.app.openProjectSetup('p1');await f.app.workspaceSubmit(f.form);
+ for(let i=0;i<2;i++){const pending=f.dispatch('prepare');f.answer(true);await pending;}
+ const prepares=f.calls.filter(c=>c.url.includes('/prepare'));assert.equal(prepares.length,2);assert.notEqual(prepares[0].payload.request_id,prepares[1].payload.request_id);
+ assert.doesNotMatch([...f.storage.values()].join(''),/prepare:p1/);
+});
 test('preparation requires Cancel-default explicit confirmation and stable retry key',async()=>{
  const f=fixture({api:async(url)=>{if(url.includes('/prepare'))throw new Error('Docker Desktop is unavailable; install prerequisites');return ready;}});await f.app.openProjectSetup('p1');await f.app.workspaceSubmit(f.form);
  let pending=f.dispatch('prepare');assert.match(f.confirmations.at(-1).innerHTML,/autofocus/);assert.match(f.confirmations.at(-1).innerHTML,/read-only/);assert.equal(f.calls.length,0);f.answer(false);await pending;assert.equal(f.calls.length,0);
@@ -90,6 +96,14 @@ test('failed/in-progress tuning retains key, changed inputs and explicit retune 
  progress=true;await f.app.workspaceSubmit(f.form);assert.equal(f.calls.filter(c=>c.url==='/api/agents/tune').length,2);assert.match(f.html,/still in progress/);
  f.field('name','Second profile');progress=false;await f.app.workspaceSubmit(f.form);posts=f.calls.filter(c=>c.url==='/api/agents/tune');assert.notEqual(posts[2].payload.request_id,posts[1].payload.request_id);
  await f.dispatch('retune');await f.app.workspaceSubmit(f.form);posts=f.calls.filter(c=>c.url==='/api/agents/tune');assert.notEqual(posts[3].payload.request_id,posts[2].payload.request_id);
+});
+test('completed tuning clears its attempt: fresh setup has no reconcile action and a repeat tune is a new request',async()=>{
+ let n=0;const f=fixture({api:async(url,method,payload)=>{if(url.includes('/readiness'))return ready;if(url==='/api/agents/tune')return {id:`tuned-${++n}`,project_id:'p1',build_id:'b1',name:payload.name,model:payload.model,instructions:'Guide'};throw new Error(`Unexpected ${method} ${url}`);}});
+ await configure(f);await f.app.workspaceSubmit(f.form);assert.match(f.html,/Finish setup/);
+ await f.dispatch('close');await configure(f);assert.doesNotMatch(f.html,/Reconcile saved\/pending tuning/);
+ await f.app.workspaceSubmit(f.form);
+ const posts=f.calls.filter(c=>c.url==='/api/agents/tune');assert.equal(posts.length,2);assert.notEqual(posts[0].payload.request_id,posts[1].payload.request_id);
+ assert.equal(f.calls.some(c=>c.url.includes('/tuning/')),false,'no stale profile lookup');assert.equal(f.state.data.agents[0].id,'tuned-2');
 });
 test('saved profile review and finishing never tune or launch; multiple names remain independent',async()=>{
  const f=fixture();f.state.data.agents.push({id:'a3',project_id:'p1',build_id:'b1',name:'Builder',model:'model-b',instructions:'Build'});await f.dispatch('review',{project:'p1',agent:'a1'});assert.match(f.html,/Use &lt;safe&gt; controls/);await f.dispatch('finish');assert.equal(f.calls.length,0);assert.equal(f.state.destination,'projects/p1');assert.match(f.app.projectOverviewView('p1'),/Builder/);assert.doesNotMatch(f.app.projectComposerView('p1'),/a2/);
@@ -111,6 +125,7 @@ test('409 owning instance conflict retains goal, transport and attempted ID',asy
 test('lost starts reconcile accepted run before retry; goal changes get a new attempt',async()=>{
  let accepted=false;const f=fixture({api:async(url)=>{if(url.includes('/readiness'))return ready;if(url.includes('/requests/'))return accepted?{status:'accepted',run:{id:'actual-run',project_id:'p1',state:'Starting'}}:{status:'unknown'};throw new Error('Lost start response');}});
  f.showComposer();f.field('primary_goal','First goal','composer');await f.app.workspaceSubmit(f.composerForm);const first=f.calls.find(c=>c.url==='/api/instances').payload.request_id;f.field('primary_goal','Changed goal','composer');await f.app.workspaceSubmit(f.composerForm);const posts=f.calls.filter(c=>c.url==='/api/instances');assert.notEqual(first,posts[1].payload.request_id);accepted=true;await f.app.workspaceSubmit(f.composerForm);assert.equal(f.calls.filter(c=>c.url==='/api/instances').length,2);assert.equal(f.state.destination,'runs/actual-run');
+ assert.equal(f.state.data.runs[0].id,'actual-run');assert.ok(!JSON.parse([...f.storage.values()].at(-1)).some(([scope])=>scope==='start:p1'),'accepted attempt is cleared');assert.doesNotMatch(f.app.projectComposerView('p1'),/Reconcile pending start/);
 });
 test('changed lost-start intent reconciles old key before unknown permits a new ID',async()=>{
  const f=fixture({api:async(url)=>{if(url.includes('/readiness'))return ready;if(url.includes('/requests/'))return {status:'unknown'};throw new Error('Lost response');}});f.showComposer();f.field('primary_goal','Original intent','composer');await f.app.workspaceSubmit(f.composerForm);const first=f.calls.find(c=>c.url==='/api/instances').payload.request_id,checkpoint=f.calls.length;f.field('primary_goal','Changed intent','composer');await f.app.workspaceSubmit(f.composerForm);assert.equal(f.calls[checkpoint].url,`/api/instances/requests/${first}`);assert.equal(f.calls[checkpoint].method,'GET');assert.notEqual(f.calls.filter(c=>c.url==='/api/instances')[1].payload.request_id,first);
@@ -152,7 +167,11 @@ test('late picker and tuning responses cannot overwrite a replacement dialog',as
  const response=deferred(),requested=deferred();const f=fixture({api:async(url)=>{if(url.includes('/readiness'))return ready;if(url==='/api/agents/tune'){requested.resolve();return response.promise;}throw new Error(url);}});await configure(f);const pending=f.app.workspaceSubmit(f.form);await requested.promise;f.dialog.close();response.resolve({id:'late-profile',project_id:'p1',build_id:'b1',name:'Saved',instructions:'Late'});await pending;assert.equal(f.dialog.open,false);assert.equal(f.html,'');assert.equal(f.state.data.agents[0].id,'late-profile');
 });
 test('polling delegates keyed sidebar patch only, retaining focus/draft/disclosure container',()=>{
- const f=fixture();f.showComposer();f.field('primary_goal','Focused draft','composer');const focus=f.document.activeElement,renders=f.renders;f.state.data.runs.push({id:'new-history',project_id:'p2',state:'Ended'});f.app.workspaceUpdateSidebar();assert.equal(f.sidebarPatches,1);assert.equal(f.renders,renders);assert.equal(f.document.activeElement,focus);assert.match(f.app.projectComposerView('p1'),/Focused draft/);
+ const f=fixture();f.showComposer();f.field('primary_goal','Focused draft','composer');const draft={isConnected:true,focus(){}};f.document.activeElement=draft;const renders=f.renders,main=f.main;
+ f.state.data.runs.push({id:'new-history',project_id:'p2',state:'Ended'});f.app.workspaceUpdateSidebar();
+ assert.equal(f.sidebarPatches.length,1);assert.equal(f.sidebarPatches[0].root.kind,'nav','patches the navigation container, not the page');
+ assert.match(f.sidebarPatches[0].html,/data-key="project-p2"[^]*thread-new-history/);assert.doesNotMatch(f.sidebarPatches[0].html,/Focused draft/);
+ assert.equal(f.renders,renders,'no full render');assert.equal(f.document.activeElement,draft,'a full render would move focus');assert.equal(f.main,main);
 });
 test('pending reload metadata contains only bounded IDs/hash, never goal/path/password/credentials',async()=>{
  const storage=new Map();const f=fixture({storage,api:async(url)=>{if(url.includes('/readiness'))return ready;throw new Error('lost');}});f.showComposer();f.field('primary_goal','DO-NOT-PERSIST-THIS-OBJECTIVE','composer');await f.app.workspaceSubmit(f.composerForm);const encoded=[...storage.values()].join('');assert.doesNotMatch(encoded,/DO-NOT-PERSIST|primary_goal|password|token|manifest_path|model-a/);assert.ok(encoded.length<12000);
@@ -164,9 +183,21 @@ test('membership migration previews exact selectable IDs before confirmed backup
 test('late native picker results do not dirty or reopen a closed setup',async()=>{
  const response=deferred();const f=fixture({pickerResult:response.promise});await f.app.openProjectSetup('p1');const pending=f.dispatch('pick',{kind:'folder'});f.dialog.close();response.resolve('C:\\late\\manifest.json');await pending;assert.equal(f.dialog.open,false);assert.equal(f.html,'');assert.equal(f.state.dirtyDraft,false);assert.equal(f.calls.length,0);
 });
-test('field-local errors identify invalid configuration and manifest fields without losing drafts',async()=>{
- const f=fixture({api:async()=>{throw new Error('Pinned identity validation failed');}});await f.app.openProjectSetup('p1');f.field('manifest_path','C:\\revision\\manifest.json');await f.dispatch('register');assert.match(f.html,/aria-invalid="true" aria-describedby="workspace-manifest_path-error"/);assert.match(f.html,/C:\\revision/);
- const g=fixture({api:async(url)=>{if(url.includes('/readiness'))return ready;if(url==='/api/agents/tune')throw new Error('Model unavailable for this account');throw new Error(url);}});await configure(g);await g.app.workspaceSubmit(g.form);assert.match(g.html,/aria-describedby="workspace-model-error"/);assert.match(g.html,/Named scout/);
+test('field-local errors come only from the validation that failed; server errors stay general',async()=>{
+ const f=fixture({api:async()=>{throw new Error('Pinned identity validation failed');}});await f.app.openProjectSetup('p1');await f.dispatch('register');assert.match(f.html,/aria-invalid="true" aria-describedby="workspace-manifest_path-error"/);assert.equal(f.calls.length,0);
+ f.field('manifest_path','C:\\revision\\manifest.json');await f.dispatch('register');assert.doesNotMatch(f.html,/aria-invalid/);assert.match(f.html,/role="alert">Pinned identity validation failed/);assert.match(f.html,/C:\\revision/);
+ const g=fixture({api:async(url)=>{if(url.includes('/readiness'))return ready;if(url==='/api/agents/tune')throw new Error('Model unavailable for this account');throw new Error(url);}});await configure(g);await g.app.workspaceSubmit(g.form);assert.doesNotMatch(g.html,/aria-invalid/);assert.match(g.html,/Model unavailable for this account/);assert.match(g.html,/Named scout/);
+ g.state.data.ai.available_models=['model-a'];g.field('model','model-b');await g.app.workspaceSubmit(g.form);assert.match(g.html,/aria-describedby="workspace-model-error"/);assert.doesNotMatch(g.html,/workspace-name-error/);
+ const h=fixture({api:async(url)=>{if(url.includes('/readiness'))return ready;if(url.includes('/requests/'))return {status:'unknown'};throw new Error('Worker transport failed');}});h.showComposer();h.field('primary_goal','Goal','composer');h.field('transport','steam','composer');await h.app.workspaceSubmit(h.composerForm);assert.match(h.main,/no ENet fallback/);assert.match(h.main,/workspace-transport-error/,'failed Steam readiness marks transport');
+ const k=fixture({api:async(url)=>{if(url.includes('/readiness'))return ready;throw new Error('Worker transport failed');}});k.showComposer();k.field('primary_goal','Goal','composer');await k.app.workspaceSubmit(k.composerForm);assert.match(k.main,/Worker transport failed/);assert.doesNotMatch(k.main,/aria-invalid/,'a server start error is not a field error');
+ k.field('primary_goal','   ','composer');await k.app.workspaceSubmit(k.composerForm);assert.match(k.main,/aria-describedby="workspace-primary_goal-error"/);
+});
+test('applied migration whose follow-up refresh fails reports applied and cannot be applied again',async()=>{
+ let applies=0;const f=fixture({api:async(url)=>{if(url.endsWith('/preview'))return {preview_token:'reviewed',blockers:[]};if(url.endsWith('/apply')){applies++;return {applied:true};}throw new Error(url);}});
+ f.app.ashadWorkspaceContext.refresh=async()=>{throw new Error('Bootstrap unavailable');};
+ await f.dispatch('migration');f.field('map:b1','p2','migration');await f.dispatch('migration-preview');f.field('backup_dir','C:\\SyntheticBackup','migration');f.field('confirmed',true,'migration');
+ await f.dispatch('migration-apply');assert.equal(applies,1);assert.match(f.html,/Applied\. Refreshing the workspace failed; reload/);assert.doesNotMatch(f.html,/Bootstrap unavailable/);
+ assert.match(f.html,/data-w-action="migration-apply"[^>]*disabled/);await f.dispatch('migration-apply');assert.equal(applies,1);
 });
 test('sidebar history is bounded, selected old threads remain visible, overview pages retain every ID',async()=>{
  const f=fixture();f.state.data.runs=Array.from({length:145},(_,index)=>({id:`history-${index}`,project_id:'p1',state:'Ended'}));f.state.route='runs';f.state.parts=['runs','history-144'];const sidebar=f.app.workspaceSidebarView();assert.equal((sidebar.match(/class="workspace-thread"/g)||[]).length,31);assert.match(sidebar,/#\/runs\/history-144/);assert.match(sidebar,/View all 145 instances/);

@@ -30,6 +30,10 @@ def bind_loopback():
         raise
 
 
+def strong_key(key):
+    return isinstance(key, str) and re.fullmatch(r"[A-Za-z0-9_-]{43,128}", key) is not None
+
+
 class DesktopBoundary:
     """Secrets stay in main-process memory; main injects headers only for this origin.
 
@@ -38,7 +42,7 @@ class DesktopBoundary:
     """
     def __init__(self, app, *, port, session_key, owner_key, instance_id, shutdown, status=None):
         for key in (session_key, owner_key):
-            if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43,128}", key):
+            if not strong_key(key):
                 raise ValueError("Desktop keys require at least 256 bits of random material")
         if session_key == owner_key:
             raise ValueError("Desktop session and owner keys must differ")
@@ -79,13 +83,17 @@ class DesktopBoundary:
                 if message["type"] == "http.disconnect":
                     return
                 raw += message.get("body", b"")
-                if len(raw) > 1024:
+                if len(raw) > 65536:
                     return await self.reply(scope, receive, send, 413, "Desktop command too large")
                 if not message.get("more_body"):
                     break
             try:
                 options = json.loads(raw or b"{}")
-                if not isinstance(options, dict) or set(options) - {"stop_runs", "cancel_operations"} or any(type(v) is not bool for v in options.values()):
+                if not isinstance(options, dict) or set(options) - {"stop_runs", "cancel_operations", "expected_run_ids"}:
+                    raise ValueError()
+                expected = options.get("expected_run_ids", [])
+                if any(type(options.get(name, False)) is not bool for name in ("stop_runs", "cancel_operations")) or \
+                        type(expected) is not list or any(type(run_id) is not str for run_id in expected):
                     raise ValueError()
             except (ValueError, UnicodeError):
                 return await self.reply(scope, receive, send, 422, "Use explicit boolean shutdown choices")
@@ -124,11 +132,14 @@ class DesktopLifecycle:
         return {"owners": state.coordinator.occupied_instances(), "operations": operations,
                 "draining": state.coordinator.draining, "viewer_urls": viewers}
 
-    async def shutdown(self, *, stop_runs=False, cancel_operations=False):
+    async def shutdown(self, *, stop_runs=False, cancel_operations=False, expected_run_ids=None):
         async with self.lock:
             coord = self.app.state.coordinator
             async with coord.lock:
                 current = self.status()
+                # Consent covers exactly the owners the user was shown, never a run that appeared since.
+                if expected_run_ids is not None and sorted(expected_run_ids) != sorted(o["run_id"] for o in current["owners"]):
+                    return {"drained": False, "detail": "Owned instances changed after quit was confirmed; nothing was stopped. Review them and quit again.", **current}
                 if current["owners"] and not stop_runs:
                     return {"drained": False, "detail": "Confirm Stop and quit for every owned instance.", **current}
                 if current["operations"] and not cancel_operations:
@@ -181,7 +192,7 @@ def read_launch_config(stream):
     if not isinstance(config["instance_id"], str) or not re.fullmatch(r"[A-Za-z0-9_-]{1,100}", config["instance_id"]):
         raise ValueError("Desktop requires a launch identity")
     for key in (config["session_key"], config["owner_key"]):
-        if not isinstance(key, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43,128}", key):
+        if not strong_key(key):
             raise ValueError("Invalid desktop launch keys")
     if config["session_key"] == config["owner_key"]:
         raise ValueError("Desktop launch keys must differ")

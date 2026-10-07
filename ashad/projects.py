@@ -12,15 +12,16 @@ import json
 import os
 from pathlib import Path
 import re
-import shutil
 import sqlite3
 import stat
 import time
 
-from .store import uid
+from .store import redact, uid
 
 MIGRATION_ID = "projects-v1"
-ACTIVE = {"queued", "starting", "running", "paused", "investigating", "stopping"}
+TERMINAL = {"ended", "completed", "failed", "terminated", "cancelled"}
+# Passive heartbeat/auth-status polling never changes ownership or durable history.
+PASSIVE_SETTINGS = ("coordinator_heartbeat", "ai_status")
 
 
 def _identifier(value, label):
@@ -29,10 +30,17 @@ def _identifier(value, label):
     return value
 
 
-def _name(value):
+def _name(value, label="Project name"):
     if not isinstance(value, str) or not value.strip() or len(value.strip()) > 200 or not value.isprintable():
-        raise ValueError("Project name must be 1–200 characters without control characters")
+        raise ValueError(f"{label} must be 1–200 characters without control characters")
     return value.strip()
+
+
+def _unredacted(value):
+    """Store.put redacts credential-like text; refuse values a marker could not keep exactly."""
+    if redact(value) != value:
+        raise ValueError("Paths and inventory must not contain credential-like text such as 'sk-…' or 'Bearer …'")
+    return value
 
 
 def _digest(value):
@@ -45,22 +53,48 @@ def _file_hash(path):
 
 
 def _safe_path(value):
-    """Reject links before resolving: resolve() alone hides unsafe ancestors."""
-    path = Path(value).absolute()
-    if ".." in path.parts:
-        raise ValueError("Unsafe backup path: parent traversal is not allowed")
+    """Reject links before resolving: resolve() alone hides unsafe ancestors.
+
+    The resolved result also canonicalizes trailing-dot and 8.3 short-name aliases."""
+    path = Path(value)
+    if not path.is_absolute() or ".." in path.parts:
+        raise ValueError("Unsafe path: it must be absolute without parent traversal")
     for component in reversed([path, *path.parents]):
         try:
             info = component.lstat()
         except FileNotFoundError:
             continue
         if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-            raise ValueError("Unsafe backup path: links and reparse points are not allowed")
+            raise ValueError("Unsafe path: symlinks and reparse points are not allowed")
         if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
-            raise ValueError("Unsafe backup path: hardlinked files are not allowed")
+            raise ValueError("Unsafe path: hardlinked files are not allowed")
         if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
-            raise ValueError("Unsafe backup path: only regular files and directories are allowed")
-    return path
+            raise ValueError("Unsafe path: only regular files and directories are allowed")
+    return path.resolve()
+
+
+def _copy_file(source, target):
+    """Copy with one read of a link-checked source; return the digest of exactly what was written."""
+    digest, size = hashlib.sha256(), 0
+    with _safe_path(source).open("rb") as reader, target.open("xb") as writer:
+        while chunk := reader.read(1 << 20):
+            digest.update(chunk)
+            writer.write(chunk)
+            size += len(chunk)
+        writer.flush()
+        os.fsync(writer.fileno())
+    return {"sha256": digest.hexdigest(), "bytes": size}
+
+
+def _ownership_unresolved(run):
+    """Ended is not proof of release; an unknown legacy player shape is never assumed released."""
+    players = run.get("players", {})
+    if not isinstance(players, dict) or not all(isinstance(player, dict) for player in players.values()):
+        return True
+    return bool(str(run.get("state", "unknown")).lower() not in TERMINAL or run.get("human_control")
+        or run.get("external_control") or any(player.get("teardown_confirmed") is False
+        or ((player.get("bound") or player.get("launched") or player.get("phase") == "teardown_unknown")
+            and player.get("teardown_confirmed") is not True) for player in players.values()))
 
 
 def _tree_files(root):
@@ -187,12 +221,7 @@ class Projects:
         if self.store.leases():
             blockers.append("Resource leases remain; reconcile their owners first")
         for run in self.store.list("runs"):
-            state = str(run.get("state", "unknown")).lower()
-            players = (run.get("players") or {}).values()
-            unresolved = any(player.get("teardown_confirmed") is False or
-                ((player.get("bound") or player.get("launched") or player.get("phase") == "teardown_unknown")
-                 and player.get("teardown_confirmed") is not True) for player in players)
-            if state in ACTIVE or state not in {"ended", "completed", "failed", "terminated", "cancelled"} or unresolved or run.get("human_control") or run.get("external_control"):
+            if _ownership_unresolved(run):
                 blockers.append(f"Run {run['id']} is active or has unresolved ownership")
         return blockers
 
@@ -200,13 +229,24 @@ class Projects:
         connection = self.store.db if connection is None else connection
         # Passive heartbeat/auth-status polling cannot invalidate an operator's preview.
         # Ownership, durable commands, settings-main and the ledger remain authoritative.
-        snapshot = {}
+        digest = hashlib.sha256()
         for table in ("records", "leases", "commands", "events"):
-            query = f"SELECT * FROM {table}"
+            query, parameters = f"SELECT * FROM {table}", ()
             if table == "records":
-                query += " WHERE NOT (kind='settings' AND id IN ('coordinator_heartbeat','ai_status'))"
-            snapshot[table] = [tuple(row) for row in connection.execute(query + " ORDER BY 1,2")]
-        return _digest(snapshot)
+                query, parameters = query + " WHERE NOT (kind='settings' AND id IN (?,?))", PASSIVE_SETTINGS
+            digest.update(table.encode() + b"\n")
+            for row in connection.execute(query + " ORDER BY 1,2", parameters):
+                digest.update(json.dumps(tuple(row), ensure_ascii=False).encode() + b"\n")
+        return digest.hexdigest()
+
+    def _marker(self, grouping_hash):
+        # Markers are per grouping so leftover history can be grouped later; a legacy
+        # single "projects-v1" marker still replays its own grouping exactly.
+        for key in (f"{MIGRATION_ID}-{grouping_hash}", MIGRATION_ID):
+            marker = self.store.get("migrations", key)
+            if marker and marker.get("grouping_hash") == grouping_hash:
+                return marker
+        return None
 
     def preview(self, groups, *, operations_active=False):
         with self.store.lock:
@@ -255,14 +295,11 @@ class Projects:
                 assign("runs", run, {mapping.get(build_id) for build_id in references})
             normalized = {"projects": projects, "build_projects": {build_id: group["project_id"]
                 for group in groups for build_id in group["build_ids"]}}
-            marker = self.store.get("migrations", MIGRATION_ID)
-            if marker and marker["grouping_hash"] != _digest(normalized):
-                blockers.append("Workspace membership migration was already applied with a different grouping")
             source_token, grouping_hash = self._token(), _digest(normalized)
             return {"version": 1, "projects": projects, "assignments": assignments, "unassigned": unassigned,
                     "blockers": blockers, "source_token": source_token, "grouping_hash": grouping_hash,
                     "preview_token": _digest({"source": source_token, "grouping": grouping_hash}),
-                    "already_applied": bool(marker),
+                    "already_applied": bool(self._marker(grouping_hash)),
                     "backup_scope": "SQLite metadata and run evidence only; Codex home, registrations, external builds, keyring and Docker volumes are not copied. This is not a complete workspace backup."}
 
     def _verify_database(self, database, source_token):
@@ -283,19 +320,20 @@ class Projects:
         except sqlite3.DatabaseError as error:
             raise ValueError("Backup verification failed: invalid SQLite snapshot") from error
 
-    def _backup(self, destination, preview, codex_home, registration_paths):
+    def _backup(self, destination, preview, codex_home):
         destination = _safe_path(destination)
+        _unredacted(str(destination))
         if destination.is_relative_to(self.store.root) or self.store.root.is_relative_to(destination):
             raise ValueError("Backup must be outside the source data directory")
         for suffix in ("", "-wal", "-shm"):
             _safe_path(self.store.root / ("ashad.sqlite3" + suffix))
         evidence = {"runs/" + relative: source for relative, source in _tree_files(self.store.root / "runs").items()}
-        expected = {relative: _file_record(source, relative) for relative, source in evidence.items()}
         manifest, database = destination / "inventory.json", destination / "ashad.sqlite3"
         if destination.exists():
             actual = _tree_files(destination)
             if "inventory.json" not in actual:
                 raise ValueError("Backup is incomplete or destination is occupied; choose a new backup directory")
+            expected = {relative: _file_record(source, relative) for relative, source in evidence.items()}
             try:
                 inventory = json.loads(manifest.read_text(encoding="utf-8"))
                 if not isinstance(inventory, dict) or inventory.get("version") != 1 or inventory.get("source_root") != str(self.store.root) or inventory.get("preview_token") != preview["preview_token"] or inventory.get("grouping_hash") != preview["grouping_hash"]:
@@ -318,7 +356,8 @@ class Projects:
         destination.mkdir(parents=True)
         _safe_path(destination)
         with closing(sqlite3.connect(database, isolation_level=None)) as saved:
-            self.store.db.backup(saved)
+            with self.store.lock:  # Only the SQLite snapshot excludes in-process writers.
+                self.store.db.backup(saved)
             saved.execute("PRAGMA journal_mode=DELETE")
         self._verify_database(database, preview["source_token"])
         copied = [_file_record(database, database.name)]
@@ -326,17 +365,20 @@ class Projects:
             target = _safe_path(destination / relative)
             target.parent.mkdir(parents=True, exist_ok=True)
             _safe_path(target)
-            shutil.copy2(_safe_path(source), target)
-            if expected[relative] != _file_record(target, relative) or expected[relative] != _file_record(source, relative):
+            # ponytail: size+mtime bracket the single hashing read (ledger appends are also
+            # caught by the commit-time token); re-hash the source if mtime is untrusted.
+            before = source.stat()
+            record = {"path": relative, **_copy_file(source, target)}
+            after = source.stat()
+            if (before.st_size, before.st_mtime_ns) != (after.st_size, after.st_mtime_ns) or record["bytes"] != after.st_size:
                 raise ValueError("Run evidence changed during backup; leave the source idle and retry")
-            copied.append(expected[relative])
+            copied.append(record)
         if set(_tree_files(self.store.root / "runs")) != {relative[5:] for relative in evidence}:
             raise ValueError("Run evidence changed during backup; review the evidence inventory")
         path_info = lambda value: {"path": str(Path(value).resolve()), "exists": Path(value).exists(), "copied": False}
         inventory = {"version": 1, "source_root": str(self.store.root), "preview_token": preview["preview_token"],
             "grouping_hash": preview["grouping_hash"], "copied_files": copied,
             "codex_home": path_info(codex_home) if codex_home is not None else None,
-            "registration_paths": [path_info(value) for value in registration_paths],
             "build_paths": [{"id": build["id"], **{key: build[key] for key in ("manifest_path", "source_root", "catalog_path", "brief_path") if key in build}} for build in self.store.list("builds")],
             "worker_ids": [record["id"] for record in self.store.list("workers")],
             "account_ids": [record["id"] for record in self.store.list("accounts")],
@@ -347,38 +389,38 @@ class Projects:
             saved.write(json.dumps(inventory, indent=2, ensure_ascii=False) + "\n")
         return destination
 
-    def apply(self, groups, *, preview_token, backup_dir, confirmed=False, operations_active=False,
-              codex_home=None, registration_paths=()):
+    def apply(self, groups, *, preview_token, backup_dir, confirmed=False, operations_active=False, codex_home=None):
         if confirmed is not True:
             raise ValueError("Explicit user confirmation is required before membership migration")
-        with self.store.lock:
-            preview = self.preview(groups, operations_active=operations_active)
-            previous = self.store.get("migrations", MIGRATION_ID)
-            if previous and previous["grouping_hash"] == preview["grouping_hash"]:
-                return previous
-            if preview["blockers"]:
-                raise ValueError("Migration blocked: " + "; ".join(preview["blockers"]))
-            if preview_token != preview["preview_token"]:
-                raise ValueError("Migration preview is stale; review a fresh preview")
-            backup = self._backup(backup_dir, preview, codex_home, registration_paths)
-            with self.store.transaction() as db:
-                if preview["source_token"] != self._token():
-                    raise ValueError("Workspace changed during backup; review a fresh preview")
-                now = time.time()
-                for project_id, name in preview["projects"].items():
-                    if not self.store.get("projects", project_id):
-                        self.store.put("projects", {"id": project_id, "name": name, "created_at": now, "updated_at": now})
-                for kind, records in preview["assignments"].items():
-                    for record_id, project_id in records.items():
-                        record = self.store.require(kind, record_id)
-                        if record.get("project_id") == project_id:
-                            continue
-                        record["project_id"] = project_id
-                        # Do not run legacy snapshots through redaction or any schema conversion.
-                        db.execute("UPDATE records SET data=?,updated=? WHERE kind=? AND id=?",
-                                   (json.dumps(record, ensure_ascii=False), now, kind, record_id))
-                result = {"id": MIGRATION_ID, "version": 1, "grouping_hash": preview["grouping_hash"],
-                          "applied_at": now, "backup_dir": str(backup), "assignments": preview["assignments"],
-                          "unassigned": preview["unassigned"]}
-                self.store.put("migrations", result)
-            return result
+        preview = self.preview(groups, operations_active=operations_active)
+        previous = self._marker(preview["grouping_hash"])
+        if previous:
+            return previous
+        if preview["blockers"]:
+            raise ValueError("Migration blocked: " + "; ".join(preview["blockers"]))
+        if preview_token != preview["preview_token"]:
+            raise ValueError("Migration preview is stale; review a fresh preview")
+        # The caller's drain blocks admission. The Store lock is held only for the SQLite
+        # snapshot and this commit, so status reads never wait on file copying/hashing.
+        backup = self._backup(backup_dir, preview, codex_home)
+        with self.store.transaction() as db:
+            if preview["source_token"] != self._token():
+                raise ValueError("Workspace changed during backup; review a fresh preview")
+            now = time.time()
+            for project_id, name in preview["projects"].items():
+                if not self.store.get("projects", project_id):
+                    self.store.put("projects", {"id": project_id, "name": name, "created_at": now, "updated_at": now})
+            for kind, records in preview["assignments"].items():
+                for record_id, project_id in records.items():
+                    record = self.store.require(kind, record_id)
+                    if record.get("project_id") == project_id:
+                        continue
+                    record["project_id"] = project_id
+                    # Do not run legacy snapshots through redaction or any schema conversion.
+                    db.execute("UPDATE records SET data=?,updated=? WHERE kind=? AND id=?",
+                               (json.dumps(record, ensure_ascii=False), now, kind, record_id))
+            result = {"id": f"{MIGRATION_ID}-{preview['grouping_hash']}", "version": 1,
+                      "grouping_hash": preview["grouping_hash"], "applied_at": now, "backup_dir": str(backup),
+                      "assignments": preview["assignments"], "unassigned": preview["unassigned"]}
+            self.store.put("migrations", result)
+        return result

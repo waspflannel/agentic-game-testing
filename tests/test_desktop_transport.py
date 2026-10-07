@@ -93,10 +93,13 @@ async def test_owned_readiness_assets_camera_and_confirmed_shutdown(tmp_path):
         for forged in ({"Origin": "https://127.0.0.1:" + str(port)}, {"Host": "attacker.invalid"}):
             assert (await client.get("/api/health", headers={**headers, **forged})).status_code == 403
         assert (await client.post("/_desktop/shutdown", headers=headers)).status_code == 401
-        for options in ({"stop_runs": 1}, {"command": "shell"}, []):
+        for options in ({"stop_runs": 1}, {"command": "shell"}, [], {"expected_run_ids": "run-1"},
+                        {"expected_run_ids": [1]}, {"expected_run_ids": None}):
             assert (await client.post("/_desktop/shutdown", headers=admin, json=options)).status_code == 422
-        assert (await client.post("/_desktop/shutdown", headers=admin, content=b"x" * 1025)).status_code == 413
+        assert (await client.post("/_desktop/shutdown", headers=admin, content=b"x" * 65537)).status_code == 413
         assert (await client.post("/_desktop/shutdown", headers=admin)).status_code == 409
+        assert (await client.post("/_desktop/shutdown", headers=admin,
+                                  json={"stop_runs": True, "expected_run_ids": ["run-1"]})).status_code == 409
         assert (await client.get("/api/health", headers=headers)).status_code == 200
         state["can_drain"] = True
         assert (await client.post("/_desktop/shutdown", headers=admin)).json() == {"drained": True}

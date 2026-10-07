@@ -111,7 +111,7 @@ async function confirmDrain(getStatus, dirty, confirm, shutdown) {
   const prompt = quitPrompt(status, dirty);
   if (prompt && await confirm(prompt) !== 0) return false;
   const result = await shutdown({ stop_runs: status.owners.length > 0,
-    cancel_operations: status.operations.length > 0 });
+    cancel_operations: status.operations.length > 0, expected_run_ids: status.owners.map(owner => owner.run_id) });
   if (result?.drained !== true) throw new Error('Controller did not confirm a completed admission/ownership/operation drain.');
   return true;
 }

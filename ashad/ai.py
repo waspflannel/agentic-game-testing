@@ -26,11 +26,6 @@ class ProviderError(Exception):
         super().__init__(message)
 
 
-def function(name, description, properties, required=None):
-    """MCP declarations only; gameplay selection exposes no execution tools."""
-    return {"type": "function", "name": name, "description": description, "parameters": {"type": "object", "properties": properties, "required": required or list(properties), "additionalProperties": False}, "strict": False}
-
-
 def choice(name, instructions, options):
     return {"type": "choice", "name": name, "instructions": instructions,
             "choices": [{"value": str(value), "description": description} for value, description in options]}

@@ -21,15 +21,16 @@ TOKEN = "prepare-test-token-" + "x" * 30
 
 
 class NativeDouble:
-    def __init__(self, *, input_available=True, image_available=True, bad_buffer=False, width=16):
-        self.calls = []
+    def __init__(self, *, input_available=True, image_available=True, bad_buffer=False, width=16, x_error=False):
+        self.calls, self.handlers = [], {}
+        self.x_error = x_error
         self.pixels = C.create_string_buffer(b"\x14\x28\x3c\x00" * 16 * 8)
         self.image = _XImage(width=16, height=8, data=C.addressof(self.pixels), bytes_per_line=0 if bad_buffer else 64, bits_per_pixel=32)
         self.width = width
         self.input_available = input_available
         self.image_available = image_available
         self.x11, self.xtst = Mock(), Mock()
-        for library, names in ((self.x11, ("XOpenDisplay", "XCloseDisplay", "XDefaultRootWindow", "XGetGeometry", "XGetImage", "XDestroyImage")),
+        for library, names in ((self.x11, ("XOpenDisplay", "XCloseDisplay", "XDefaultRootWindow", "XGetGeometry", "XGetImage", "XDestroyImage", "XSetErrorHandler")),
                                (self.xtst, ("XTestQueryExtension", "XTestFakeKeyEvent", "XTestFakeButtonEvent", "XTestFakeMotionEvent"))):
             for name in names:
                 setattr(library, name, Mock(side_effect=lambda *args, name=name: self.call(name, args)))
@@ -46,7 +47,12 @@ class NativeDouble:
             for pointer, value in zip(args[5:], (self.width, 8, 0, 24)):
                 C.cast(pointer, C.POINTER(C.c_uint))[0] = value
             return 1
+        if name == "XSetErrorHandler":
+            self.handlers[name] = args[0].value
+            return None
         if name == "XGetImage":
+            if self.x_error:  # Xlib reports the async protocol error through the installed handler.
+                C.CFUNCTYPE(C.c_int, C.c_void_p, C.c_void_p)(self.handlers["XSetErrorHandler"])(None, None)
             return C.pointer(self.image) if self.image_available else None
         if name == "XTestQueryExtension":
             C.cast(args[3], C.POINTER(C.c_int))[0] = 2
@@ -76,6 +82,15 @@ class NativeProbeTests(unittest.TestCase):
         self.assertIn("XTestQueryExtension", native.calls)
         self.assertEqual(native.calls[-2:], ["XDestroyImage", "XCloseDisplay"])
         self.assertFalse(any(name.startswith("XTestFake") for name in native.calls))
+
+    def test_x_protocol_error_fails_probe_instead_of_exiting_worker(self):
+        native = NativeDouble(x_error=True)
+        result = native.probe()
+        self.assertIn("XSetErrorHandler", native.calls)
+        self.assertFalse(result["rendered"] or result["capture_ready"] or result["input_ready"])
+        self.assertIn("X11 protocol error", result["checks"]["rendered"])
+        self.assertEqual(native.calls[-2:], ["XDestroyImage", "XCloseDisplay"])
+        self.assertTrue(NativeDouble().probe()["rendered"])  # Errors are scoped to one probe.
 
     def test_missing_extension_does_not_fabricate_input_ready(self):
         result = NativeDouble(input_available=False).probe()
@@ -270,15 +285,35 @@ class PrepareEndpointTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("last_verification", result["steam"])
         self.assertNotIn("app_id", result["steam"])
 
+    async def test_repeated_probes_do_not_rehash_unchanged_build(self):
+        with patch("worker.prepare_probe.sha256_file", wraps=sha256_file) as hashed, patch("worker.prepare_probe.probe_desktop", side_effect=lambda desktop: NativeDouble().probe()):
+            for _ in range(3):
+                self.assertTrue((await self.probe()).json()["ready"])
+            first = hashed.call_count
+            self.assertLessEqual(first, 3)  # manifest, engine and pack at most once each
+            Path(self.build["command"][2]).write_bytes(b"changed fixture with another size")
+            self.assertFalse((await self.probe()).json()["ready"])
+            self.assertEqual(hashed.call_count, first + 1)
+
+    async def test_hashing_does_not_hold_lifecycle_lock(self):
+        from worker.prepare_probe import measure_build
+        held = []
+        def observed(build):
+            held.append(self.runtime.state_lock.locked())
+            return measure_build(build)
+        with patch("worker.prepare_probe.measure_build", side_effect=observed), patch("worker.prepare_probe.probe_desktop", side_effect=lambda desktop: NativeDouble().probe()):
+            self.assertTrue((await self.probe()).json()["ready"])
+        self.assertEqual(held, [False])
+
     async def test_cancelled_probe_keeps_lifecycle_lock_until_reads_finish(self):
         from worker.prepare_probe import prepare_probe
         import threading
         entered, release = threading.Event(), threading.Event()
-        def blocked(build):
+        def blocked(desktop):
             entered.set()
             release.wait(5)
-            return self.build
-        with patch("worker.prepare_probe.measure_build", side_effect=blocked), patch("worker.prepare_probe.probe_desktop", side_effect=lambda desktop: NativeDouble().probe()):
+            return NativeDouble().probe()
+        with patch("worker.prepare_probe.probe_desktop", side_effect=blocked):
             task = asyncio.create_task(prepare_probe(self.runtime, self.build))
             await asyncio.to_thread(entered.wait, 5)
             self.assertTrue(entered.is_set())

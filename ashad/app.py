@@ -5,14 +5,15 @@ import anyio
 import httpx
 from contextlib import AsyncExitStack, asynccontextmanager
 import json
+import math
 import os
 from pathlib import Path
+import re
 import time
 from urllib.parse import urlparse
 import psutil
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
-from starlette.background import BackgroundTask
 from fastapi.staticfiles import StaticFiles
 from .ai import OpenAI, ProviderError, SUBSCRIPTION_PRICING
 from .codex_backend import CodexError
@@ -29,6 +30,8 @@ from .instances import Instances, InstanceRequest
 from .store import Store, uid
 
 PROJECT = Path(__file__).resolve().parents[1]
+# DNS rebinding defense: a browser only sends one of these Host values to this process.
+LOOPBACK_HOST = re.compile(r"(?:127\.0\.0\.1|localhost|\[::1\])(?::\d{1,5})?", re.IGNORECASE)
 DEFAULT_SETTINGS = {"id": "main", "concurrent_sessions": 1, "storage_reserve_bytes": 1024**3, "duration_seconds": None, "spend_usd": None, "pricing": SUBSCRIPTION_PRICING}
 
 
@@ -48,9 +51,16 @@ async def disk_mutation(operation, *args, **kwargs):
     return await settled_operation(asyncio.to_thread(operation, *args, **kwargs))
 
 
+def finite_number(value):
+    """JSON numbers only: rejects bools, NaN and +/-Infinity (ints are always finite)."""
+    return type(value) is int or (type(value) is float and math.isfinite(value))
+
+
 def build_record(path, name=None, build_id=None):
     path = Path(path).resolve()
     manifest = json.loads(path.read_text(encoding="utf-8-sig"))
+    if not isinstance(manifest, dict):
+        raise ValueError("Build manifest must be a JSON object")
     manifest["id"] = build_id or manifest.get("id") or uid("build_")
     manifest["name"] = name or manifest.get("name") or path.parent.name
     manifest["manifest_path"] = str(path)
@@ -172,6 +182,11 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
 
     @app.middleware("http")
     async def local_boundary(request: Request, call_next):
+        # Every route, method, /mcp and static asset: a rebound DNS name must not
+        # reach this loopback service even when its Origin matches its Host.
+        hosts = request.headers.getlist("host")
+        if len(hosts) != 1 or not LOOPBACK_HOST.fullmatch(hosts[0]):
+            return JSONResponse({"detail": "ASHAD accepts only loopback Host headers (127.0.0.1, localhost or [::1])."}, status_code=403)
         if request.url.path.startswith("/mcp"):
             try:
                 game_mcp.resolve(request.headers.get("authorization", ""))
@@ -235,6 +250,37 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
                   "One instance already owns the global slot" if owners else None)
         return {"available": reason is None, "owners": owners, "limit": 1, "blocked_reason": reason}
 
+    def operations_active():
+        """Another HTTP mutation (besides the caller), tuning, or pending sign-in."""
+        login = getattr(ai.backend, "login_wait", None)
+        return bool(app.state.tuning_task) or len(app.state.operations) > 1 or bool(login and not login.done())
+
+    def run_records(kind, run_id):
+        with store.lock:
+            rows = store.db.execute("SELECT data FROM records WHERE kind=? AND json_extract(data, '$.run_id')=? ORDER BY updated DESC",
+                                    (kind, run_id)).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def require_unleased_worker(worker_id, message):
+        if any(l["kind"] == "worker" and l["resource_id"] == worker_id for l in store.leases()):
+            raise ValueError(message)
+
+    def require_unreferenced(record_id):
+        if any(l["resource_id"] == record_id for l in store.leases()):
+            raise ValueError("This resource has an active or unresolved lease")
+        for run in store.list("runs"):
+            if run["state"] in ACTIVE_STATES | {"Queued"} and record_id in json.dumps(run["plan"]):
+                raise ValueError("Resource is referenced by an approved run")
+
+    def usage_count():
+        with store.lock:
+            return store.db.execute("SELECT COUNT(*) FROM records WHERE kind='usage'").fetchone()[0]
+
+    @app.get("/api/usage")
+    async def usage():
+        # Full history only for the Usage page; bootstrap polling carries usage_count.
+        return {"usage": await asyncio.to_thread(store.list, "usage")}
+
     @app.get("/api/bootstrap")
     async def bootstrap():
         settings = dict(store.require("settings", "main"))
@@ -246,7 +292,7 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
         # In particular an import/restart must validate this backend's own home.
         ai_status = {**ai.status, "api": AI_API}
         model_options = [{"id": model, "label": model.replace("gpt-", "GPT-").replace("-luna", " Luna").replace("-sol", " Sol").replace("-astra", " Astra")} for model in SUPPORTED_MODELS]
-        return {"settings": settings, "ai": ai_status, "model_options": model_options, "builds": builds, "workers": workers, "accounts": store.list("accounts"), "agents": store.list("agents"), "runs": store.list("runs"), "usage": store.list("usage"), "leases": store.leases(), "projects": store.list("projects"),
+        return {"settings": settings, "ai": ai_status, "model_options": model_options, "builds": builds, "workers": workers, "accounts": store.list("accounts"), "agents": store.list("agents"), "runs": store.list("runs"), "usage_count": usage_count(), "leases": store.leases(), "projects": store.list("projects"),
                 "instance_slot": instance_slot(),
                 "workspace_import": {"interrupted": coordinator.import_interrupted(), "completed": store.get("migrations", WORKSPACE_IMPORT_ID),
                                      "readiness_verified": False}}
@@ -261,8 +307,7 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
         async with coordinator.lock:
             if coordinator.draining or coordinator.stopping or coordinator.occupied_instances():
                 raise ValueError("Import requires an idle, reconciled target controller")
-            login = getattr(ai.backend, "login_wait", None)
-            if app.state.tuning_task or len(app.state.operations) > 1 or (login and not login.done()):
+            if operations_active():
                 raise ValueError("Wait for provider, sign-in and setup operations before importing")
             previous = store.get("migrations", WORKSPACE_IMPORT_ID)
             coordinator.draining = True
@@ -309,13 +354,9 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
         build_validation = {"ready": False, "reason": "Build has not been validated"}
         try:
             await asyncio.to_thread(validate_build, build)
-            Repository(build)
+            Repository(build)  # Play reads the pinned source snapshot; validate_build does not check it.
             if agent_id:
-                Projects(store).project_for_agent(agent_id, project_id)
-                profile = await asyncio.to_thread(profiles.validated, agent_id)
-                if profile["build_id"] != build_id:
-                    raise ValueError("Saved configuration belongs to a different build")
-                model = profile["model"]
+                model = (await asyncio.to_thread(profiles.validated, agent_id))["model"]
             build_validation = {"ready": True, "reason": "Exact supported manifest, engine and artifact pins verified"}
         except (OSError, ValueError, KeyError) as exc:
             build_validation["reason"] = str(exc)
@@ -350,8 +391,7 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
         build = store.require("builds", body["build_id"])
         async with coordinator.lock:
             coordinator.require_instance_slot()
-            login = getattr(ai.backend, "login_wait", None)
-            if coordinator.draining or coordinator.stopping or app.state.tuning_task or len(app.state.operations) > 1 or (login and not login.done()):
+            if coordinator.draining or coordinator.stopping or operations_active():
                 raise ValueError("Wait for admission, tuning, sign-in and setup operations before preparation")
             coordinator.draining = True
             try:
@@ -363,9 +403,7 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
 
     @app.post("/api/projects/migration/preview")
     async def migration_preview(body: dict):
-        login = getattr(ai.backend, "login_wait", None)
-        operations = bool(app.state.tuning_task) or len(app.state.operations) > 1 or bool(login and not login.done())
-        return Projects(store).preview(body.get("groups"), operations_active=operations)
+        return await asyncio.to_thread(Projects(store).preview, body.get("groups"), operations_active=operations_active())
 
     @app.post("/api/projects/migration/apply")
     async def migration_apply(body: dict):
@@ -380,9 +418,7 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
         async with coordinator.lock:
             if coordinator.draining:
                 raise ValueError("Controller is already draining")
-            operations = bool(app.state.tuning_task) or len(app.state.operations) > 1
-            login = getattr(ai.backend, "login_wait", None)
-            operations = operations or bool(login and not login.done())
+            operations = operations_active()
             coordinator.draining = True
             try:
                 return await disk_mutation(Projects(store).apply, body.get("groups"),
@@ -411,6 +447,10 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
                                            name=body.get("name"), request_id=body.get("request_id"))
             return await profiles.tune(body.get("build_id"), model)
         except asyncio.CancelledError:
+            # Only the owned quit drain (DesktopLifecycle) cancels tuning on purpose; server
+            # shutdown or a dropped client must keep propagating cancellation.
+            if coordinator.stopping or not coordinator.draining:
+                raise
             return JSONResponse({"detail": "Agent tuning was cancelled; no incomplete profile was saved."}, status_code=409)
         finally:
             app.state.tuning_task = None
@@ -426,7 +466,8 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
 
     @app.get("/api/instances/requests/{request_id}")
     async def instance_request(request_id: str):
-        launch = store.command("launch", request_id)
+        # Instances.start stores its launch under "instance_"; bare keys are direct launches.
+        launch = store.command("launch", "instance_" + request_id) or store.command("launch", request_id)
         if launch:
             return {"status": "accepted", "request_id": request_id, "run": store.require("runs", launch["run_id"])}
         prepared = store.command("instance", request_id)
@@ -491,7 +532,7 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
             else:
                 run["pause"] = coordinator.pause_details("manual_pause", "Bot inputs are paused. Review the run before continuing.", list(run["players"]))
         for kind in ("incidents", "usage"):
-            run[kind] = [r for r in store.list(kind) if r.get("run_id") == run_id]
+            run[kind] = await asyncio.to_thread(run_records, kind, run_id)
         return run
 
     @app.get("/api/runs/{run_id}/events")
@@ -504,7 +545,7 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
 
     @app.get("/api/runs/{run_id}/report")
     async def report(run_id: str):
-        return {"markdown": generate_report(store, run_id)}
+        return {"markdown": await asyncio.to_thread(generate_report, store, run_id)}
 
     @app.get("/api/runs/{run_id}/evidence")
     async def evidence(run_id: str):
@@ -520,6 +561,8 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
 
     @app.get("/api/runs/{run_id}/files/{path:path}")
     async def file(run_id: str, path: str):
+        if not store.get("runs", run_id):  # run_dir creates directories; never for unknown IDs.
+            raise HTTPException(404, "Evidence file not found")
         root = store.run_dir(run_id)
         target = (root / path).resolve()
         if not target.is_relative_to(root) or not target.is_file():
@@ -559,14 +602,17 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
                 with anyio.CancelScope(shield=True):
                     await upstream.aclose()
         return StreamingResponse(frames(), media_type="multipart/x-mixed-replace; boundary=frame",
-            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
-            background=BackgroundTask(upstream.aclose))
+            headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
     @app.post("/api/runs/{run_id}/control")
     async def control(run_id: str, body: dict):
-        if body.get("command") in {"takeover", "takeover_finish"}:
+        body = dict(body)
+        command = body.pop("command", None)
+        if not isinstance(command, str) or "run_id" in body:
+            raise ValueError("Control requires a command; the run ID comes from the URL")
+        if command in {"takeover", "takeover_finish"}:
             raise ValueError("Use the player Take over or Hand back controls")
-        return await coordinator.control(run_id, **body)
+        return await coordinator.control(run_id, command, **body)
 
     @app.post("/api/runs/{run_id}/recalculate-goals")
     async def recalculate_goals(run_id: str, body: RecalculateGoalsRequest):
@@ -598,6 +644,8 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
 
     @app.post("/api/runs/{run_id}/flag")
     async def flag(run_id: str, body: dict):
+        if not isinstance(body.get("description"), str) or not body["description"].strip():
+            raise ValueError("Describe what happened before flagging")
         async with coordinator.run_lock(run_id):
             await coordinator.cancel_tick(run_id)
             return await coordinator.flag(run_id, body["description"], body.get("expected", "Unknown; requires review"), body.get("players"))
@@ -609,9 +657,9 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
         if "concurrent_sessions" in body and (type(body["concurrent_sessions"]) is not int or body["concurrent_sessions"] != 1):
             raise ValueError("This release allows exactly one active instance; concurrency cannot be increased")
         for key in ("duration_seconds", "spend_usd"):
-            if key in body and body[key] is not None and (not isinstance(body[key], (int, float)) or body[key] <= 0):
-                raise ValueError(f"{key} must be positive or unset")
-        if "storage_reserve_bytes" in body and (not isinstance(body["storage_reserve_bytes"], int) or body["storage_reserve_bytes"] < 0):
+            if key in body and body[key] is not None and (not finite_number(body[key]) or body[key] <= 0):
+                raise ValueError(f"{key} must be a finite positive number or unset")
+        if "storage_reserve_bytes" in body and (type(body["storage_reserve_bytes"]) is not int or body["storage_reserve_bytes"] < 0):
             raise ValueError("Storage reserve must be a nonnegative byte count")
         if "reasoning_effort" in body:
             raise ValueError("Gameplay selections use the configured Codex effort. Refresh the dashboard.")
@@ -626,8 +674,13 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
     def require_ai_idle():
         if profiles.lock.locked():
             raise ValueError("Wait for agent tuning to finish before changing AI sign-in.")
-        if any(r["state"] in {"Queued", "Starting", "Running", "Stopping"} for r in store.list("runs")):
+        runs = store.list("runs")
+        if any(r["state"] in {"Queued", "Starting", "Running", "Stopping"} for r in runs):
             raise ValueError("Pause or stop active bots and stop queued runs before changing Codex sign-in.")
+        # Goal recalculation runs inference while its run is Paused.
+        if (any(r.get("goal_recalculation", {}).get("status") == "planning" for r in runs)
+                or any(not task.done() for task in coordinator.tasks.values())):
+            raise ValueError("Wait for goal recalculation and pending agent inference before changing Codex sign-in.")
 
     @app.post("/api/settings/codex/login")
     async def codex_login():
@@ -654,20 +707,35 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
     async def add_build(body: dict):
         if not isinstance(body.get("manifest_path"), str) or not Path(body["manifest_path"]).is_absolute():
             raise ValueError("Select an absolute manifest path")
-        record = build_record(body["manifest_path"], body.get("name"), body.get("id"))
+        try:
+            record = build_record(body["manifest_path"], body.get("name"), body.get("id"))
+        except (OSError, KeyError) as exc:
+            raise ValueError(f"Build manifest is unreadable or incomplete: {exc}") from None
+        record.pop("project_id", None)  # Membership comes only from the request, never the manifest.
         return Projects(store).register_build(record, body.get("project_id"))
 
     @app.get("/api/builds/{build_id}/catalog")
     async def catalog(build_id: str):
         build = store.require("builds", build_id)
-        return Repository(build).catalog(build)
+        return await asyncio.to_thread(lambda: Repository(build).catalog(build))
 
     @app.post("/api/workers")
     async def add_worker(body: dict):
         worker_id = body.get("id") or uid("worker_")
+        if not isinstance(worker_id, str) or not isinstance(body.get("url"), str):
+            raise ValueError("Worker requires a text ID and service URL")
+        if any(key in body and not isinstance(body[key], str) for key in ("name", "desktop_url", "host_address", "token")) or type(body.get("enabled", True)) is not bool:
+            raise ValueError("Worker name, URLs, host address and token must be text; enabled must be true or false")
         url = urlparse(body["url"])
         if url.scheme not in {"http", "https"} or not url.hostname or url.username or url.password:
             raise ValueError("Worker requires an HTTP(S) private service URL without embedded credentials")
+        existing = store.get("workers", worker_id)
+        if existing:
+            require_unreferenced(worker_id)  # Same ownership rule as deletion.
+        endpoint = lambda parsed: (parsed.scheme, parsed.hostname, parsed.port or {"http": 80, "https": 443}.get(parsed.scheme))
+        if not body.get("token") and (not existing or endpoint(urlparse(existing.get("url", ""))) != endpoint(url)):
+            # Never send a stored bearer token to a different scheme/host/port.
+            raise ValueError("Enter the worker service token for a new or moved worker URL")
         reference = "worker:" + worker_id
         if body.get("token"):
             credentials.save(reference, body["token"])
@@ -693,12 +761,12 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
 
     @app.post("/api/workers/{worker_id}/steam/start")
     async def steam_start(worker_id: str):
-        if any(l["kind"] == "worker" and l["resource_id"] == worker_id for l in store.leases()):
-            raise ValueError("Finish the active worker lease before Steam account setup")
+        require_unleased_worker(worker_id, "Finish the active worker lease before Steam account setup")
         return await coordinator.client(worker_id).steam_setup_start()
 
     @app.post("/api/workers/{worker_id}/steam/finish")
     async def steam_finish(worker_id: str):
+        require_unleased_worker(worker_id, "Finish the active worker lease before closing Steam account setup")
         return await coordinator.client(worker_id).steam_setup_finish()
 
     @app.post("/api/workers/{worker_id}/steam/status")
@@ -716,21 +784,27 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
 
     @app.post("/api/workers/{worker_id}/steam/verify")
     async def steam_verify(worker_id: str, body: dict):
-        if any(l["kind"] == "worker" and l["resource_id"] == worker_id for l in store.leases()):
-            raise ValueError("Steam verification needs an unleased worker")
+        if not isinstance(body.get("account_id"), str) or not isinstance(body.get("build_id"), str):
+            raise ValueError("Steam verification requires account_id and build_id")
         account = store.require("accounts", body["account_id"])
         build = store.require("builds", body["build_id"])
         if account["worker_id"] != worker_id or account["app_id"] != build.get("steam_app_id"):
             raise ValueError("Account desktop and actual game App ID must match the selected build")
-        result = await coordinator.client(worker_id).steam_verify(account["app_id"], account["steam_id"], build["command"])
+        # Verification launches the game, so it owns the global slot like an instance.
+        async with coordinator.lock:
+            coordinator.require_instance_slot()
+            require_unleased_worker(worker_id, "Steam verification needs an unleased worker")
+            result = await coordinator.client(worker_id).steam_verify(account["app_id"], account["steam_id"], build["command"])
         account.update(readiness="ready" if result.get("verified") else "human_sign_in_required", last_check=time.time(), verification=result)
         store.put("accounts", account)
         return result
 
     @app.post("/api/accounts")
     async def add_account(body: dict):
-        if not str(body.get("steam_id", "")).isdigit() or int(body.get("app_id") or 0) in {0, 480}:
+        if not str(body.get("steam_id", "")).isdigit() or type(body.get("app_id")) is not int or body["app_id"] <= 0 or body["app_id"] == 480:
             raise ValueError("Specify the actual Steam ID64 and Agronauts App ID (not 480)")
+        if not isinstance(body.get("name"), str) or not isinstance(body.get("worker_id"), str) or not isinstance(body.get("id") or "", str):
+            raise ValueError("Account requires a text name and worker_id")
         store.require("workers", body["worker_id"])
         for account in store.list("accounts"):
             if account["id"] != body.get("id") and (account["steam_id"] == str(body["steam_id"]) or account["worker_id"] == body["worker_id"]):
@@ -748,11 +822,7 @@ def create_app(data_root=None, credentials=None, start_services=True, initialize
     async def delete_catalog(kind: str, record_id: str):
         if kind not in {"builds", "workers", "accounts"}:
             raise HTTPException(404)
-        if any(l["resource_id"] == record_id for l in store.leases()):
-            raise ValueError("This resource has an active or unresolved lease")
-        for run in store.list("runs"):
-            if run["state"] in ACTIVE_STATES | {"Queued"} and record_id in json.dumps(run["plan"]):
-                raise ValueError("Resource is referenced by an approved run")
+        require_unreferenced(record_id)
         store.delete(kind, record_id)
         return {"deleted": record_id, "files_preserved": True}
 

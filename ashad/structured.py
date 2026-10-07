@@ -7,26 +7,10 @@ import hashlib
 import json
 import time
 
-from .ai import ProviderError, function
+from .ai import ProviderError
 from .repository import Repository
 from .store import uid
 from . import subgoals
-
-S = {"type": "string"}
-GAME_TOOLS = [
-    function("observe", "Read your current player-scoped game state. No screenshots or monitor diagnostics.", {}),
-    function("inspect_entity", "Read a currently visible entity or control and its actions.", {"target_id": S}),
-    function("list_entities", "Page currently observed targets when the initial context was truncated. Filter by kind or label text.", {"query": S, "offset": {"type": "integer"}, "limit": {"type": "integer"}}, ["query"]),
-    function("list_actions", "Read actions advertised by a visible entity/control.", {"target_id": S}),
-    function("explain_objective", "Explain currently active tutorial goals under the scenario assistance policy.", {}),
-    function("perform_action", "Perform one bounded normal game action. Use observed target id/version. Completion means input or movement completed; verify game effects afterward. For input, parameters.name must be an advertised input; optional world_position aims the equipped tool. UI click accepts button left/right; ui_text accepts text; ui_drag accepts destination_id; move_to accepts position if no target. Navigation uses local waypoints within 480 pixels.", {
-        "verb": {"type": "string", "enum": ["move_to", "interact", "input", "ui_click", "ui_drag", "ui_text", "ui_scroll", "fish_follow"]},
-        "target_id": S, "target_version": {"type": "integer"}, "parameters": {"type": "object"}, "reason": S}, ["verb", "parameters", "reason"]),
-    function("get_action_status", "Reconcile a previous action; never blindly retry an unknown mutation.", {"action_id": S}),
-    function("cancel_action", "Cancel your current bounded action; committed game effects are not undone.", {"action_id": S}),
-    function("wait_for_change", "Wait without further inference until relevant state or a teammate message changes, or timeout. Moving clocks alone do not wake you.", {"seconds": {"type": "number", "minimum": 1, "maximum": 60}, "reason": S}),
-    function("remember", "Save a short operational subgoal or team commitment, not private reasoning. Observed facts need observation references.", {"summary": S}),
-]
 
 
 def meaningful_signature(observation):
@@ -116,8 +100,10 @@ class StructuredPlayers:
             raise ValueError("Structured game observation identity/schema mismatch")
         if not result.get("observation_id"):
             raise ValueError("Game observation is missing its observation ID")
-        if time.time() - result.get("timestamp", 0) > 5:
+        if subgoals.stale(result.get("timestamp")):
             raise ValueError("Structured game context is stale")
+        # Game and controller clocks may disagree; planning freshness uses the controller's receipt time.
+        result["received_at"] = time.time()
         run, ps = self.binding(run_id, player_id)
         ps["structured_context"] = result
         ps["last_observation"] = {"observation_id": result.get("observation_id"), "timestamp": result.get("timestamp"), "source": "structured_game"}
@@ -148,7 +134,7 @@ class StructuredPlayers:
     async def dispatch(self, run_id, player_id, name, args, observation, generation, owner="agent"):
         run, ps = self.binding(run_id, player_id)
         key = (run_id, player_id)
-        if name in {"perform_action", "cancel_action", "wait_for_change", "remember", "team_message"}:
+        if name in {"perform_action", "cancel_action", "wait_for_change"}:
             if run["state"] not in {"Starting", "Running"} or ps["generation"] != generation:
                 return {"status": "cancelled", "reason": "Inputs held or generation changed"}
             if self.control_owners.get(key, "agent") != owner:
@@ -166,24 +152,14 @@ class StructuredPlayers:
             return {"observation_id": observation["observation_id"], "entities": entities[offset:offset+limit], "total": len(entities), "next_offset": offset+limit if offset+limit < len(entities) else None}
         if name in {"inspect_entity", "list_actions", "get_action_status", "cancel_action", "read_changes"}:
             return await self.call_game(run_id, player_id, name, args)
-        if name == "remember":
-            ps["agent_memory"] = str(args.get("summary", ""))[:3000]
-            self.store.put("runs", run)
-            return {"status": "recorded"}
         if name == "wait_for_change":
             self.waits[key] = (time.time() + max(1, min(float(args["seconds"]), 60)), wait_signature(observation), generation)
             ps["activity"] = str(args.get("reason", "Waiting for game state"))[:1000]
+            if owner == "agent" and run.get("subgoal_plan", {}).get("player_id") == player_id:
+                subgoals.record_action(run["subgoal_plan"])  # Repeated waits without progress must trigger review.
             self.store.put("runs", run)
             self.status(run_id, player_id, "waiting", ps["activity"], generation, wait_until=self.waits[key][0])
             return {"status": "waiting", "until": self.waits[key][0]}
-        if name == "team_message":
-            if player.get("cooperation") != "team":
-                return {"error": "Team communication disabled by scenario"}
-            self.store.event(run_id, "team_message", {"player_id": player_id, "message": str(args["message"])[:4000]})
-            for other in run["players"]:
-                self.waits.pop((run_id, other), None)
-                self.last_decisions.pop((run_id, other), None)
-            return {"status": "recorded"}
         if name != "perform_action":
             return {"error": "Unsupported structured tool"}
         if key in self.pending:
@@ -211,7 +187,10 @@ class StructuredPlayers:
         try:
             result = await self.call_game(run_id, player_id, "perform_action", payload)
         except Exception as exc:
-            result = {"status": "unknown", "action_id": action_id, "reason": "Acknowledgement lost; reconcile status",
+            # A worker HTTP 4xx is a definitive pre-execution rejection; only transport/5xx outcomes are unknown.
+            rejected = 400 <= (getattr(exc, "status_code", None) or 0) < 500 and getattr(exc, "ambiguous", True) is False
+            result = {"status": "rejected" if rejected else "unknown", "action_id": action_id,
+                      "reason": str(exc) if rejected else "Acknowledgement lost; reconcile status",
                       "error": f"{type(exc).__name__}: {exc}", "error_code": getattr(exc, "code", None)}
         self.store.event(run_id, "action_result", {"player_id": player_id, "action_id": action_id,
             "intent_event_id": event["id"], "result": result, "mode": "structured", "retries": 0})
@@ -236,7 +215,7 @@ class StructuredPlayers:
             "game_controls": run.get("agent_profile", {}).get("instructions", ""), "agent_profile_id": run.get("agent_id"),
             "observation": prompt_observation(observation), "guidance": self.guidance(run, player, observation),
             "memory": ps.get("agent_memory", ""), "recent_own_actions": own, "team_messages": team,
-            "allowed_source_paths": [], "setup": run["plan"]["world_setup"], "transport": run["plan"]["transport"],
+            "setup": run["plan"]["world_setup"], "transport": run["plan"]["transport"],
             "world_namespace": run.get("world_namespace"), "seed": run["plan"].get("seed"), "recovery_instruction": run.get("recovery_instruction", "")}
         plan = run.get("subgoal_plan")
         if plan and plan["player_id"] == player["id"]:
@@ -260,9 +239,6 @@ class StructuredPlayers:
         if completed or previous_active != plan.get("active_goal_id"):
             self.waits.pop((run_id, player_id), None)
             self.last_decisions.pop((run_id, player_id), None)
-        if plan["status"] == "completed":
-            self.status(run_id, player_id, "goal_verified", plan["reason"], generation)
-            return False  # Manual primary-goal acceptance is not changed into model-claimed success.
         if plan["status"] == "blocked":
             self.status(run_id, player_id, "planner_blocked", plan["reason"], generation)
             await self.coordinator.investigate(run_id, "planner_blocked", plan["reason"], [player_id])
@@ -324,6 +300,8 @@ class StructuredPlayers:
         run, ps = self.binding(run_id, player_id)
         generation = ps["generation"]
         if self.generations.get(key) != generation:
+            if ps.get("pending_action"):
+                self.clear_pending(run_id, player_id, generation)  # Held/rebound input cannot still be pending.
             self.pending.pop(key, None)
             self.waits.pop(key, None)
             self.last_decisions.pop(key, None)

@@ -70,7 +70,9 @@ def record_task(store, run_id, trigger, reason, *, key, category, event_id=None)
                 "Use gpt-6-luna for gameplay testing.", "",
                 "The external repair agent may delete this file when finished. "
                 "Deleting it does not delete run evidence or resume any bots.", "",
-                "## Diagnostic snapshot", "", "```json", json.dumps(snapshot, ensure_ascii=False, indent=2), "```", ""]
+                "## Diagnostic snapshot", "", "```json",
+                # Game text must not close the fence; \u0060 is the same character inside JSON strings.
+                json.dumps(snapshot, ensure_ascii=False, indent=2).replace("`", "\\u0060"), "```", ""]
             store.put("repair_task_exports", {"id": task_id, "run_id": run_id, "status": "pending",
                 "filename": f"{run_id}__{trigger}__{task_id[:12]}.md", "body": "\n".join(lines)})
     except Exception:

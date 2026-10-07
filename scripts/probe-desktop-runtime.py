@@ -65,12 +65,12 @@ async def check_app(root):
     async with app.router.lifespan_context(app):
         # Empty fixture only; any attempted worker operation raises immediately.
         await once(app.state.store, OfflineOnly())
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://fixture") as client:
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
             for url in ("/", "/static/app.js", "/static/style.css", "/api/health", "/api/bootstrap"):
                 response = await client.get(url)
                 assert response.status_code == 200 and response.content, (url, response.status_code)
             bootstrap = (await client.get("/api/bootstrap")).json()
-            assert all(bootstrap[key] == [] for key in ("runs", "workers", "accounts", "agents", "builds", "usage"))
+            assert all(bootstrap[key] == [] for key in ("runs", "workers", "accounts", "agents", "builds")) and bootstrap["usage_count"] == 0
     # Lifespan closed SQLite: data can be reopened after drain.
     from ashad.store import Store
     store = Store(root / "controller")

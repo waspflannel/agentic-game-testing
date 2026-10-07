@@ -15,6 +15,8 @@ param(
     [switch]$Recreate
 )
 $ErrorActionPreference = 'Stop'
+# Windows PowerShell 5.1 turns redirected native stderr into a terminating error under Stop.
+function Invoke-DockerProbe { $ErrorActionPreference = 'Continue'; & $DockerExecutable @args 2>$null }
 function Get-LocalWorkerStatus($Uri, $Headers) {
     $parameters = @{Uri=$Uri; Headers=$Headers; TimeoutSec=5}
     if ((Get-Command Invoke-RestMethod).Parameters.ContainsKey('NoProxy')) { $parameters.NoProxy = $true }
@@ -39,7 +41,7 @@ if (-not $SkipBuild) {
     if ($LASTEXITCODE -ne 0) { throw 'Worker image build failed.' }
 }
 $network = $NetworkName
-$networkProbe = & $DockerExecutable network inspect --format '{{index .Labels "ashad.managed"}}' $network 2>$null
+$networkProbe = Invoke-DockerProbe network inspect --format '{{index .Labels `ashad.managed`}}' $network
 if ($LASTEXITCODE -eq 0 -and $ManagedOwner -and $networkProbe -ne 'true') { throw 'Network collision; refusing an unrelated network.' }
 if ($LASTEXITCODE -ne 0) {
     & $DockerExecutable network create --label 'ashad.managed=true' $network | Out-Null
@@ -69,7 +71,7 @@ for ($i = 1; $i -le $Count; $i++) {
     $desktopPort = $DesktopBasePort + $i
     if ($ManagedOwner) {
         foreach ($volume in @("ashad-$workerId-data", "ashad-$workerId-home")) {
-            $volumeOwner = & $DockerExecutable volume inspect --format '{{index .Labels "ashad.environment-owner"}}' $volume 2>$null
+            $volumeOwner = Invoke-DockerProbe volume inspect --format '{{index .Labels `ashad.environment-owner`}}' $volume
             if ($LASTEXITCODE -eq 0) {
                 if ($volumeOwner -ne $ManagedOwner) { throw 'Persistent volume collision; refusing unrelated data.' }
             } else {
@@ -78,7 +80,7 @@ for ($i = 1; $i -le $Count; $i++) {
             }
         }
     }
-    $existing = & $DockerExecutable container inspect --format '{{index .Config.Labels "ashad.managed"}}' $name 2>$null
+    $existing = Invoke-DockerProbe container inspect --format '{{index .Config.Labels `ashad.managed`}}' $name
     if ($LASTEXITCODE -eq 0) {
         if ($existing -ne 'true') { throw "Container $name is not ASHAD-managed; refusing to change it." }
         if ($ManagedOwner) {

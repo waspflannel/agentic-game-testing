@@ -57,7 +57,7 @@ class Store:
     def put(self, kind, data, key=None):
         key = key or data["id"]
         with self.lock:
-            self.db.execute("INSERT INTO records VALUES (?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data,updated=excluded.updated", (kind, key, json.dumps(redact(data), ensure_ascii=False), time.time()))
+            self.db.execute("INSERT INTO records VALUES (?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data,updated=excluded.updated", (kind, key, json.dumps(redact(data), ensure_ascii=False, allow_nan=False), time.time()))
         return data
 
     def get(self, kind, key, default=None):
@@ -71,9 +71,13 @@ class Store:
             raise ValueError(f"Unknown {kind}: {key}")
         return value
 
-    def list(self, kind):
+    def list(self, kind, *, states=None):
+        query, parameters = "SELECT data FROM records WHERE kind=?", [kind]
+        if states is not None:
+            query += f" AND json_extract(data, '$.state') IN ({','.join('?' * len(states))})"
+            parameters += sorted(states)
         with self.lock:
-            rows = self.db.execute("SELECT data FROM records WHERE kind=? ORDER BY updated DESC", (kind,)).fetchall()
+            rows = self.db.execute(query + " ORDER BY updated DESC", parameters).fetchall()
         return [json.loads(r[0]) for r in rows]
 
     def delete(self, kind, key):
@@ -89,13 +93,12 @@ class Store:
 
     def event(self, run_id, kind, payload=None, **fields):
         with self.lock:
-            row = self.db.execute("SELECT MAX(seq) FROM events WHERE run_id=?", (run_id,)).fetchone()
-            seq = (row[0] or 0) + 1
-            previous = self.db.execute("SELECT data FROM events WHERE run_id=? ORDER BY seq DESC LIMIT 1", (run_id,)).fetchone()
-            prev_hash = json.loads(previous[0])["hash"] if previous else None
+            previous = self.db.execute("SELECT seq, data FROM events WHERE run_id=? ORDER BY seq DESC LIMIT 1", (run_id,)).fetchone()
+            seq = previous[0] + 1 if previous else 1
+            prev_hash = json.loads(previous[1])["hash"] if previous else None
             event = redact({"id": uid("evt_"), "version": 1, "run_id": run_id, "seq": seq, "timestamp": time.time(), "monotonic": time.monotonic(), "kind": kind, "payload": payload or {}, "previous_hash": prev_hash, **fields})
             event["hash"] = hashlib.sha256(json.dumps(event, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-            raw = json.dumps(event, ensure_ascii=False)
+            raw = json.dumps(event, ensure_ascii=False, allow_nan=False)
             # Ledger is authoritative; recovery reconciles a crash between append and DB index.
             with (self.run_dir(run_id) / "ledger.jsonl").open("a", encoding="utf-8", newline="\n") as f:
                 f.write(raw + "\n")

@@ -48,3 +48,12 @@ test('late native dialog cannot change another form or a disconnected page',asyn
  app.form={};resolve('C:\\late\\manifest.json');await pending;
  assert.equal(field.value,'retained');
 });
+test('typing sends the dirty bridge only on changes and a rejecting bridge warns once',async()=>{
+ const {app,calls}=context();let toasts=0;app.toast=()=>{toasts++;};
+ for(let i=0;i<20;i++)app.markDraftDirty(true);
+ assert.deepEqual(calls,[true]);
+ app.window.ashadDesktop.setDirtyDraft=async()=>{throw new Error('Bridge rejected');};
+ for(let i=0;i<20;i++){app.markDraftDirty(i%2===0?false:true);}
+ await new Promise(setImmediate);
+ assert.equal(toasts,1);
+});

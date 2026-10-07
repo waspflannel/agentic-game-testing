@@ -3,6 +3,7 @@ import asyncio
 from contextlib import suppress
 import json
 import logging
+import time
 
 from openai_codex import AsyncCodex, ApprovalMode, CodexConfig, Sandbox
 from openai_codex.types import ReasoningEffort
@@ -14,6 +15,7 @@ from .store import redact
 
 TUNING_PROMPT_VERSION = 2
 TUNING_MANUAL_LIMIT = 32000
+READY_TTL_SECONDS = 30  # Reuse a positive account/model check across consecutive turns.
 
 
 class CodexError(Exception):
@@ -44,6 +46,7 @@ class CodexBackend:
         self.login_wait = None
         self.login_error = None
         self.auth_lock = asyncio.Lock()
+        self.ready_until = {}  # model -> monotonic deadline of the last positive status()
 
     def runtime(self):
         if self.client is None:
@@ -72,6 +75,7 @@ class CodexBackend:
         if model not in SUPPORTED_MODELS:
             result.update(status="model_unavailable", message=f"Unsupported Codex model: {model}.")
             return result
+        self.ready_until.pop(model, None)
         if self.login_wait and not self.login_wait.done():
             result.update(status="login_pending", message="Complete ChatGPT sign-in in your browser, then refresh status.")
             return result
@@ -95,6 +99,7 @@ class CodexBackend:
                     result.update(status="model_unavailable", message=f"Your Codex account does not list {model}. No substitute model or API billing was used.")
                     return result
                 result.update(status="ready", message=f"ChatGPT subscription connected; {model} is available in Codex. Account usage limits apply.")
+                self.ready_until[model] = time.monotonic() + READY_TTL_SECONDS
         except TimeoutError:
             result.update(status="connection_failure", message="Codex did not respond to the sign-in check within 25 seconds.")
         except Exception as exc:
@@ -104,6 +109,7 @@ class CodexBackend:
 
     async def login_start(self):
         async with self.auth_lock:
+            self.ready_until.clear()
             if self.login_wait and not self.login_wait.done():
                 return {"auth_url": self.login.auth_url, "login_id": self.login.login_id}
             try:
@@ -126,6 +132,7 @@ class CodexBackend:
 
     async def login_cancel(self):
         async with self.auth_lock:
+            self.ready_until.clear()
             try:
                 if self.login_wait and not self.login_wait.done():
                     await asyncio.wait_for(self.login.cancel(), 5)
@@ -139,7 +146,7 @@ class CodexBackend:
                 self.login_error = None
 
     async def logout(self):
-        await self.login_cancel()
+        await self.login_cancel()  # Also clears cached readiness.
         try:
             await asyncio.wait_for(self.runtime().logout(), 10)
         except Exception as exc:
@@ -231,9 +238,10 @@ class CodexBackend:
             "specific goal, instance name, hidden world facts, or a fixed quest walkthrough."), model, operation="tuning")
 
     async def _complete(self, payload, schema, instructions, model, *, operation="selection"):
-        status = await self.status(model)
-        if status["status"] != "ready":
-            raise CodexError(status["status"], status["message"])
+        if self.ready_until.get(model, 0) <= time.monotonic():
+            status = await self.status(model)
+            if status["status"] != "ready":
+                raise CodexError(status["status"], status["message"])
         client = self.runtime()
         thread = handle = starting = None
         try:
@@ -277,6 +285,7 @@ class CodexBackend:
         except CodexError:
             raise
         except Exception as exc:
+            self.ready_until.clear()  # Re-check sign-in/model before the next turn.
             raise provider_error(exc) from None
         finally:
             if thread and self.client is client:

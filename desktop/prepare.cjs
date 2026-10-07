@@ -1,11 +1,12 @@
 'use strict';
 const { createHash } = require('node:crypto');
-const { spawn } = require('node:child_process');
+const { execFile, spawn } = require('node:child_process');
 const fs = require('node:fs/promises');
 const { createReadStream, createWriteStream } = require('node:fs');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
+const { promisify } = require('node:util');
 const { childEnvironment } = require('./shell.cjs');
 
 const PYTHON_VERSION = '3.13.16';
@@ -14,6 +15,7 @@ const PYTHON_SHA256 = 'bbf675bb5e763c1efbb09a3a461b259d81598a63c30c4b0d7ea11b9f0
 const root = path.resolve(__dirname, '..');
 const runtime = path.join(__dirname, 'runtime');
 const pythonRoot = path.join(runtime, 'python');
+const partialPython = path.join(runtime, 'python.partial');
 const python = path.join(pythonRoot, 'python.exe');
 const site = path.join(pythonRoot, 'Lib', 'site-packages');
 const lock = path.join(__dirname, 'python-requirements.lock');
@@ -36,10 +38,28 @@ function run(executable, args, env = environment) {
 // Destructive replacement is restricted to these generated resource directories.
 async function removeGenerated(directory) {
   const resolved = path.resolve(directory);
-  if (![path.join(site, 'ashad'), path.join(site, 'integration'), path.join(site, 'ashad_resources')].includes(resolved)) {
+  if (![pythonRoot, partialPython, site, path.join(site, 'ashad'), path.join(site, 'integration'),
+    path.join(site, 'ashad_resources')].includes(resolved)) {
     throw new Error(`Refusing to remove unexpected path: ${resolved}`);
   }
   await fs.rm(resolved, { recursive: true, force: true });
+}
+// Only Git-tracked sources ship; ignored/untracked local files (keys, data, scratch) never do.
+async function copyTracked(source, destination) {
+  let stdout;
+  try {
+    ({ stdout } = await promisify(execFile)('git', ['ls-files', '-z', '--', source],
+      { cwd: root, env: environment, maxBuffer: 16 << 20, windowsHide: true }));
+  } catch (error) {
+    throw new Error(`git ls-files failed (${error.message.trim()}). Packaging copies tracked files only and requires Git on PATH.`);
+  }
+  const files = stdout.split('\0').filter(Boolean);
+  if (!files.length) throw new Error(`No tracked files under ${source}; refusing to package an empty resource.`);
+  for (const file of files) {
+    const target = path.join(destination, path.relative(source, file));
+    await fs.mkdir(path.dirname(target), { recursive: true });
+    await fs.copyFile(path.join(root, file), target);
+  }
 }
 
 async function prepare() {
@@ -56,44 +76,52 @@ async function prepare() {
     }
   }
   if (await sha256(zip) !== PYTHON_SHA256) throw new Error('Private Python ZIP SHA256 mismatch. Remove only desktop/runtime/python.zip and retry the official download.');
-  if (!await exists(python)) {
+  const marker = path.join(runtime, 'prepared.json');
+  let prior = {};
+  if (await exists(marker)) prior = JSON.parse(await fs.readFile(marker, 'utf8'));
+  if (prior.python_sha256 !== PYTHON_SHA256 || !await exists(python)) {
+    // Extract beside the target and rename into place: an interrupted Expand-Archive never looks complete.
+    await fs.rm(marker, { force: true });
+    prior = {};
+    await removeGenerated(partialPython);
     const powershell = path.join(environment.SystemRoot || environment.SYSTEMROOT || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
     await run(powershell, ['-NoProfile', '-NonInteractive', '-Command',
       'Expand-Archive -LiteralPath $env:ASHAD_BUILD_ZIP -DestinationPath $env:ASHAD_BUILD_PYTHON -Force'],
-      { ...environment, ASHAD_BUILD_ZIP: zip, ASHAD_BUILD_PYTHON: pythonRoot });
+      { ...environment, ASHAD_BUILD_ZIP: zip, ASHAD_BUILD_PYTHON: partialPython });
+    await removeGenerated(pythonRoot);
+    await fs.rename(partialPython, pythonRoot);
   }
-  const marker = path.join(runtime, 'prepared.json');
   const lockHash = await sha256(lock);
-  let prior = {};
-  if (await exists(marker)) prior = JSON.parse(await fs.readFile(marker, 'utf8'));
-  if (prior.python_sha256 !== PYTHON_SHA256 || prior.requirements_sha256 !== lockHash) {
+  if (prior.requirements_sha256 !== lockHash) {
+    // A changed lock starts from an empty site, never an upgrade over stale distributions.
+    await fs.rm(marker, { force: true });
+    await removeGenerated(site);
+    await fs.mkdir(site, { recursive: true });
     // Full official distribution supports normal site initialization/native keyring,
-    // unlike the embeddable _pth runtime. Pip is strictly a build-time tool.
-    await run(python, ['-I', '-B', '-m', 'ensurepip', '--upgrade']);
-    await run(python, ['-I', '-B', '-m', 'pip', 'install', '--disable-pip-version-check', '--no-deps',
-      '--only-binary=:all:', '--no-compile', '--upgrade', '--target', site,
-      '--cache-dir', path.join(cache, 'pip-cache'), '-r', lock]);
+    // unlike the embeddable _pth runtime. pip/ensurepip are build-time only: the
+    // package.json extraResources filter excludes them from the packaged runtime.
+    await run(python, ['-I', '-B', '-m', 'ensurepip']);
+    // --isolated ignores pip.ini/PIP_* index settings; every wheel must match its locked hash.
+    await run(python, ['-I', '-B', '-m', 'pip', 'install', '--isolated', '--index-url', 'https://pypi.org/simple',
+      '--require-hashes', '--disable-pip-version-check', '--no-deps', '--only-binary=:all:', '--no-compile',
+      '--target', site, '--cache-dir', path.join(cache, 'pip-cache'), '-r', lock]);
     await fs.writeFile(marker, JSON.stringify({ python_version: PYTHON_VERSION, python_sha256: PYTHON_SHA256,
       requirements_sha256: lockHash }, null, 2) + '\n');
   }
   await removeGenerated(path.join(site, 'ashad'));
-  await fs.cp(path.join(root, 'ashad'), path.join(site, 'ashad'), { recursive: true,
-    filter: source => !source.split(path.sep).includes('__pycache__') && !/\.py[co]$/.test(source) });
+  await copyTracked('ashad', path.join(site, 'ashad'));
   await removeGenerated(path.join(site, 'integration'));
-  await fs.mkdir(path.join(site, 'integration'), { recursive: true });
-  await fs.copyFile(path.join(root, 'integration', 'fixtures.py'), path.join(site, 'integration', 'fixtures.py'));
+  await copyTracked('integration/fixtures.py', path.join(site, 'integration', 'fixtures.py'));
   const resources = path.join(site, 'ashad_resources');
   await removeGenerated(resources);
-  await fs.mkdir(path.join(resources, 'scripts'), { recursive: true });
-  await fs.cp(path.join(root, 'worker'), path.join(resources, 'worker'), { recursive: true,
-    filter: source => !source.split(path.sep).some(part => ['__pycache__', '.pytest_cache'].includes(part)) && !/\.py[co]$/.test(source) });
-  await fs.copyFile(path.join(root, 'scripts', 'provision-workers.ps1'), path.join(resources, 'scripts', 'provision-workers.ps1'));
+  await copyTracked('worker', path.join(resources, 'worker'));
+  await copyTracked('scripts/provision-workers.ps1', path.join(resources, 'scripts', 'provision-workers.ps1'));
   // Check every resolved pin and real subprocess resource without login/provider/game activity.
   await run(python, ['-I', '-B', '-c',
     'import sys; from pathlib import Path; from importlib.metadata import version; ' +
     `assert sys.version.split()[0] == "${PYTHON_VERSION}"; ` +
-    'pins=Path(sys.argv[1]).read_text().splitlines(); ' +
-    'assert all(version(name)==expected for name,expected in (line.split("==") for line in pins if line)); ' +
+    'pins=[line.split()[0].split("==") for line in Path(sys.argv[1]).read_text().splitlines() if line.strip()]; ' +
+    'assert all(version(name)==expected for name,expected in pins); ' +
     'import ashad.__main__, ashad.watchdog, ashad.app, integration.fixtures; ' +
     'from keyring.backends.Windows import WinVaultKeyring; assert WinVaultKeyring.priority > 0; ' +
     'from codex_cli_bin import bundled_codex_path; assert bundled_codex_path().is_file(); ' +
@@ -101,8 +129,8 @@ async function prepare() {
     'resources=Path(ashad.app.__file__).parents[1]/"ashad_resources"; ' +
     'assert (resources/"worker"/"Dockerfile").is_file() and (resources/"worker"/"prepare_probe.py").is_file(); ' +
     'assert (resources/"scripts"/"provision-workers.ps1").is_file(); ' +
-    'print("Prepared private Python, 49 resolved pins, keyring import, Codex resources and controller/static resources.")', lock]);
+    'print(f"Prepared private Python, {len(pins)} hash-locked pins, keyring import, Codex resources and controller/static resources.")', lock]);
 }
 
 if (require.main === module) prepare().catch(error => { console.error(error.message); process.exitCode = 1; });
-module.exports = { PYTHON_VERSION, PYTHON_URL, PYTHON_SHA256, prepare };
+module.exports = { PYTHON_VERSION, PYTHON_URL, PYTHON_SHA256, prepare, copyTracked };

@@ -6,7 +6,6 @@ import httpx
 from contextlib import AsyncExitStack, asynccontextmanager
 import json
 import math
-import os
 from pathlib import Path
 import re
 import time
@@ -75,47 +74,10 @@ def build_record(path, name=None, build_id=None):
     return manifest
 
 
-def initialize_local(store, credentials):
-    if not store.get("settings", "main"):
-        store.put("settings", DEFAULT_SETTINGS)
-    registration = Path(os.environ.get("ASHAD_WORKER_REGISTRATION", PROJECT / ".data" / "workers.local.json"))
-    if registration.exists():
-        entries = json.loads(registration.read_text(encoding="utf-8-sig"))
-        if isinstance(entries, dict):
-            entries = entries.get("workers", [])
-        for entry in entries:
-            if entry.get("vnc_password_file"):
-                password_path = Path(entry["vnc_password_file"])
-                if not password_path.is_absolute():
-                    password_path = PROJECT / password_path
-                if password_path.is_file():
-                    credentials.save("desktop:" + entry["id"], password_path.read_text().strip())
-            if store.get("workers", entry["id"]):
-                continue
-            reference = "worker:" + entry["id"]
-            token_path = Path(entry["token_file"])
-            if not token_path.is_absolute():
-                token_path = PROJECT / token_path
-            credentials.save(reference, token_path.read_text().strip())
-            record = {k: v for k, v in entry.items() if k not in {"token_file", "vnc_password_file"}}
-            record.update(credential_ref=reference, enabled=True)
-            store.put("workers", record)
-    default_manifest = Path(os.environ.get("ASHAD_BUILD_MANIFEST", PROJECT / "builds" / "agronauts-decisions" / "manifest.json"))
-    if default_manifest.exists():
-        record = build_record(default_manifest)
-        existing = store.get("builds", record["id"])
-        if not existing:
-            # Startup may discover a legacy build, never replace pinned identity or
-            # erase explicit project membership. Changed revisions need a new ID.
-            store.put("builds", record)
-
-
-def create_app(data_root=None, credentials=None, start_services=True, initialize=True, ai_backend=None, controller_lock=None):
-    store = Store(data_root or os.environ.get("ASHAD_DATA", PROJECT / ".data" / "controller"))
+def create_app(data_root, credentials=None, start_services=True, ai_backend=None, controller_lock=None):
+    store = Store(data_root)
     credentials = credentials or Credentials()
-    if initialize:
-        initialize_local(store, credentials)
-    elif not store.get("settings", "main"):
+    if not store.get("settings", "main"):
         store.put("settings", DEFAULT_SETTINGS)
     settings = store.require("settings", "main")
     if settings.get("pricing") != SUBSCRIPTION_PRICING or "reasoning_effort" in settings:

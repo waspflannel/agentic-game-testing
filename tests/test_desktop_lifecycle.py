@@ -174,7 +174,7 @@ async def test_drain_blocks_admission_and_resume_even_outside_http(environment):
 
 
 def test_http_drain_blocks_mutations_but_keeps_readable_history(tmp_path):
-    app = create_app(tmp_path, credentials=MemoryCredentials(), start_services=False, initialize=False,
+    app = create_app(tmp_path, credentials=MemoryCredentials(), start_services=False,
                      ai_backend=FakeCodexBackend())
     with TestClient(app) as client:
         app.state.coordinator.draining = True
@@ -187,7 +187,7 @@ def test_http_drain_blocks_mutations_but_keeps_readable_history(tmp_path):
 @pytest.mark.asyncio
 async def test_http_tuning_cancellation_returns_conflict_and_releases_operation(tmp_path):
     import httpx
-    app = create_app(tmp_path, credentials=MemoryCredentials(), start_services=False, initialize=False,
+    app = create_app(tmp_path, credentials=MemoryCredentials(), start_services=False,
                      ai_backend=FakeCodexBackend())
     entered = asyncio.Event()
 

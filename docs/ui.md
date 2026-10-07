@@ -1,6 +1,6 @@
-# Dashboard
+# App guide
 
-The dashboard groups builds, saved agent configurations and instance threads under **Projects**. **Projects +** opens explicit game-agent setup; select a project/configuration to create a **New instance**. It uses native HTML, CSS and JavaScript, with no external runtime or CDN dependency. Navigation and inspection do not launch gameplay.
+ASHAD is a Windows Electron app; there is no browser version. The app groups builds, saved agent configurations and instance threads under **Projects**. **Projects +** opens explicit game-agent setup; select a project/configuration to create a **New instance**. It uses native HTML, CSS and JavaScript, with no external runtime or CDN dependency. Navigation and inspection do not launch gameplay.
 
 ## Agent setup
 
@@ -44,7 +44,7 @@ The UI retains labelled inputs, visible keyboard focus, native-dialog focus mana
 
 ## Desktop shell
 
-The Windows Electron shell opens this dashboard using an authenticated, owned loopback controller and bundled Python. It starts with a separate user-data store; selecting a build does not import legacy history or launch a game. The build-registration dialog offers native manifest/folder selection; cancelling selection leaves the form unchanged.
+The Electron shell renders this interface from an authenticated, owned loopback controller running on bundled Python; that controller refuses any client without the shell's per-launch key. It starts with a separate user-data store; selecting a build does not import legacy history or launch a game. The build-registration dialog offers native manifest/folder selection; cancelling selection leaves the form unchanged.
 
 Quit checks queued/live/unresolved ownership and in-flight tuning/sign-in/setup operations. Cancel does not stop or resume anything. Confirmed Stop/cancel and quit uses normal runtime teardown and waits for a clean controller exit; unknown teardown keeps the application open for recovery. The shutdown request is bound to the instances listed in the prompt; if ownership changed meanwhile, the controller refuses and nothing is stopped. If the controller has already exited, Quit asks for confirmation (records may be stale; the watchdog keeps its authority) instead of trapping the window. A renderer reload reconnects to the same controller, and View → Reload asks before discarding an unsent draft. Human viewers use an isolated session and closing one does not hand back control.
 
@@ -54,6 +54,6 @@ Unsent tuning, instance, setup-modal and operating-settings forms warn before na
 
 Advanced scenarios, multiplayer scheduling, saved starts, balancing, run comparison, reviews and custom success predicates are deferred; their scope and restoration gates are in [future work](future-work.md). Existing records and evidence are preserved. Retired mutation endpoints remain unavailable even if old links or payloads are retained in history.
 
-The current authoring paths are `POST /api/agents/tune` and `POST /api/instances`. This document describes the workflow, not an exhaustive API schema. Historical API documentation should not be used to restore removed controls accidentally. The controller answers only loopback `Host` headers (`127.0.0.1`, `localhost`, `[::1]`), so a rebound DNS name cannot reach it from a web page.
+The current authoring paths are `POST /api/agents/tune` and `POST /api/instances`. This document describes the workflow, not an exhaustive API schema. Historical API documentation should not be used to restore removed controls accidentally. The controller also answers only loopback `Host` headers (`127.0.0.1`, `localhost`, `[::1]`), so a rebound DNS name cannot reach it from a web page.
 
 Use [structured testing](structured-testing.md) for verification. Automated API and dashboard checks cannot establish successful live tuning, human UI acceptance or autonomous gameplay. Historical screenshots and local validation records are not included in this app-only repository and do not establish acceptance of this dashboard.

@@ -15,7 +15,7 @@ HEADERS = {"X-ASHAD-Request": "1"}
 
 
 def offline_app(root):
-    return create_app(root, credentials=MemoryCredentials(), start_services=False, initialize=False,
+    return create_app(root, credentials=MemoryCredentials(), start_services=False,
                       ai_backend=FakeCodexBackend())
 
 

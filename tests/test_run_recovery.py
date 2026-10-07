@@ -72,7 +72,7 @@ async def test_terminate_http_needs_no_reason_and_retains_unconfirmed_lease(envi
     run = await new_run(environment)
     await coord.admit(run)
     desktops["worker-1"].fail_stop = True
-    app = create_app(store.root, coord.credentials, start_services=False, initialize=False)
+    app = create_app(store.root, coord.credentials, start_services=False)
     app.state.coordinator.client_factory = coord.client_factory
     with TestClient(app) as client:
         result = client.post(f"/api/runs/{run['id']}/control", headers={"X-ASHAD-Request": "1"},

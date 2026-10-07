@@ -21,7 +21,7 @@ class NoCredentials:
 @asynccontextmanager
 async def desktop_server(tmp_path):
     app = create_app(tmp_path / "desktop transport data", credentials=NoCredentials(),
-                     initialize=False, start_services=False)
+                     start_services=False)
     session, owner = secrets.token_urlsafe(32), secrets.token_urlsafe(32)
     instance = secrets.token_hex(16)
     listener = bind_loopback()

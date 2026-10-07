@@ -30,7 +30,6 @@
 # App setup and verification only, never game-patching or game-build scripts.
 /scripts/*
 !/scripts/setup.ps1
-!/scripts/start.ps1
 !/scripts/test.ps1
 !/scripts/provision-workers.ps1
 !/scripts/test-dashboard-polling.js

@@ -205,9 +205,9 @@ async def serve_desktop(config, controller_lock=None):
 
     listener = bind_loopback()
     port = listener.getsockname()[1]
-    # Desktop starts with its own store only. Importing checkout data/credentials is
-    # an explicit migration, never initialize_local's automatic side effect.
-    app = create_app(config["data_root"], initialize=False, controller_lock=controller_lock)
+    # Desktop starts with its own store only. Importing older data/credentials is
+    # an explicit migration, never an automatic side effect.
+    app = create_app(config["data_root"], controller_lock=controller_lock)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False,
                                          timeout_graceful_shutdown=5))
     lifecycle = DesktopLifecycle(app, server)

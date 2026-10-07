@@ -6,7 +6,7 @@ Full autonomous DEMO completion and authenticated Steam gameplay remain unverifi
 
 ## Prepare a one-bot run
 
-1. Start the controller with `scripts/start.ps1` and open [ASHAD](http://127.0.0.1:8740).
+1. Open the ASHAD desktop app (`ASHAD.exe`); its private controller starts automatically.
 2. Confirm a pinned build and compatible idle desktop are configured. Complete ChatGPT sign-in in Settings. ENet does not require a Steam account; Steam requires verified identity and entitlement on an available desktop.
 3. Tune an agent from that build's source/control evidence with the selected model. Inspect the resulting saved instructions. Tuning calls Codex but does not launch gameplay or train model weights.
 4. Create a new instance using the profile, a primary goal and ENet or Steam. ASHAD allocates one compatible desktop and freezes the profile for that run.

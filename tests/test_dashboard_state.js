@@ -338,10 +338,8 @@ test('run usage summarizes every request but renders a bounded ledger on each po
  assert.ok(html.length<100000,`bounded run usage view: ${html.length}`);
 });
 
-test('pricing source is a link in browser mode and selectable text in the desktop shell', () => {
+test('pricing source is selectable text, never a link the desktop shell would block', () => {
  const app=usageDashboard();
- assert.match(app.pricingNote(),/<a href="https:\/\/developers\.openai\.com\/api\/docs\/pricing" target="_blank"/);
- app.window={ashadDesktop:{}};
  assert.doesNotMatch(app.pricingNote(),/<a /);
  assert.match(app.pricingNote(),/https:\/\/developers\.openai\.com\/api\/docs\/pricing/);
 });

@@ -20,7 +20,7 @@ def workspace(tmp_path):
     root = tmp_path / "application data"
     with acquire(root / "controller.lock") as lock:
         app = create_app(root, credentials=MemoryCredentials(), ai_backend=FakeCodexBackend(),
-                         start_services=False, initialize=False, controller_lock=lock)
+                         start_services=False, controller_lock=lock)
         store = app.state.store
         store.put("projects", {"id": "project", "name": "Same game"})
         folder = tmp_path / "supported game ユーザー"

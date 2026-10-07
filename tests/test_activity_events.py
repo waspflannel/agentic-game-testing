@@ -18,7 +18,7 @@ RUN_ID = "activity-fixture"
 def activity(tmp_path):
     backend = FakeCodexBackend(ready=False)
     app = create_app(tmp_path / "activity", credentials=MemoryCredentials(None),
-                     start_services=False, initialize=False, ai_backend=backend)
+                     start_services=False, ai_backend=backend)
     store = app.state.store
     frozen = {"id": RUN_ID, "state": "Ended", "players": {}, "events": {"schedule": "retained"},
               "plan": {"frozen": "original"}, "approved_plan": {"frozen": "original"}}

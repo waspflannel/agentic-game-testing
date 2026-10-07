@@ -144,7 +144,7 @@ async def test_tuning_retry_returns_saved_profile_without_inference_even_if_buil
 
 
 def offline_app(root, controller_lock=None):
-    return create_app(root, credentials=MemoryCredentials(), start_services=False, initialize=False,
+    return create_app(root, credentials=MemoryCredentials(), start_services=False,
                       ai_backend=FakeCodexBackend(), controller_lock=controller_lock)
 
 

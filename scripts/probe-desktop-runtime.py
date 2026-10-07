@@ -61,7 +61,7 @@ async def check_app(root):
     from ashad.watchdog import once
 
     app = create_app(data_root=root / "controller", credentials=OfflineOnly(),
-                     initialize=False, start_services=False, ai_backend=OfflineOnly())
+                     start_services=False, ai_backend=OfflineOnly())
     async with app.router.lifespan_context(app):
         # Empty fixture only; any attempted worker operation raises immediately.
         await once(app.state.store, OfflineOnly())

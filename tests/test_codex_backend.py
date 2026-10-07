@@ -390,7 +390,7 @@ def test_queued_run_blocks_codex_account_changes(tmp_path, route):
     backend = FakeCodexBackend()
     backend.login_start = AsyncMock()
     backend.logout = AsyncMock()
-    app = create_app(tmp_path, MemoryCredentials(None), start_services=False, initialize=False, ai_backend=backend)
+    app = create_app(tmp_path, MemoryCredentials(None), start_services=False, ai_backend=backend)
     app.state.store.put("runs", {"id": "queued-run", "state": "Queued"})
     with TestClient(app) as client:
         result = client.post(f"/api/settings/codex/{route}", json={}, headers={"X-ASHAD-Request": "1"})

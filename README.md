@@ -8,19 +8,15 @@ Tuning saves each completed source batch, so retrying a failed setup reuses matc
 
 ## Repository scope
 
-This repository contains only the ASHAD web app, controller, worker services, supporting Python utilities, and app tests/documentation. Agronauts game source, assets, builds, Godot AI-layer edits, and game-patching tools are not included. Local credentials, runtime data, and validation history also stay out of Git.
+ASHAD is a Windows desktop app (Electron). There is no browser version: the window talks only to its own private controller, which rejects any client without the per-launch key Electron injects.
 
-The dashboard can start without game files. Agent tuning and gameplay require a separately supplied compatible game build, pinned source/control evidence, and a registered manifest. The default local manifest location is `builds/agronauts-decisions/manifest.json`; game files remain local and ignored.
+This repository contains the desktop shell, the controller and its UI, worker services, supporting Python utilities, and tests/documentation. Agronauts game source, assets, builds, Godot AI-layer edits, and game-patching tools are not included. Local credentials, runtime data, and validation history also stay out of Git.
 
-## Planned desktop refactor
+The app opens without game files. Agent tuning and gameplay require a separately supplied compatible game build, pinned source/control evidence, and a registered manifest; game files remain local and ignored.
 
-The [Electron workspace refactor plan](<docs/electron-workspace-refactor-plan.md>) records the agreed Codex-style desktop direction, project/instance model, implementation milestones, migration safeguards, and acceptance checks. It tracks implemented milestones separately from remaining release gates; the instructions below describe the current supported workflow.
+## Build and run (Windows x64)
 
-## Desktop shell (Windows x64)
-
-The Electron shell now opens the project workspace with nested instance threads, a protected setup wizard and project-scoped goal composer. Private-runtime packaging, project/import contracts, actual passive worker probes, confirmed Docker preparation and fixed global instance admission are implemented and fixture-tested. The richer live workspace and installed/live release acceptance remain in progress. No legacy data, worker registrations, game builds or credentials are imported automatically.
-
-Build locally with Node.js 22.12+ and npm (no system Python required for the desktop runtime):
+Build with Node.js 22.12+ and npm (no system Python is required at runtime):
 
 ```powershell
 npm --prefix desktop ci
@@ -30,21 +26,15 @@ npm --prefix desktop run build:dir
 npm --prefix desktop run build:nsis
 ```
 
-Build preparation requires Git (only tracked sources are packaged) and downloads verified private Python 3.13.16 plus hash-locked runtime wheels from PyPI, ignoring local pip configuration; pip and test tooling are not shipped; game files and Docker Desktop remain separately supplied prerequisites. The application writes to `%APPDATA%\ASHAD\controller`, not its installation directory. For isolated diagnostic testing only, pass `--user-data-dir="C:\absolute\fresh test data"`; this changes the store, not authentication or runtime safeguards. Do not point it at live legacy data as a substitute for migration.
+Build preparation requires Git (only tracked sources are packaged) and downloads verified private Python 3.13.16 plus hash-locked runtime wheels from PyPI, ignoring local pip configuration; pip and test tooling are not shipped. Game files and Docker Desktop's Linux engine remain separately supplied prerequisites. The app writes to `%APPDATA%\ASHAD\controller`, not its installation directory. For isolated diagnostic testing only, pass `--user-data-dir="C:bsoluteresh test data"`; this changes the store, not authentication or runtime safeguards.
 
-Quit lists owning instances and in-flight work. **Cancel** leaves them unchanged; **Stop/cancel and quit** waits for confirmed teardown and clean controller exit. Failed teardown keeps the app open for reconciliation. If the controller has already exited, Quit asks for confirmation rather than trapping the window; the watchdog keeps its authority. Closing a human viewer never hands control back automatically. See the [execution log](<docs/electron-workspace-refactor-plan.md#p1-execution-record--2026-10-07-offline-packaged-scope-complete>) for precise verified scope and remaining gates.
+Chromium's sandbox needs ordinary user read access to the app's files. If `ASHAD.exe` exits immediately when started inside a folder with restricted permissions, install it with the NSIS build or copy `win-unpacked` to a normal per-user location such as `%LOCALAPPDATA%`.
 
-## Start locally
+The [Electron workspace refactor plan](<docs/electron-workspace-refactor-plan.md>) records the Codex-style desktop direction, project/instance model, milestones, migration safeguards, and acceptance checks, with implemented milestones tracked separately from remaining release gates.
 
-From PowerShell in your clone directory:
+Quit lists owning instances and in-flight work. **Cancel** leaves them unchanged; **Stop/cancel and quit** waits for confirmed teardown and clean controller exit. Failed teardown keeps the app open for reconciliation. If the controller has already exited, Quit asks for confirmation rather than trapping the window; the watchdog keeps its authority. Closing a human viewer never hands control back automatically.
 
-```powershell
-.\scripts\start.ps1
-```
-
-Open [ASHAD](http://127.0.0.1:8740). The controller accepts only loopback `Host` headers, which blocks DNS-rebinding pages. Keep the controller running during a session; closing the dashboard does not stop the game. Stop active runs and confirm teardown before restarting after a code update.
-
-For a fresh environment, run `scripts/setup.ps1` first. The controller requires Python 3.11+; local game desktops require Docker Desktop's Linux engine. The dashboard has no npm build step. Build registration, desktop health and Steam account setup remain in Settings; see [worker setup](docs/workers.md) for infrastructure details.
+Data from an older checkout-based controller (`.data\controller`) is not loaded automatically; bring it in explicitly with **Import existing workspace…**. Desktop preparation, build registration and Steam account setup live in the app; see [worker setup](docs/workers.md) for infrastructure details.
 
 ## Connect your ChatGPT subscription
 
@@ -99,13 +89,13 @@ The live camera is for the human operator. Routine model decisions use the filte
 
 The supported workflow is agent tuning and fresh, one-bot instances. Old scenarios, runs, saves, usage and evidence remain stored and readable for operational compatibility. Retired feature endpoints are unavailable; preserving a record does not make its old editing or launch workflow available.
 
-[Future work](docs/future-work.md) records deferred features and the prerequisites for restoring them. Older architecture, API and validation documents contain historical implementation details; use this README, [dashboard guide](docs/ui.md) and [structured testing](docs/structured-testing.md) for the current workflow.
+[Future work](docs/future-work.md) records deferred features and the prerequisites for restoring them. Older architecture, API and validation documents contain historical implementation details; use this README, [app guide](docs/ui.md) and [structured testing](docs/structured-testing.md) for the current workflow.
 
-Default controller data lives in `.data/controller`; worker volumes contain game and Steam state. Back up both when preserving local history. Keep Steam profiles and credentials out of shared evidence exports.
+Controller data lives in `%APPDATA%\ASHAD\controller`; worker volumes contain game and Steam state. Back up both when preserving local history. Keep Steam profiles and credentials out of shared evidence exports.
 
 ## Verify changes
 
-Install Node.js for the dashboard checks, in addition to the Python environment created by setup.
+Development checks need Node.js and a Python environment; run `.\scripts\setup.ps1` once to create `.venv`.
 
 ```powershell
 .\scripts\test.ps1
@@ -113,4 +103,4 @@ Install Node.js for the dashboard checks, in addition to the Python environment 
 
 See [structured testing](docs/structured-testing.md) for app checks and separate live acceptance gates. Mocked tests do not establish live account access, Steam gameplay, UI acceptance or autonomous campaign completion. Game-adapter checks and historical validation records are maintained separately and are not included here.
 
-Code map: `ashad/` contains the controller, agents and storage; `ashad/static/` the dashboard; `worker/` isolated desktop services; `integration/fixtures.py` Python-side save/archive utilities required by the controller; `tests/` app automated checks; `scripts/` local app setup and verification tools.
+Code map: `ashad/` contains the controller, agents and storage; `ashad/static/` the app UI rendered by Electron; `desktop/` the Electron shell and packaging; `worker/` isolated desktop services; `integration/fixtures.py` Python-side save/archive utilities required by the controller; `tests/` app automated checks; `scripts/` development setup, desktop provisioning and verification tools.

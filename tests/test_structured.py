@@ -230,7 +230,7 @@ async def test_mcp_requires_bound_auth_and_exposes_real_protocol(tmp_path):
 
 @pytest.mark.asyncio
 async def test_dashboard_mcp_boundary_and_lifespan(tmp_path):
-    app = create_app(tmp_path, Credentials(), start_services=False, initialize=False)
+    app = create_app(tmp_path, Credentials(), start_services=False)
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://localhost:8740") as client:
             response = await client.post("/mcp/", json={"jsonrpc": "2.0", "id": 1, "method": "tools/list"})

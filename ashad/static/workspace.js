@@ -202,7 +202,7 @@
  }
  async function pick(s,kind){
   const bridge=globalThis.window?.ashadDesktop;
-  if(!bridge?.chooseBuild)throw new Error('Native selection requires the desktop app. In browser diagnostics, enter an absolute supported manifest path.');
+  if(!bridge?.chooseBuild)throw new Error('Native file selection is unavailable. Reload ASHAD and try again.');
   const path=await bridge.chooseBuild(kind);
   if(!path||setup!==s||!document.querySelector('#workspace-setup'))return;
   s.manifest_path=path;s.dirty=true;C().markDraftDirty(true);showSetup();

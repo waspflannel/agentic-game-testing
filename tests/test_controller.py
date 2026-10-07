@@ -356,7 +356,7 @@ async def test_codex_selection_uses_luna_and_reports_subscription_usage(environm
 
 
 def test_http_signed_out_instances_and_cross_origin_guard(tmp_path):
-    app = create_app(tmp_path, MemoryCredentials(None), start_services=False, initialize=False)
+    app = create_app(tmp_path, MemoryCredentials(None), start_services=False)
     app.state.ai.backend = FakeCodexBackend(ready=False)
     with TestClient(app) as client:
         bootstrap = client.get("/api/bootstrap").json()

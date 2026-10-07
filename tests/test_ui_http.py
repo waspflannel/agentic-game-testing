@@ -17,7 +17,7 @@ class NoCredentials:
 
 
 def app_at(tmp_path):
-    app = create_app(tmp_path / "ui-contract", credentials=NoCredentials(), start_services=False, initialize=False)
+    app = create_app(tmp_path / "ui-contract", credentials=NoCredentials(), start_services=False)
     app.state.ai.backend = FakeCodexBackend(ready=False)
     return app
 
@@ -32,7 +32,7 @@ def test_codex_migrates_settings_and_drafts_without_rewriting_run_history(tmp_pa
     store.put("settings", {"model": "gpt-6.1-sol", "status": "ready"}, "ai_status")
     store.put("runs", historical)
     store.close()
-    app = create_app(root, NoCredentials(), start_services=False, initialize=False)
+    app = create_app(root, NoCredentials(), start_services=False)
     app.state.ai.backend = FakeCodexBackend(ready=False)
     with TestClient(app) as client:
         data = client.get("/api/bootstrap").json()
@@ -171,20 +171,32 @@ async def test_worker_closes_on_startup_or_lifespan_failure(failure):
     service.close.assert_awaited_once()
 
 
-def test_controller_launcher_releases_lock_when_watchdog_cannot_start(tmp_path, monkeypatch):
-    import io
+def test_controller_runs_only_as_the_desktop_app(monkeypatch):
     import ashad.__main__ as launcher
+
+    monkeypatch.setattr("sys.argv", ["ashad"])
+    with pytest.raises(SystemExit, match="desktop app"):
+        launcher.main()
+
+
+def test_desktop_controller_releases_lock_when_watchdog_cannot_start(tmp_path, monkeypatch):
+    import io
+    import ashad.desktop as desktop
     import ashad.process_lock
 
-    lock = io.BytesIO()
-    monkeypatch.setenv("ASHAD_DATA", str(tmp_path))
-    monkeypatch.setattr("sys.argv", ["ashad"])
+    class Lock(io.BytesIO):
+        def __enter__(self):
+            return self
+
+    lock = Lock()
+    config = {"data_root": str(tmp_path)}
+    monkeypatch.setattr(desktop, "read_launch_config", lambda stream: config)
     monkeypatch.setattr(ashad.process_lock, "acquire", lambda path: lock)
 
     def fail_watchdog(*args, **kwargs):
         raise OSError("watchdog unavailable")
 
-    monkeypatch.setattr(launcher.subprocess, "Popen", fail_watchdog)
+    monkeypatch.setattr(desktop.subprocess, "Popen", fail_watchdog)
     with pytest.raises(OSError, match="watchdog unavailable"):
-        launcher.main()
+        desktop.main()
     assert lock.closed

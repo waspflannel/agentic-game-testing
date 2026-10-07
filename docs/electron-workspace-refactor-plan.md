@@ -279,7 +279,7 @@ Worker desktop
 - Keep the controller as the owner of application data and gameplay decisions.
 - Keep Electron main focused on desktop concerns. Do not mirror application state into an Electron-only database.
 - Load the current renderer through the controller origin so relative API, CSP, and camera URLs retain their normal behavior. Do not switch to `file://` and compensate by disabling browser security.
-- Keep a developer browser mode for diagnosis where practical; it is not a separate product or an unauthenticated bypass around desktop-mode security.
+- There is no browser mode (owner decision, 2026-10-07): the Electron app is the only interface, as with Codex/Claude desktop apps. The controller runs only as the shell's owned child.
 
 ### 6.2 Startup
 
@@ -291,7 +291,7 @@ Worker desktop
 6. Show actionable startup failures: missing runtime resource, locked data store, port conflict, migration issue, or unavailable service.
 7. Preserve the existing controller/watchdog locking and recovery behavior. Recovered bots remain paused until explicitly resumed.
 
-The standalone development entry point may retain its current port. The desktop should support an available loopback port selected through a race-safe bind/readiness mechanism rather than assuming a fixed port is free.
+The former standalone browser entry point (fixed port 8740) has been removed. The desktop should support an available loopback port selected through a race-safe bind/readiness mechanism rather than assuming a fixed port is free.
 
 ### 6.3 Renderer and IPC security
 
@@ -803,6 +803,13 @@ Use this section as the durable handoff. For each completed slice, record what c
 - **Packaging:** hash-locked isolated pip install (43 runtime pins; pip/pytest/dev tooling not shipped), tracked-files-only resource copy, atomic Python extraction, Electron fuses disabling RunAsNode/NODE_OPTIONS/inspect; `.gitattributes` enforces LF so clean clones pass.
 - Exact checks: `.venv/Scripts/python.exe -B -m pytest tests -q` **676 passed, 38 subtests** (includes the locally ignored game-integration file), node syntax checks passed, `node --test` (seven dashboard/desktop files) **129 passed**, `git diff --check` clean. One unchanged Starlette/httpx TestClient deprecation warning. Packaging changes were not rebuilt here (`build:dir` downloads); P5 must rebuild from a clean commit.
 - Deliberately not changed: worker-token isolation from the same-user game process and `no-new-privileges` (Steam setuid needs unverified), base-image digest pinning (registry access), merging the three behaviourally different pending-action reconcilers.
+
+### Decision D13 — desktop-only, 2026-10-07
+
+- **Problem:** two launch modes (checkout browser controller on port 8740 and the Electron app) with separate data stores confused which app was in use.
+- **Chosen approach:** remove browser mode. `python -m ashad` now refuses to start without `--desktop`; `scripts/start.ps1`, automatic checkout registration import (`initialize_local`, `ASHAD_WORKER_REGISTRATION`, `ASHAD_BUILD_MANIFEST`) and browser-only UI branches are deleted. `scripts/setup.ps1` only prepares the development/test environment. Shared controller/UI code stays because the Electron app renders it.
+- **Data impact:** nothing is deleted. Checkout data in `.data\controller` stays readable only through explicit **Import existing workspace…**.
+- **Verification:** see the commit that records this decision; packaged-app acceptance remains P5.
 
 ### Decision entry template
 

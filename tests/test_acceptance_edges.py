@@ -265,7 +265,7 @@ async def test_provider_unavailable_still_leaves_http_readable_deterministic_rep
     assert interrupted["state"] == "Investigating"
     assert not any(path == "/action" for path, _ in desktops["worker-1"].calls)
     await coord.finish(run["id"], "infrastructure_failure", terminate=True)
-    app = create_app(store.root, MemoryCredentials(None), start_services=False, initialize=False)
+    app = create_app(store.root, MemoryCredentials(None), start_services=False)
     app.state.ai.backend = FakeCodexBackend(ready=False)
     app.state.ai.review = AsyncMock(side_effect=AssertionError("Base report must not call a provider"))
     with TestClient(app) as client:

@@ -262,7 +262,7 @@ def takeover_app(environment):
     worker["desktop_url"] = "http://127.0.0.1:6081/vnc.html"
     store.put("workers", worker)
     coord.credentials.save("desktop:worker-1", "desktop-only-test-secret")
-    app = create_app(store.root, credentials=coord.credentials, ai_backend=FakeCodexBackend(), initialize=False, start_services=False)
+    app = create_app(store.root, credentials=coord.credentials, ai_backend=FakeCodexBackend(), start_services=False)
     app.state.coordinator.client_factory = lambda worker: desktops[worker["id"]]
     return app, run
 

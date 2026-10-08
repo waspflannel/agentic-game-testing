@@ -331,6 +331,47 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 @keyframes slide { from { background-position: 100% 0; } to { background-position: -50% 0; } }
 @media (prefers-reduced-motion: reduce) { .progress:indeterminate { animation: none; background: var(--accent); } }
 
+/* ── Settings (§8.8) and Usage (§8.7) ── */
+.settings-page { display: flex; gap: 24px; max-width: 1080px; margin: 0 auto; padding: 32px 24px 64px; align-items: flex-start; }
+.settings-nav { position: sticky; top: 0; flex: none; width: 180px; display: grid; gap: 2px; }
+.settings-link { color: var(--text-2); }
+.settings-link.is-current, .settings-link:hover { color: var(--text); }
+.settings-body { flex: 1; min-width: 0; display: grid; gap: 16px; }
+.settings-card { display: grid; gap: 14px; }
+.settings-form { gap: 14px; }
+.card-title { font-size: var(--fs-title); font-weight: 600; }
+.settings-actions { display: grid; gap: 10px; }
+.signin-step { display: grid; gap: 8px; justify-items: start; padding: 12px; border-radius: var(--r-row); background: var(--surface-2); }
+.list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.list-row { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 4px 12px; padding: 10px; border-radius: var(--r-row); background: var(--surface-2); }
+.list-main { flex: 1; min-width: 220px; display: grid; gap: 2px; }
+.list-main .check-detail { display: flex; align-items: center; gap: 6px; }
+.list-main .check-detail .icon { width: 14px; height: 14px; }
+.list-title { font-weight: 500; }
+.list-actions { display: flex; flex-wrap: wrap; gap: 4px; }
+.list-reason { flex-basis: 100%; font-size: var(--fs-meta); color: var(--attention); }
+.tag-muted { font-size: 11px; font-weight: 400; padding: 0 6px; border-radius: 4px; background: var(--surface-3); color: var(--text-2); }
+.checks-set { border: 0; margin: 0; padding: 0; display: grid; gap: 6px; }
+.checks-set legend { font-size: var(--fs-meta); color: var(--text-2); margin-bottom: 4px; }
+.preview { display: grid; gap: 8px; padding: 12px; border-radius: var(--r-row); background: var(--surface-2); }
+.usage-page { max-width: 1120px; gap: 16px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
+.tile { display: grid; gap: 2px; padding: 14px 16px; border-radius: var(--r-card); background: var(--surface); }
+.tile-label { font-size: var(--fs-meta); color: var(--text-2); }
+.tile-value { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.tile-sub { font-size: 11px; color: var(--text-3); }
+.usage-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.table-wrap { overflow-x: auto; border-radius: var(--r-card); background: var(--surface); }
+.table { width: 100%; border-collapse: collapse; font-size: var(--fs-meta); }
+.table th, .table td { padding: 6px 12px; text-align: left; border-bottom: 1px solid var(--border); }
+.table tbody tr:last-child td { border-bottom: 0; }
+.table th { font-weight: 600; color: var(--text-2); padding: 0; }
+.table .num { text-align: right; font-variant-numeric: tabular-nums; }
+.table .nowrap { white-space: nowrap; }
+.th-btn { display: inline-flex; align-items: center; gap: 4px; width: 100%; height: 32px; padding: 0 12px; border: 0; background: transparent; color: inherit; font: inherit; font-weight: 600; cursor: pointer; }
+.th-btn:hover { color: var(--text); }
+.th-icon { width: 12px; height: 12px; }
+
 /* ── Instance thread (§8.5 A–C) ── */
 .thread { min-height: 100%; }
 .thread-head {

@@ -85,7 +85,7 @@ def test_dashboard_serves_local_assets_and_offers_chatgpt_sign_in(tmp_path):
         assert index.status_code == 200
         assert '/static/app.js' in index.text
         assert 'type="module"' in index.text
-        scripts = {name: client.get(f"/static/{name}") for name in ("app.js", "core.js", "views/sidebar.js")}
+        scripts = {name: client.get(f"/static/{name}") for name in ("app.js", "core.js", "views/sidebar.js", "views/setup.js", "views/settings.js", "views/usage.js")}
         for script in scripts.values():
             assert script.status_code == 200
             # Module scripts are refused unless served as JavaScript.
@@ -93,6 +93,8 @@ def test_dashboard_serves_local_assets_and_offers_chatgpt_sign_in(tmp_path):
             assert 'name="key"' not in script.text and "/api/settings/key" not in script.text
             assert "localStorage" not in script.text and "sessionStorage" not in script.text
         assert "X-ASHAD-Request" in scripts["core.js"].text
+        assert "Sign in with ChatGPT" in scripts["views/settings.js"].text
+        assert "/api/settings/codex/login" in scripts["app.js"].text
         assert client.get("/static/app.css").status_code == 200
         assert "script-src 'self'" in index.headers["content-security-policy"]
 

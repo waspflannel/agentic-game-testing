@@ -44,7 +44,8 @@ Files (the complete set; add more only when one gets unwieldy):
 | `ashad/static/views/instance.js` | Thread header, camera, control bar |
 | `ashad/static/views/timeline.js` | Activity timeline: kinds, bounded window, cards |
 | `ashad/static/views/inspector.js` | Right inspector |
-| `ashad/static/views/settings.js` | Settings and Usage |
+| `ashad/static/views/settings.js` | Settings |
+| `ashad/static/views/usage.js` | Usage page (split from `settings.js` in C9) |
 
 C1 (§16) deletes `style.css`, `workspace.css`, `workspace.js`, `instance-workspace.css`, `instance-workspace.js` and the old `app.js`. Keep `favicon.svg` (or redraw it to match §5).
 
@@ -259,19 +260,23 @@ A 340px `aside` with its own scroll. It's open by default at ≥1280px, and its 
 - **Summary row:** turns, total tokens and API-equivalent estimate for the selected range (7d / 30d / all), with the same "not a charge" label.
 - **Table** from `GET /api/usage`: time, purpose, model, instance (link), tokens, estimate, status.
 - **Behaviour:** sortable by column, filterable by model and purpose. Rendering is capped at 200 rows with "Show more". Fetched on view open and on a Refresh button, not on the bootstrap poll.
+- **Totals:** tokens are `usage.total_tokens` (or input + output); cached input and reasoning output are subsets and never added again. Rows without token counts are counted and named, not treated as zero. The estimate sums only recorded `estimated_cost_usd`; when every row in range is null (subscription billing) it reads "Not available", never `$0`.
+- **Unloaded:** before the first fetch the page says Loading; a failed first fetch says "Usage is unavailable" and the summary shows "—". A failed Refresh keeps the last rows and toasts the error.
 
 ### 8.8 Settings (`#/settings/<section>`)
 
 A secondary nav on the left (inside `main`) with the section form on the right. Every form saves explicitly with **Save**, and errors show per field.
 
-- **Account:** ChatGPT status (`GET /api/settings/codex/status`), Sign in (opens `auth_url` externally, with a Cancel sign-in button), Sign out. Disabled with the reason while tuning or while an instance is active.
+- **Account:** ChatGPT status (`GET /api/settings/codex/status`, on view open and Refresh status), Sign in, Cancel sign-in, Sign out. Sign in and Sign out are disabled with the reason while tuning or while an instance is active (the backend's sign-in guard, mirrored). Sign in shows an **Open ChatGPT sign-in** link (`target="_blank"`, opened by the main process's allowlist) only when `auth_url` is HTTPS on `auth.openai.com` or `chatgpt.com`; any other address is refused with a message. While sign-in is pending, the open Account page re-checks status every 5s (paused while hidden). The link is held in memory and dropped as soon as status is no longer `login_pending`, on Cancel, and on Sign out. The sidebar's attention dot follows the refreshed status.
 - **Desktops:**
-  - Each worker row shows name, URL and last probe result and age, with **Probe** and **Edit**.
-  - Add or edit form: the token field is write-only and its placeholder reads "Stored. Leave blank to keep".
-  - Delete is disabled with its reason while the worker is leased.
-- **Steam accounts:** list, add form (ID64, App ID; 480 rejected inline), and per-account Start sign-in, Finish, Verify. Verify warns that it launches the game and needs the free slot.
+  - Each worker row shows name, URL and last probe result and age, with **Probe**, **Edit** and **Delete**.
+  - Add or edit form (`#/settings/desktops?edit=<id>` edits): the token field is write-only (`type="password"`, never prefilled, cleared after saving) and its placeholder reads "Stored. Leave blank to keep". A blank token is not sent.
+  - Delete and editing are disabled with their reason while the worker is leased.
+- **Steam accounts:** list, add form (ID64, App ID; 480 rejected inline as you type), and per-account Start sign-in, Finish, Verify and Delete, all disabled with the reason while the account's desktop is leased. Start sign-in shows the worker's instructions and an **Open desktop** link to its viewer. Finish also refreshes the account's readiness (`steam/status`). Verify asks for a build with the account's App ID (disabled when none is registered) and warns that it launches the game and needs the free slot.
 - **Limits:** session duration, spend cap and storage reserve. Hardware readout (CPU, memory, disk free) is read-only from bootstrap. Concurrency shows "1 (fixed in this release)".
 - **Maintenance:** workspace import and project migration preview/apply. Each is a guarded form with absolute-path inputs, the required confirmation checkboxes and a preview step before apply.
+  - Import has no preview route, so its preview is a review dialog listing exactly what will be sent (paths, derived Codex home `<source_root>\codex`, external inventory) before **Import workspace**.
+  - Migration groups are edited as JSON (`[{project_id, name, build_ids}]`), prefilled with each project's builds plus one suggested project per unassigned build. **Preview** calls the preview route; Apply needs that exact grouping (any edit invalidates the reviewed preview), no blockers, an absolute backup folder and the confirmation.
 
 ## 9. Status and control matrix
 
@@ -404,7 +409,7 @@ Rules:
 | C6 | Inspector | Built, awaiting review |
 | C7 | Project overview | Not started |
 | C8 | Setup flow | Built, awaiting review |
-| C9 | Settings and Usage | Not started |
+| C9 | Settings and Usage | Built, awaiting review |
 | C10 | Narrow widths, accessibility audit, docs | Not started |
 
 The order lets you use the new UI for real as early as possible. After C4 you can start an instance from the composer and drive it. After C6 you can watch it fully. C7–C9 cover setup and admin, which existing data can do without until then.
@@ -502,7 +507,7 @@ The order lets you use the new UI for real as early as possible. After C4 you ca
 - **Build:** `views/settings.js` with the Account, Desktops, Steam accounts, Limits and Maintenance sections, plus the Usage page.
 - **Tests (re-added):** ChatGPT login offers only the official HTTPS link and clears after sign-in; the worker token is write-only; leased resources show disabled-with-reason; usage polling and totals; an unloaded usage page reports unavailable; changed migration grouping invalidates a reviewed preview.
 - **Review:** sign out and in, probe a desktop, review usage numbers against expectations.
-- **Notes:**
+- **Notes:** Built second (see §16.2). Usage got its own `views/usage.js`. Each settings section mounts its forms once per section (and edited desktop), so polls only patch lists and status regions; a typed form is dirty until saved and leaving it confirms. The Account page's model shows its label. Limits takes duration in minutes and the reserve in GB, converted to the API's seconds and bytes; blank duration or spend means no limit.
 
 #### C10: Narrow widths, accessibility, docs
 

@@ -4,6 +4,9 @@ import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, compose
 import { isActiveRun, playerIds, instanceState, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions } from './views/instance.js';
 import { inspectorSkeleton, inspectorRegions, mergeEvents, latestObservation } from './views/inspector.js';
 import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discardSetup, tuneAgent, setupSkeleton, setupRegions, prepareDialogText, prepareDesktop, registerBuild, elapsed } from './views/setup.js';
+import { settingsSkeleton, accountSkeleton, accountRegions, accountBlocker, settleLogin, desktopsSkeleton, desktopsRegions, workerPayload, steamSkeleton, steamRegions, steamErrors,
+  limitsSkeleton, limitsRegions, limitsPayload, maintenanceSkeleton, maintenanceRegions, importPayload, importReviewHTML, suggestGroups, parseGroups, previewValid, isAbsolutePath, SECTIONS } from './views/settings.js';
+import { newUsageUi, usageSkeleton, usageRegions } from './views/usage.js';
 import { PAGE, MAX_EVENTS, createTimeline, beginPage, applyPage, failPage, seedFromRun, applyLive, timelineCards, timelineRegions, syncCards, cardBody, rawJSON, eventIndex } from './views/timeline.js';
 
 const $ = selector => document.querySelector(selector);
@@ -28,6 +31,12 @@ const state = {
   camera: null,
   thread: {},                // per-open-thread UI: player, instruction draft, last status key, timeline, inspector view
   setups: new Map(),         // project ID ('' before step 1) -> setup state; long operations survive leaving the page
+  settingsDirty: false,
+  account: { checking: false, busy: false, error: '', login: null },  // login: { auth_url, login_id } only while sign-in is pending
+  settingsUi: { probing: new Set(), errors: new Map(), saving: false, saved: '', formError: '', steamBusy: new Map(), steamResults: new Map(), importError: '', imported: '',
+    migration: { groupsText: null, preview: null, previewing: false, applying: false, error: '', applied: '' } },
+  usage: null,               // { loading, rows, error, at }; fetched on view open and Refresh only
+  usageUi: newUsageUi(),
 };
 const epoch = createEpoch();
 const setDirty = dirtyBridge(() => window.ashadDesktop);
@@ -92,8 +101,7 @@ function viewFor(route, data) {
       return project(route.id) ? placeholder({ iconName: 'folder-open', tag: 'Coming in C7', title: project(route.id).name, body: 'Builds, agent configurations, desktop readiness and recent instances.' }) : notFound('Project');
     case 'instance': return state.runMissing ? notFound('Instance') : `<div class="boot"><p>Loading instance…</p></div>`;
     case 'setup': return notFound('Project');  // renderSetup handles every setup route whose project exists.
-    case 'usage': return placeholder({ iconName: 'chart-column', tag: 'Coming in C9', title: 'Usage' });
-    case 'settings': return placeholder({ iconName: 'sliders', tag: 'Coming in C9', title: 'Settings' });
+    case 'settings': return notFound('Settings section');  // renderSettings handles the known sections.
     case 'styleguide': return styleguide();
     default: return '';
   }
@@ -121,6 +129,8 @@ function renderView() {
   const composer = composerProject(route, state.data);
   if (composer && projectAgents(state.data, composer).length) return renderComposer(view, composer);
   if (route.name === 'setup' && (!setupKey(route) || findProject(setupKey(route)))) return renderSetup(view);
+  if (route.name === 'settings' && SECTIONS.some(([id]) => id === route.section)) return renderSettings(view);
+  if (route.name === 'usage') return renderUsage(view);
   if (view.dataset.mount) { view.dataset.mount = ''; view.renderedHTML = undefined; }
   patchHTML(view, viewFor(route, state.data), document.activeElement);
 }
@@ -192,8 +202,9 @@ function dirtyGuard(route) {
   if (s && !(route.name === 'setup' && setupKey(route) === s.projectId)) {
     return { title: 'Discard setup changes?', body: 'What you typed in setup has not been saved. Leaving discards it; anything already created stays.', confirm: 'Discard changes', discard: () => discardSetup(s) };
   }
-  if (dirtySettings() && !(route.name === 'settings' && route.section === state.route.section)) {
-    return { title: 'Discard unsaved settings?', body: 'This form has changes that were not saved. Leaving discards them.', confirm: 'Discard changes', discard: () => { state.settingsDirty = false; state.settingsForm = null; } };
+  const sameForm = route.name === 'settings' && route.section === state.route.section && (route.query.edit || '') === (state.route.query.edit || '');
+  if (dirtySettings() && !sameForm) {
+    return { title: 'Discard unsaved settings?', body: 'This form has changes that were not saved. Leaving discards them.', confirm: 'Discard changes', discard: () => { state.settingsDirty = false; } };
   }
   return null;
 }
@@ -352,6 +363,268 @@ async function startTuning(s) {
   }
   syncDirty();
   renderView();
+}
+
+// ── Settings and Usage (C9) ─────────────────────────────────────────────────
+const tuningActive = () => [...state.setups.values()].some(s => s.tune.status === 'busy' || s.tune.waiting);
+
+function renderSettings(view) {
+  const { section, query } = state.route;
+  const ui = state.settingsUi;
+  const now = Date.now() / 1000;
+  let key = `settings:${section}`, inner, regions;
+  if (section === 'account') {
+    inner = accountSkeleton();
+    regions = accountRegions({ ai: state.data.ai, ...state.account, blocker: accountBlocker(state.data, tuningActive()), modelLabel: (state.data.model_options || []).find(m => m.id === state.data.ai?.model)?.label });
+  } else if (section === 'desktops') {
+    const edit = (state.data.workers || []).some(w => w.id === query.edit) ? query.edit : '';
+    key += `:${edit}`;
+    inner = desktopsSkeleton(state.data, edit);
+    regions = desktopsRegions(state.data, { ...ui, editId: edit }, now);
+  } else if (section === 'steam') {
+    inner = steamSkeleton(state.data);
+    regions = steamRegions(state.data, { busy: ui.steamBusy, results: ui.steamResults, formError: ui.formError, saved: ui.saved }, now);
+  } else if (section === 'limits') {
+    inner = limitsSkeleton(state.data);
+    regions = limitsRegions(state.data, ui);
+  } else {
+    ui.migration.groupsText ??= suggestGroups(state.data);
+    inner = maintenanceSkeleton(state.data, ui.migration.groupsText);
+    regions = maintenanceRegions(ui);
+  }
+  mount(view, key, settingsSkeleton(section, inner));
+  patchRegions(view, regions);
+}
+
+// Field errors render next to their inputs (by name) and the first invalid field takes focus.
+function showErrors(form, errors) {
+  for (const el of form.querySelectorAll('[data-error-for]')) {
+    const input = form.querySelector('#' + el.dataset.errorFor);
+    const message = errors[input?.name] || '';
+    el.textContent = message;
+    if (message) input.setAttribute('aria-invalid', 'true'); else input?.removeAttribute('aria-invalid');
+  }
+  form.querySelector('[aria-invalid="true"]')?.focus();
+  return !Object.keys(errors).length;
+}
+
+const formValues = form => {
+  const values = {};
+  for (const el of form.elements) if (el.name) values[el.name] = el.type === 'checkbox' ? el.checked : el.value;
+  return values;
+};
+
+// Runs one settings save with the shared saving/saved/error state; resolves to the response, or undefined on failure.
+async function settingsSave(send, saved) {
+  const ui = state.settingsUi;
+  if (ui.saving) return undefined;
+  Object.assign(ui, { saving: true, saved: '', formError: '' });
+  renderView();
+  let value;
+  try { value = await send(); ui.saved = saved; state.settingsDirty = false; syncDirty(); }
+  catch (error) { ui.formError = error.message; }
+  ui.saving = false;
+  renderView();
+  poll();
+  return value;
+}
+
+async function refreshAccount() {
+  const a = state.account;
+  if (a.checking) return;
+  a.checking = true;
+  renderView();
+  try { state.data.ai = await api('/api/settings/codex/status'); a.error = ''; }
+  catch (error) { a.error = error.message; }
+  a.checking = false;
+  a.login = settleLogin(a.login, state.data.ai);
+  render();  // The sidebar's sign-in dot follows the status.
+}
+
+let loginTimer;
+// While sign-in is pending, the open Account page re-checks status every 5s; the link is dropped once it settles.
+function watchLogin() {
+  clearTimeout(loginTimer);
+  if (!state.account.login) return;
+  loginTimer = setTimeout(async () => {
+    if (state.route.name === 'settings' && state.route.section === 'account' && !document.hidden) await refreshAccount();
+    watchLogin();
+  }, 5000);
+}
+
+async function accountAction(kind) {
+  const a = state.account;
+  if (a.busy) return;
+  Object.assign(a, { busy: true, error: '' });
+  renderView();
+  try {
+    if (kind === 'login') {
+      const { auth_url, login_id } = await api('/api/settings/codex/login', { method: 'POST', body: {} });
+      a.login = { auth_url, login_id };
+      state.data.ai = { ...state.data.ai, status: 'login_pending' };
+      watchLogin();
+    } else {
+      state.data.ai = await api(`/api/settings/codex/${kind === 'cancel' ? 'login/cancel' : 'logout'}`, { method: 'POST', body: {} });
+      a.login = null;
+    }
+  } catch (error) { a.error = error.message; }
+  a.busy = false;
+  render();
+  poll();
+}
+
+const workerById = id => (state.data.workers || []).find(w => w.id === id);
+const accountById = id => (state.data.accounts || []).find(a => a.id === id);
+
+async function settingsAction(action, target) {
+  const ui = state.settingsUi;
+  const id = target.dataset.id;
+  if (target.getAttribute('aria-disabled') === 'true') return;
+  if (['account-login', 'account-cancel', 'account-logout'].includes(action)) return accountAction(action.slice(8));
+  if (action === 'account-refresh') return refreshAccount();
+  if (action === 'worker-probe') {
+    ui.probing.add(id);
+    ui.errors.delete(id);
+    renderView();
+    try {
+      const status = await api(`/api/workers/${enc(id)}/probe`, { method: 'POST', body: {} });
+      Object.assign(workerById(id) || {}, { last_probe: status, last_probe_at: Date.now() / 1000 });
+    } catch (error) { ui.errors.set(id, error.message); }
+    ui.probing.delete(id);
+    renderView();
+    poll();
+  } else if (action === 'worker-delete' || action === 'steam-delete') {
+    const kind = action === 'worker-delete' ? 'workers' : 'accounts';
+    const record = kind === 'workers' ? workerById(id) : accountById(id);
+    const body = kind === 'workers' ? 'ASHAD forgets this desktop and its stored token. Files on the desktop are kept.' : 'ASHAD forgets this Steam account. Nothing changes on Steam.';
+    if (!await confirmDialog({ title: `Delete ${record?.name || id}?`, body, confirm: 'Delete', danger: true })) return;
+    try {
+      await api(`/api/${kind}/${enc(id)}`, { method: 'DELETE' });
+      state.data[kind] = state.data[kind].filter(r => r.id !== id);
+      toast('Deleted.', 'ok');
+    } catch (error) { kind === 'workers' ? ui.errors.set(id, error.message) : ui.steamResults.set(id, { ok: false, text: error.message }); }
+    renderView();
+    poll();
+  } else if (action.startsWith('steam-')) {
+    steamAction(action.slice(6), accountById(id));
+  } else if (action === 'migration-preview') {
+    const m = ui.migration;
+    const parsed = parseGroups(m.groupsText);
+    if (parsed.error) { m.error = parsed.error; return renderView(); }
+    Object.assign(m, { previewing: true, error: '', applied: '' });
+    renderView();
+    try { m.preview = { signature: parsed.signature, result: await api('/api/projects/migration/preview', { method: 'POST', body: { groups: parsed.groups } }) }; }
+    catch (error) { Object.assign(m, { error: error.message, preview: null }); }
+    m.previewing = false;
+    renderView();
+  }
+}
+
+async function steamAction(kind, account) {
+  if (!account) return;
+  const ui = state.settingsUi;
+  const worker = workerById(account.worker_id);
+  let body = {};
+  if (kind === 'verify') {
+    const builds = (state.data.builds || []).filter(b => String(b.steam_app_id) === String(account.app_id));
+    const form = await openDialog({ title: 'Verify Steam account?', confirm: 'Launch and verify',
+      html: `<p>Verification launches the game on ${esc(worker?.name || account.worker_id)} to prove the licence. It needs the free instance slot and an unused desktop, and it stops when done.</p>`
+        + `<div class="field"><label for="verify-build">Build</label><select id="verify-build" class="select" name="build">${builds.map(b => `<option value="${esc(b.id)}">${esc(b.name || b.id)}</option>`).join('')}</select></div>` });
+    if (!form) return;
+    body = { account_id: account.id, build_id: form.get('build') };
+  }
+  ui.steamBusy.set(account.id, kind);
+  ui.steamResults.delete(account.id);
+  renderView();
+  try {
+    const r = await api(`/api/workers/${enc(account.worker_id)}/steam/${kind}`, { method: 'POST', body });
+    if (kind === 'finish') await api(`/api/workers/${enc(account.worker_id)}/steam/status`, { method: 'POST', body: {} });  // Refreshes the account's readiness.
+    const desktop = kind === 'start' && /^https?:\/\//.test(worker?.desktop_url || '') ? worker.desktop_url : null;
+    ui.steamResults.set(account.id, kind === 'verify'
+      ? { ok: r.verified === true, text: r.verified ? 'Verified: the licence and identity match.' : `Not verified: ${r.reason || 'reason not reported'}` }
+      : { ok: true, text: r.instructions || r.reason || (kind === 'start' ? 'Steam sign-in started on the desktop.' : 'Steam sign-in closed.'), desktop });
+  } catch (error) { ui.steamResults.set(account.id, { ok: false, text: error.message }); }
+  ui.steamBusy.delete(account.id);
+  renderView();
+  poll();
+}
+
+async function settingsSubmit(form) {
+  const ui = state.settingsUi;
+  const values = formValues(form);
+  const kind = form.dataset.form;
+  if (kind === 'settings-worker') {
+    if (form.querySelector('[data-key="w-save"]')?.getAttribute('aria-disabled') === 'true') return;
+    const { body, errors } = workerPayload(values, form.dataset.id);
+    if (!showErrors(form, errors)) return;
+    if (await settingsSave(() => api('/api/workers', { method: 'POST', body }), 'Desktop saved.')) {
+      form.elements.token.value = '';  // Write-only: never kept in the DOM after saving.
+      if (form.dataset.id) location.hash = '#/settings/desktops';
+      else form.reset();
+    }
+  } else if (kind === 'settings-steam') {
+    const errors = steamErrors(values);
+    if (!String(values.name || '').trim()) errors.name = 'Name the account.';
+    if (!values.steam_id) errors.steam_id ||= 'Enter the Steam ID64.';
+    if (!values.app_id) errors.app_id ||= "Enter the game's App ID.";
+    if (!values.worker_id) errors.worker_id = 'Add a desktop first.';
+    if (!showErrors(form, errors)) return;
+    const body = { name: values.name.trim(), worker_id: values.worker_id, steam_id: values.steam_id.trim(), app_id: Number(values.app_id) };
+    if (await settingsSave(() => api('/api/accounts', { method: 'POST', body }), 'Account added. Start sign-in on its desktop next.')) form.reset();
+  } else if (kind === 'settings-limits') {
+    const { body, errors } = limitsPayload(values);
+    if (!showErrors(form, errors)) return;
+    await settingsSave(() => api('/api/settings', { method: 'POST', body }), 'Limits saved.');
+  } else if (kind === 'settings-import') {
+    const { body, errors } = importPayload(values);
+    ui.importError = ['confirmed', 'source_idle_confirmed', 'external_backup_confirmed'].some(k => errors[k]) ? 'Tick all three confirmations to import.' : '';
+    renderView();
+    if (!showErrors(form, errors) || ui.importError) return;
+    if (!await confirmDialog({ title: 'Import this workspace?', html: importReviewHTML(body), confirm: 'Import workspace', wide: true })) return;
+    ui.imported = '';
+    try {
+      await api('/api/workspace/import', { method: 'POST', body });
+      Object.assign(ui, { imported: 'Imported. Sign in to ChatGPT again and re-check your desktops.', importError: '' });
+      state.settingsDirty = false;
+      syncDirty();
+    } catch (error) { ui.importError = error.message; }
+    renderView();
+    poll();
+  } else if (kind === 'settings-migration') {
+    const m = ui.migration;
+    const parsed = parseGroups(m.groupsText);
+    if (!previewValid(m, m.groupsText) || m.preview.result.blockers?.length || m.applying) return;
+    const errors = isAbsolutePath(values.backup_dir) ? {} : { backup_dir: 'Enter an absolute path to a new, empty backup folder.' };
+    if (!showErrors(form, errors)) return;
+    if (!values.confirmed) { m.error = 'Tick the confirmation to apply.'; return renderView(); }
+    Object.assign(m, { applying: true, error: '', applied: '' });
+    renderView();
+    try {
+      await api('/api/projects/migration/apply', { method: 'POST', body: { groups: parsed.groups, preview_token: m.preview.result.preview_token, backup_dir: values.backup_dir.trim(), confirmed: true } });
+      m.applied = 'Migration applied. Projects now group the assigned history.';
+      state.settingsDirty = false;
+      syncDirty();
+    } catch (error) { m.error = error.message; }
+    m.applying = false;
+    renderView();
+    poll();
+  }
+}
+
+function renderUsage(view) {
+  mount(view, 'usage', usageSkeleton());
+  patchRegions(view, usageRegions(state.usage, state.usageUi, new Map((state.data.model_options || []).map(m => [m.id, m.label]))));
+}
+
+async function loadUsage() {
+  const previous = state.usage;
+  if (previous?.loading) return;
+  const record = state.usage = { ...previous, loading: true, error: '' };
+  renderView();
+  try { Object.assign(record, { rows: (await api('/api/usage')).usage || [], at: Date.now() / 1000 }); }
+  catch (error) { record.error = error.message; if (record.rows) toast(`Usage refresh failed: ${error.message}`, 'error'); }
+  record.loading = false;
+  if (state.usage === record) renderView();
 }
 
 function render() {
@@ -676,6 +949,11 @@ async function onRoute() {
     state.runSlot.set(null);  // Also drops a late GET for the previous thread.
     state.runMissing = false;
   }
+  if (route.name === 'settings' && (previous.name !== 'settings' || previous.section !== route.section)) {
+    Object.assign(state.settingsUi, { saved: '', formError: '' });
+    if (route.section === 'account') refreshAccount();  // Status on view open; it checks the account without inference.
+  }
+  if (route.name === 'usage' && previous.name !== 'usage') loadUsage();
   rememberProject(route);
   syncDirty();
   render();
@@ -730,6 +1008,16 @@ document.addEventListener('click', async event => {
     renderView();
   } else if (action.startsWith('setup-')) {
     onSetupAction(action, target, event);
+  } else if (/^(account|worker|steam|migration)-/.test(action)) {
+    settingsAction(action, target);
+  } else if (action === 'usage-refresh') {
+    loadUsage();
+  } else if (action === 'usage-range' || action === 'usage-sort' || action === 'usage-more') {
+    const u = state.usageUi;
+    if (action === 'usage-range') Object.assign(u, { range: target.dataset.range, limit: newUsageUi().limit });
+    else if (action === 'usage-more') u.limit += newUsageUi().limit;
+    else Object.assign(u, u.sort === target.dataset.sort ? { dir: u.dir === 'asc' ? 'desc' : 'asc' } : { sort: target.dataset.sort, dir: 'desc' });
+    renderView();
   } else if (action === 'ctl') {
     target.closest('[popover]')?.hidePopover();
     if (target.getAttribute('aria-disabled') !== 'true') onControl(target.dataset.ctl);
@@ -795,6 +1083,18 @@ document.addEventListener('input', event => {
     if (!tl.searchDraft.trim() && tl.search) { tl.search = ''; loadPage('latest'); }  // Clearing the box shows everything again.
     return;
   }
+  const settingsForm = event.target.closest?.('form[data-form^="settings-"]');
+  if (settingsForm) {
+    state.settingsDirty = true;
+    syncDirty();
+    if (settingsForm.dataset.form === 'settings-steam' && ['steam_id', 'app_id'].includes(event.target.name)) {
+      const message = steamErrors(formValues(settingsForm))[event.target.name] || '';  // App ID 480 is rejected as you type.
+      settingsForm.querySelector(`[data-error-for="${event.target.id}"]`).textContent = message;
+      if (message) event.target.setAttribute('aria-invalid', 'true'); else event.target.removeAttribute('aria-invalid');
+    }
+    if (event.target.name === 'groups') { state.settingsUi.migration.groupsText = event.target.value; renderView(); }
+    return;
+  }
   const field = event.target.dataset?.field;
   if (field === 'setup-name' || field === 'setup-agent-name') {
     const s = setupFor(state.route);
@@ -818,6 +1118,11 @@ document.addEventListener('input', event => {
 document.addEventListener('change', event => {
   const field = event.target.dataset?.field;
   if (field === 'player') { state.thread.player = event.target.value; renderView(); return; }
+  if (field === 'usage-model' || field === 'usage-purpose') {
+    Object.assign(state.usageUi, { [field.slice(6)]: event.target.value, limit: newUsageUi().limit });
+    renderView();
+    return;
+  }
   if (field === 'setup-model' || field === 'setup-build') {
     const s = setupFor(state.route);
     if (field === 'setup-model') Object.assign(s, { model: event.target.value, edited: true });
@@ -850,6 +1155,11 @@ document.addEventListener('submit', async event => {
       Object.assign(state.thread, { instructionOpen: false, instructionText: '' });
       renderView();
     }
+    return;
+  }
+  if (event.target.matches('[data-form^="settings-"]')) {
+    event.preventDefault();
+    settingsSubmit(event.target);
     return;
   }
   if (event.target.matches('[data-form^="setup-"]')) {

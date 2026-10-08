@@ -178,15 +178,15 @@ The harness "home" screen: hero text vertically centred, composer below it.
 A centred column (max 960px). The header shows the project name, with **New instance** (primary) and **Add agent configuration** (secondary) on the right. Sections follow as quiet cards in a two-column grid that drops to one column under 1100px:
 
 - **Builds:**
-  - Each row shows name, pinned version/hash (mono, truncated) and validation state from the last readiness check.
-  - `+ Add build` runs `ashadDesktop.chooseBuild('manifest'|'folder')`, then `POST /api/builds`. A cancelled chooser changes nothing.
+  - Each row shows name, pinned source revision (mono, truncated; the manifest SHA-256 in its tooltip) and validation state from the last readiness check of that build this session ("Not checked yet" otherwise). Builds have no separate version field.
+  - `+ Add manifest…` and `+ Add build folder…` run `ashadDesktop.chooseBuild('manifest'|'folder')`, then `POST /api/builds`. A cancelled chooser changes nothing. A chooser result applies only to the form that opened it, and a newly added build becomes the one readiness checks.
 - **Agent configurations:**
-  - Each row shows name, model, build and tuned age. Actions: **View instructions**, **Retune** (new `request_id`), **New instance** with this agent.
+  - Each row shows name, model, build and tuned age. Actions: **View instructions** (read-only dialog), **Retune** (confirmed; new `request_id`; tuning writes a new configuration with the same name and keeps the old one, so the list shows both, newest first), **New instance** with this agent. Retune shares setup's waiting and `tuning/<id>` recovery.
 - **Desktop readiness:**
-  - Per-build checklist from `GET /api/projects/<id>/readiness?build_id=`: provider, build validation, each environment (ready/reason), slot, Steam.
+  - Per-build checklist from `GET /api/projects/<id>/readiness?build_id=`: provider, build validation, each environment (ready/reason), slot, Steam. With several builds a build picker chooses which one is checked; choosing one probes it.
   - This call probes, so it runs on view open and on an explicit **Re-check** button, never on the poll. The result shows its own "checked 2m ago".
   - **Prepare desktop** opens a confirm dialog that states it creates or reuses the container, images, volumes and credentials and never starts a game. It then calls `POST …/environments/prepare` with `confirmed:true` and a stable `request_id`.
-- **Recent instances:** the last 10 threads (same row component as the sidebar, plus end state and duration), then "View all in sidebar".
+- **Recent instances:** the last 10 threads (same row component as the sidebar, plus end state and duration), then "View all N in sidebar", which expands that project's group with Show all and focuses it.
 
 ### 8.4 Setup flow (`#/setup`)
 
@@ -407,7 +407,7 @@ Rules:
 | C4 | Instance thread: header, camera, controls | Built, awaiting review |
 | C5 | Activity timeline | Built, awaiting review |
 | C6 | Inspector | Built, awaiting review |
-| C7 | Project overview | Not started |
+| C7 | Project overview | Built, awaiting review |
 | C8 | Setup flow | Built, awaiting review |
 | C9 | Settings and Usage | Built, awaiting review |
 | C10 | Narrow widths, accessibility audit, docs | Not started |
@@ -491,7 +491,7 @@ The order lets you use the new UI for real as early as possible. After C4 you ca
 - **Build:** `views/project.js` with builds (add via native chooser), agent configurations (view instructions, retune, new instance), readiness checklist with Re-check and "checked N ago", Prepare desktop with confirm, recent instances.
 - **Tests (re-added):** readiness never runs on the poll; a cancelled chooser does nothing; a late chooser result can't change another form; prepare sends `confirmed:true` with a stable ID.
 - **Review:** open each real project. Re-check readiness and add a build. Check whether the page answers "can I run this project right now, and if not, why?"
-- **Notes:**
+- **Notes:** Built third (see §16.2). Reuses setup's `readinessHTML`, `registerBuild` and `prepareDesktop`. Overview state (selected build, readiness, per-build validation, preparation, retunes) lives in memory per project, so long operations survive leaving the page. Readiness is probed when the overview opens, on Re-check, after a preparation and when a build is added or picked; never by the poll (`readinessDue`). Retunes count as tuning for the Account page's sign-in guard.
 
 #### C8: Setup flow
 

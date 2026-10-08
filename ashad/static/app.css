@@ -372,6 +372,15 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .th-btn:hover { color: var(--text); }
 .th-icon { width: 12px; height: 12px; }
 
+/* ── Project overview (§8.3) ── */
+.overview { gap: 20px; }
+.overview-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; align-items: start; }
+@media (max-width: 1099px) { .overview-grid { grid-template-columns: minmax(0, 1fr); } }
+.overview .card { display: grid; gap: 12px; }
+.recent .row { padding-left: 8px; }
+.recent .row-label { color: var(--text-2); }
+.recent .row:hover .row-label { color: var(--text); }
+
 /* ── Instance thread (§8.5 A–C) ── */
 .thread { min-height: 100%; }
 .thread-head {

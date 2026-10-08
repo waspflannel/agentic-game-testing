@@ -7,6 +7,7 @@ import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discard
 import { settingsSkeleton, accountSkeleton, accountRegions, accountBlocker, settleLogin, desktopsSkeleton, desktopsRegions, workerPayload, steamSkeleton, steamRegions, steamErrors,
   limitsSkeleton, limitsRegions, limitsPayload, maintenanceSkeleton, maintenanceRegions, importPayload, importReviewHTML, suggestGroups, parseGroups, previewValid, isAbsolutePath, SECTIONS } from './views/settings.js';
 import { newUsageUi, usageSkeleton, usageRegions } from './views/usage.js';
+import { newOverview, readinessDue, overviewModel, overviewSkeleton, overviewRegions } from './views/project.js';
 import { PAGE, MAX_EVENTS, createTimeline, beginPage, applyPage, failPage, seedFromRun, applyLive, timelineCards, timelineRegions, syncCards, cardBody, rawJSON, eventIndex } from './views/timeline.js';
 
 const $ = selector => document.querySelector(selector);
@@ -35,6 +36,7 @@ const state = {
   account: { checking: false, busy: false, error: '', login: null },  // login: { auth_url, login_id } only while sign-in is pending
   settingsUi: { probing: new Set(), errors: new Map(), saving: false, saved: '', formError: '', steamBusy: new Map(), steamResults: new Map(), importError: '', imported: '',
     migration: { groupsText: null, preview: null, previewing: false, applying: false, error: '', applied: '' } },
+  overviews: new Map(),      // project ID -> overview state (selected build, readiness, chooser, prepare, retunes)
   usage: null,               // { loading, rows, error, at }; fetched on view open and Refresh only
   usageUi: newUsageUi(),
 };
@@ -97,8 +99,7 @@ function viewFor(route, data) {
   switch (route.name) {
     case 'home': return projects.length ? noAgentsHTML(project(composerProject(route, data))) : emptyHTML(data);
     case 'composer': return project(route.id) ? noAgentsHTML(project(route.id)) : notFound('Project');
-    case 'project':
-      return project(route.id) ? placeholder({ iconName: 'folder-open', tag: 'Coming in C7', title: project(route.id).name, body: 'Builds, agent configurations, desktop readiness and recent instances.' }) : notFound('Project');
+    case 'project': return notFound('Project');  // renderOverview handles existing projects.
     case 'instance': return state.runMissing ? notFound('Instance') : `<div class="boot"><p>Loading instance…</p></div>`;
     case 'setup': return notFound('Project');  // renderSetup handles every setup route whose project exists.
     case 'settings': return notFound('Settings section');  // renderSettings handles the known sections.
@@ -131,6 +132,7 @@ function renderView() {
   if (route.name === 'setup' && (!setupKey(route) || findProject(setupKey(route)))) return renderSetup(view);
   if (route.name === 'settings' && SECTIONS.some(([id]) => id === route.section)) return renderSettings(view);
   if (route.name === 'usage') return renderUsage(view);
+  if (route.name === 'project' && findProject(route.id)) return renderOverview(view);
   if (view.dataset.mount) { view.dataset.mount = ''; view.renderedHTML = undefined; }
   patchHTML(view, viewFor(route, state.data), document.activeElement);
 }
@@ -270,6 +272,7 @@ async function probeReadiness(owner, projectId, buildId) {
   try { record.result = await api(`/api/projects/${enc(projectId)}/readiness?build_id=${enc(buildId)}`); }
   catch (error) { record.error = error.message; }
   Object.assign(record, { loading: false, at: Date.now() / 1000 });
+  if (record.result) owner.validation?.set(buildId, record.result.build_validation || {});  // The overview's per-build validation state.
   if (owner.readiness === record) renderView();
 }
 
@@ -366,7 +369,8 @@ async function startTuning(s) {
 }
 
 // ── Settings and Usage (C9) ─────────────────────────────────────────────────
-const tuningActive = () => [...state.setups.values()].some(s => s.tune.status === 'busy' || s.tune.waiting);
+const tuningActive = () => [...state.setups.values()].map(s => s.tune).concat([...state.overviews.values()].flatMap(ov => [...ov.retunes.values()]))
+  .some(op => op.status === 'busy' || op.waiting);
 
 function renderSettings(view) {
   const { section, query } = state.route;
@@ -625,6 +629,62 @@ async function loadUsage() {
   catch (error) { record.error = error.message; if (record.rows) toast(`Usage refresh failed: ${error.message}`, 'error'); }
   record.loading = false;
   if (state.usage === record) renderView();
+}
+
+// ── Project overview (C7) ───────────────────────────────────────────────────
+function overviewFor(id) {
+  if (!state.overviews.has(id)) state.overviews.set(id, newOverview(id));
+  return state.overviews.get(id);
+}
+
+function renderOverview(view) {
+  const ov = overviewFor(state.route.id);
+  const m = overviewModel(state.data, ov);
+  ov.buildId = m.build?.id || '';
+  if (readinessDue(ov, ov.buildId)) probeReadiness(ov, ov.projectId, ov.buildId);
+  mount(view, `overview:${ov.projectId}`, overviewSkeleton());
+  patchRegions(view, overviewRegions(m, ov));
+}
+
+async function retune(ov, agent) {
+  const running = ov.retunes.get(agent?.id);
+  if (!agent || running?.status === 'busy' || running?.waiting) return;
+  const build = (state.data.builds || []).find(b => b.id === agent.build_id);
+  if (!await confirmDialog({ title: 'Retune this agent?', confirm: 'Retune',
+    body: `ASHAD re-reads build ${build?.name || agent.build_id} and writes new instructions as a new configuration named “${agent.name || agent.id}”. The current one stays as it is. Tuning uses your ChatGPT subscription and takes a few minutes.` })) return;
+  const op = newOp();  // An explicit retune is a new request with its own ID.
+  ov.retunes.set(agent.id, op);
+  const pending = tuneAgent(op, { build_id: agent.build_id, model: agent.model, project_id: ov.projectId, name: agent.name || agent.id }, api, ms => { renderView(); return sleep(ms); });
+  renderView();
+  await pending;
+  if (op.status === 'done') {
+    state.data.agents = [op.value, ...state.data.agents.filter(a => a.id !== op.value.id)];
+    toast(`Retuned ${op.value.name || op.value.id}.`, 'ok');
+    poll();
+  }
+  renderView();
+}
+
+function onOverviewAction(action, target) {
+  const ov = overviewFor(state.route.id);
+  if (target.getAttribute('aria-disabled') === 'true') return;
+  const agent = (state.data.agents || []).find(a => a.id === target.dataset.id);
+  if (action === 'ov-add-build') addBuild(ov, ov.projectId, target.dataset.kind);
+  else if (action === 'ov-recheck') { ov.readiness = null; renderView(); }
+  else if (action === 'ov-prepare') prepare(ov, ov.projectId, (state.data.builds || []).find(b => b.id === ov.buildId));
+  else if (action === 'ov-retune') retune(ov, agent);
+  else if (action === 'ov-instructions' && agent) {
+    const model = (state.data.model_options || []).find(m => m.id === agent.model)?.label || agent.model;
+    openDialog({ title: agent.name || agent.id, confirm: null, cancel: 'Close', wide: true,
+      html: `<p>${esc(model || 'Unknown model')} · tuned ${agent.created_at ? esc(new Date(agent.created_at * 1000).toLocaleString()) : 'at an unrecorded time'}</p>`
+        + `<pre class="instructions" tabindex="0">${esc(agent.instructions || 'No instructions were recorded.')}</pre>` });
+  } else if (action === 'ov-sidebar') {
+    state.ui.expanded.set(ov.projectId, true);
+    state.ui.showAll.add(ov.projectId);
+    if (document.body.classList.contains('nav-collapsed')) toggleSidebar();
+    renderSidebar();
+    $(`#sidebar [data-key="g:${CSS.escape(ov.projectId)}"]`)?.focus();
+  }
 }
 
 function render() {
@@ -954,6 +1014,7 @@ async function onRoute() {
     if (route.section === 'account') refreshAccount();  // Status on view open; it checks the account without inference.
   }
   if (route.name === 'usage' && previous.name !== 'usage') loadUsage();
+  if (route.name === 'project' && (previous.name !== 'project' || previous.id !== route.id)) overviewFor(route.id).readiness = null;  // Probe on view open.
   rememberProject(route);
   syncDirty();
   render();
@@ -1008,6 +1069,8 @@ document.addEventListener('click', async event => {
     renderView();
   } else if (action.startsWith('setup-')) {
     onSetupAction(action, target, event);
+  } else if (action.startsWith('ov-')) {
+    onOverviewAction(action, target);
   } else if (/^(account|worker|steam|migration)-/.test(action)) {
     settingsAction(action, target);
   } else if (action === 'usage-refresh') {
@@ -1118,6 +1181,11 @@ document.addEventListener('input', event => {
 document.addEventListener('change', event => {
   const field = event.target.dataset?.field;
   if (field === 'player') { state.thread.player = event.target.value; renderView(); return; }
+  if (field === 'ov-build') {
+    overviewFor(state.route.id).buildId = event.target.value;  // A chosen build is checked at once; that is the user's request, not a poll.
+    renderView();
+    return;
+  }
   if (field === 'usage-model' || field === 'usage-purpose') {
     Object.assign(state.usageUi, { [field.slice(6)]: event.target.value, limit: newUsageUi().limit });
     renderView();

@@ -41,7 +41,8 @@ Files (the complete set; add more only when one gets unwieldy):
 | `ashad/static/views/home.js` | Empty workspace and the new-instance composer |
 | `ashad/static/views/project.js` | Project overview |
 | `ashad/static/views/setup.js` | Setup flow |
-| `ashad/static/views/instance.js` | Thread header, camera, control bar, activity timeline |
+| `ashad/static/views/instance.js` | Thread header, camera, control bar |
+| `ashad/static/views/timeline.js` | Activity timeline: kinds, bounded window, cards |
 | `ashad/static/views/inspector.js` | Right inspector |
 | `ashad/static/views/settings.js` | Settings and Usage |
 
@@ -397,7 +398,7 @@ Rules:
 | C2 | Sidebar | Done |
 | C3 | Empty workspace and composer | Built, awaiting review |
 | C4 | Instance thread: header, camera, controls | Built, awaiting review |
-| C5 | Activity timeline | Not started |
+| C5 | Activity timeline | Built, awaiting review |
 | C6 | Inspector | Not started |
 | C7 | Project overview | Not started |
 | C8 | Setup flow | Not started |
@@ -465,7 +466,7 @@ The order lets you use the new UI for real as early as possible. After C4 you ca
 - **Build:** card component with kind mapping, expandable fields and escaped bounded raw block; filter chips and search; latest-100 window; older-page replace; return to latest; live-edge polling with the "↓ N new" pill; card selection state (consumed by C6).
 - **Tests (re-added):** 100 heavy events render a bounded page each poll; older pages replace rather than accumulate (≤200 cards); a late history response can't override "return to latest"; unknown event types render, not drop; "selected" vs "delivered" vs "confirmed" labels never merge.
 - **Review:** read a long real run. Judge whether the cards tell you what happened at a glance, and tune the summaries and density here.
-- **Notes:**
+- **Notes:** The timeline got its own `views/timeline.js`, because `instance.js` was getting unwieldy. Cards are reconciled by key (seq, or `m<seq>` for a model row), so polls never re-create an unchanged card and open cards stay open. A card's body is built only when it is first opened, so heavy events cost one row each. The live window grows to 200 events, then drops the oldest; history pages are 100 and replace the window. Filters apply to the loaded window; search goes to the server. Adjacent model events merge into one "Model turn" row. Lifecycle milestones (`player_launched`, `world_ready`, `session_running` and similar) map to Control rather than Other. `resume_failed` stays Control; every other `*_failed` is a Problem. Outcome icons: a check only for a confirmed effect; delivered and unknown outcomes get a plain circle. The "↓ N new" pill is sticky inside the Activity section, so it doesn't sit over the camera. Relative times use the sidebar's `ago()` format (`now`, `3m`).
 
 #### C6: Inspector
 

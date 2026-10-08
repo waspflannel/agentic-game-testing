@@ -1,10 +1,9 @@
 // Instance thread: header, camera and control bar (spec §8.5 A–C, §9). Markup and state are pure; app.js owns I/O.
-import { esc, icon, newId, runGoal } from '../core.js';
+import { esc, icon, newId, runGoal, humanize } from '../core.js';
 
 const enc = encodeURIComponent;
 const LIVE_STATES = new Set(['Starting', 'Running', 'Paused', 'Investigating', 'Stopping']);  // /live serves only these.
 export const isActiveRun = run => run?.state === 'Queued' || LIVE_STATES.has(run?.state);
-const humanize = value => { const text = String(value || '').replaceAll('_', ' ').trim(); return text ? text[0].toUpperCase() + text.slice(1) : ''; };
 export const playerIds = run => Object.keys(run?.players || {});
 
 // One player in v1; recalculation needs that player launched and nobody else holding control.
@@ -124,8 +123,8 @@ export const threadSkeleton = () => `<div class="thread">`
   + `<div class="camera"><div class="camera-media" data-camera></div><div class="camera-overlay" data-region="overlay"></div></div>`
   + `<div class="control-wrap" data-region="controls"></div>`
   + `<div data-region="instruction"></div>`
-  + `<section class="activity" aria-labelledby="activity-heading"><h2 id="activity-heading" class="section-title">Activity</h2>`
-  + `<p class="activity-soon"><span class="tag">Coming in C5</span> The activity timeline lands here.</p></section>`
+  + `<section class="activity" aria-labelledby="activity-heading"><div class="activity-head"><h2 id="activity-heading" class="section-title">Activity</h2><div class="tl-tools" data-region="tl-tools"></div></div>`
+  + `<div class="tl-top" data-region="tl-top"></div><ol class="timeline" data-timeline></ol><div data-region="tl-foot"></div><div class="tl-pill-wrap" data-region="tl-pill"></div></section>`
   + `</div></div>`;
 
 const ACTIONS = {

@@ -1,7 +1,8 @@
-import { esc, icon, href, newId, api, parseRoute, legacyNewTarget, createEpoch, patchHTML, dirtyBridge, runGoal } from './core.js';
+import { esc, icon, href, newId, api, parseRoute, legacyNewTarget, createEpoch, patchHTML, dirtyBridge, runGoal, ago } from './core.js';
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
 import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
 import { isActiveRun, playerIds, instanceState, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions } from './views/instance.js';
+import { PAGE, MAX_EVENTS, createTimeline, beginPage, applyPage, failPage, seedFromRun, applyLive, timelineCards, timelineRegions, syncCards, cardBody, rawJSON, eventIndex } from './views/timeline.js';
 
 const $ = selector => document.querySelector(selector);
 const enc = encodeURIComponent;
@@ -23,7 +24,7 @@ const state = {
   runMissing: false,
   commands: new Map(),       // `${runId}:${action}` -> { id, pending, error }
   camera: null,
-  thread: {},                // per-open-thread UI: player, instruction draft, last status key
+  thread: {},                // per-open-thread UI: player, instruction draft, last status key, timeline
 };
 const epoch = createEpoch();
 const setDirty = dirtyBridge(() => window.ashadDesktop);
@@ -249,6 +250,97 @@ function renderThread(view) {
   patchRegions(view, threadRegions(run, { status, owner, data: state.data, ui: { ...t, inspectorOpen: state.ui.inspectorOpen }, pending, error, cameraStatus: state.camera.status, player }));
   const reason = view.querySelector('#resume-reason');
   if (reason && reason.value !== t.instructionText) reason.value = t.instructionText;
+  renderTimeline(view, run);
+}
+
+// ── Activity timeline (C5) ──────────────────────────────────────────────────
+const AUTO_SCROLL_PX = 80;
+const nearBottom = () => { const v = $('#view'); return v.scrollHeight - v.scrollTop - v.clientHeight < AUTO_SCROLL_PX; };
+const scrollToBottom = () => { const v = $('#view'); v.scrollTop = v.scrollHeight; };
+const timelineList = () => $('#view [data-timeline]');
+
+function renderTimeline(view, run) {
+  const tl = state.thread.tl;
+  seedFromRun(tl, run);
+  const cards = timelineCards(tl);
+  patchRegions(view, timelineRegions(tl, { runTotal: run.events_page?.total, cards }));
+  const search = view.querySelector('[data-key="tl-search"]');
+  if (search && search.value !== tl.searchDraft) search.value = tl.searchDraft;  // The field is never re-rendered with typed text.
+  const list = view.querySelector('[data-timeline]');
+  syncCards(list, cards);
+  for (const li of list.children) {
+    li.classList.toggle('is-selected', li.dataset.card === tl.selected);
+    fillBody(li);
+  }
+  updateTimes(list);
+}
+
+const updateTimes = root => { for (const t of root?.querySelectorAll('time[data-ts]') || []) { const text = ago(Number(t.dataset.ts)); if (t.textContent !== text) t.textContent = text; } };
+
+// Bodies are built on first open (and after a grown model row is replaced), never on the poll.
+function fillBody(li) {
+  const body = li.querySelector('[data-body]');
+  if (!body || body.childElementCount || !li.querySelector('details')?.open) return;
+  const run = threadRun();
+  const players = Object.fromEntries((run?.plan?.players || []).map(p => [p.id, p.name || p.id]));
+  body.innerHTML = cardBody(li.card, eventIndex([...(Array.isArray(run?.events) ? run.events : []), ...state.thread.tl.events]), players);
+}
+
+const searchQuery = tl => (tl.search ? `&search=${enc(tl.search)}` : '');
+
+// Replaces the window: the latest page, or the page before `before`. Only the newest request may apply.
+async function loadPage(mode, before) {
+  const tl = state.thread.tl;
+  const runId = state.route.id;
+  const current = state.isCurrent;
+  const token = beginPage(tl);
+  renderView();
+  try {
+    const page = await api(`/api/runs/${enc(runId)}/events?${mode === 'latest' ? 'tail=true' : `before=${before}`}&limit=${PAGE}${searchQuery(tl)}`);
+    if (!current() || state.thread.tl !== tl || !applyPage(tl, token, page, mode, threadRun()?.events_page?.next)) return false;
+  } catch (error) { failPage(tl, token, error); }
+  if (current()) renderView();
+  return true;
+}
+
+// Live edge: append newer events after the run poll. Auto-scroll only when already near the bottom.
+async function pollTimeline(runId) {
+  const tl = state.thread.tl;
+  if (!tl?.loaded || tl.mode !== 'latest' || tl.loading) return;
+  const after = tl.cursor, token = tl.token, current = state.isCurrent;
+  let page;
+  try { page = await api(`/api/runs/${enc(runId)}/events?after=${after}&limit=${MAX_EVENTS}${searchQuery(tl)}`); } catch { return; }  // The next run poll retries.
+  if (!current() || state.thread.tl !== tl) return;
+  const atBottom = nearBottom();
+  const added = applyLive(tl, token, page, after);
+  if (added === 'reload') { loadPage('latest'); return; }
+  if (!added) return;
+  if (!atBottom) tl.unseen += added;
+  renderView();
+  if (atBottom) scrollToBottom();
+}
+
+const findCard = seq => [...(timelineList()?.children || [])].find(li => li.card?.events.some(e => e.seq === seq));
+
+function selectCard(key) {
+  state.thread.tl.selected = state.thread.tl.selected === key ? null : key;
+  renderView();
+}
+
+// Scrolls to a card by seq, widening the filter or loading the page around it when it is not shown.
+async function jumpTo(seq) {
+  const tl = state.thread.tl;
+  if (!findCard(seq) && tl.filter !== 'all') { tl.filter = 'all'; renderView(); }
+  if (!findCard(seq)) {
+    if (tl.search) tl.search = tl.searchDraft = '';
+    await loadPage('history', seq + PAGE / 2);
+  }
+  const li = findCard(seq);
+  if (!li) { toast('That activity is no longer retained.', 'error'); return; }
+  tl.selected = li.dataset.card;
+  renderView();
+  li.scrollIntoView({ block: 'center' });
+  li.querySelector('summary')?.focus({ preventScroll: true });
 }
 
 let runTimer;
@@ -273,6 +365,7 @@ async function pollRun() {
   if (!current()) return;
   renderView();
   scheduleRun();
+  pollTimeline(id);
 }
 
 // Runs one control through its stable command ID. runOf picks the run a successful response carries.
@@ -408,7 +501,7 @@ async function onRoute() {
   if (composerProject(route, state.data)) state.readiness = null;  // Readiness probes on view open, never on the poll.
   if (route.name === 'composer' && route.query.agent) draftFor(route.id).agentId = route.query.agent;
   if (route.name === 'instance' && state.thread.runId !== route.id) {
-    state.thread = { runId: route.id, player: null, instructionOpen: false, instructionText: '', statusKey: null };
+    state.thread = { runId: route.id, player: null, instructionOpen: false, instructionText: '', statusKey: null, tl: createTimeline() };
     state.runSlot.set(null);  // Also drops a late GET for the previous thread.
     state.runMissing = false;
   }
@@ -447,6 +540,8 @@ function toggleSidebar() {
 }
 
 document.addEventListener('click', async event => {
+  const row = event.target.closest('.tl-row');
+  if (row) selectCard(row.closest('.tl-card').dataset.card);  // The native toggle still opens the body.
   const target = event.target.closest('[data-action]');
   if (!target) return;
   const { action, id } = target.dataset;
@@ -469,6 +564,23 @@ document.addEventListener('click', async event => {
   } else if (action === 'instruction-cancel') {
     Object.assign(state.thread, { instructionOpen: false, instructionText: '' });
     renderView();
+  } else if (action === 'tl-filter') {
+    state.thread.tl.filter = target.dataset.filter;
+    renderView();
+  } else if (action === 'tl-older') {
+    if (target.getAttribute('aria-disabled') !== 'true') loadPage('history', state.thread.tl.events[0]?.seq);
+  } else if (action === 'tl-latest') {
+    if (await loadPage('latest')) scrollToBottom();
+  } else if (action === 'tl-to-bottom') {
+    state.thread.tl.unseen = 0;
+    scrollToBottom();
+    renderView();
+  } else if (action === 'tl-jump') {
+    jumpTo(Number(target.dataset.seq));
+  } else if (action === 'tl-raw-full') {
+    const li = target.closest('.tl-card');
+    li.querySelector('.tl-raw pre').textContent = rawJSON(li.card);
+    target.remove();
   } else if (action === 'copy-password') {
     const field = $('#takeover-password');
     try { await navigator.clipboard.writeText(field.value); toast('Password copied.', 'ok'); }
@@ -500,6 +612,12 @@ document.addEventListener('keydown', event => {
 // Composer fields update the in-memory draft; the textarea itself is never re-rendered.
 document.addEventListener('input', event => {
   if (event.target.id === 'resume-reason') { state.thread.instructionText = event.target.value; return; }
+  if (event.target.dataset.key === 'tl-search') {
+    const tl = state.thread.tl;
+    tl.searchDraft = event.target.value;
+    if (!tl.searchDraft.trim() && tl.search) { tl.search = ''; loadPage('latest'); }  // Clearing the box shows everything again.
+    return;
+  }
   const form = event.target.closest?.('[data-form="composer"]');
   if (!form || event.target.dataset.field !== 'goal') return;
   const draft = draftFor(form.dataset.project);
@@ -521,6 +639,13 @@ document.addEventListener('change', event => {
 });
 
 document.addEventListener('submit', async event => {
+  if (event.target.matches('[data-form="tl-search"]')) {
+    event.preventDefault();
+    const tl = state.thread.tl;
+    tl.search = tl.searchDraft.trim();
+    loadPage('latest');
+    return;
+  }
   if (event.target.matches('[data-form="resume-instruction"]')) {
     event.preventDefault();
     const run = threadRun();
@@ -539,6 +664,14 @@ document.addEventListener('submit', async event => {
 });
 
 $('#nav-toggle').addEventListener('click', toggleSidebar);
+// <details> toggle does not bubble, so listen in the capture phase.
+document.addEventListener('toggle', event => { if (event.target.matches?.('.tl-card > details')) fillBody(event.target.parentElement); }, true);
+$('#view').addEventListener('scroll', () => {
+  const tl = state.thread.tl;
+  if (state.route.name === 'instance' && tl?.unseen && nearBottom()) { tl.unseen = 0; renderView(); }
+}, { passive: true });
+// Relative times tick locally; nothing is fetched.
+setInterval(() => { if (state.route.name === 'instance' && !document.hidden) updateTimes(timelineList()); }, 15000);
 window.addEventListener('hashchange', onRoute);
 // Hidden: the camera stops at once. Visible again: data refreshes and the camera reconnects.
 document.addEventListener('visibilitychange', () => {

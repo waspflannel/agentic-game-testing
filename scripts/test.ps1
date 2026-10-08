@@ -11,5 +11,5 @@ foreach ($script in Get-ChildItem -Recurse -Filter *.js ashad/static) {
 if ($LASTEXITCODE -ne 0) { throw 'Desktop shell syntax check failed.' }
 & node --check desktop/prepare.cjs
 if ($LASTEXITCODE -ne 0) { throw 'Desktop resource preparation syntax check failed.' }
-& node --test tests/test_desktop_shell.js tests/test_renderer_core.js tests/test_sidebar.js tests/test_home.js tests/test_instance.js
+& node --test tests/test_desktop_shell.js tests/test_renderer_core.js tests/test_sidebar.js tests/test_home.js tests/test_instance.js tests/test_timeline.js
 if ($LASTEXITCODE -ne 0) { throw 'Dashboard and desktop boundary checks failed.' }

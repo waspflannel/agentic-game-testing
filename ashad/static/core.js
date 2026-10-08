@@ -4,6 +4,7 @@ const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&
 export const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ESCAPES[c]);
 export const icon = (name, cls = 'icon') => `<svg class="${cls}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 export const newId = () => crypto.randomUUID();
+export const humanize = value => { const text = String(value ?? '').replaceAll('_', ' ').trim(); return text ? text[0].toUpperCase() + text.slice(1) : ''; };
 
 // The desktop bridge accepts only booleans; repeats are skipped and a missing or failing bridge is ignored.
 export function dirtyBridge(getBridge) {

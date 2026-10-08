@@ -393,8 +393,8 @@ Rules:
 
 | Chunk | Scope | Status |
 |---|---|---|
-| C1 | Shell, tokens, title bar, router, polling | Built, awaiting review |
-| C2 | Sidebar | Built, awaiting review |
+| C1 | Shell, tokens, title bar, router, polling | Done |
+| C2 | Sidebar | Done |
 | C3 | Empty workspace and composer | Not started |
 | C4 | Instance thread: header, camera, controls | Not started |
 | C5 | Activity timeline | Not started |

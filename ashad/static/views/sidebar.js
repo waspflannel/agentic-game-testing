@@ -1,7 +1,6 @@
-import { esc, href, ago, runGoal, runTime, runStatus } from '../core.js';
+import { esc, icon, href, ago, runGoal, runTime, runStatus } from '../core.js';
 
 const THREADS_SHOWN = 10;
-const icon = (name, cls = 'icon') => `<svg class="${cls}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
 const byNewest = (a, b) => (runTime(b) || 0) - (runTime(a) || 0);
 
 // ui: { expanded: Map<groupId, bool>, showAll: Set<groupId>, route, lastProject, now }

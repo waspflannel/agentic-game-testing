@@ -2,6 +2,19 @@
 
 const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 export const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ESCAPES[c]);
+export const icon = (name, cls = 'icon') => `<svg class="${cls}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+export const newId = () => crypto.randomUUID();
+
+// The desktop bridge accepts only booleans; repeats are skipped and a missing or failing bridge is ignored.
+export function dirtyBridge(getBridge) {
+  let last;
+  return value => {
+    const dirty = value === true;
+    if (dirty === last) return;
+    last = dirty;
+    getBridge()?.setDirtyDraft?.(dirty)?.catch?.(() => {});
+  };
+}
 
 export class ApiError extends Error {
   constructor(status, body) {

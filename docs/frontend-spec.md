@@ -395,7 +395,7 @@ Rules:
 |---|---|---|
 | C1 | Shell, tokens, title bar, router, polling | Done |
 | C2 | Sidebar | Done |
-| C3 | Empty workspace and composer | Not started |
+| C3 | Empty workspace and composer | Built, awaiting review |
 | C4 | Instance thread: header, camera, controls | Not started |
 | C5 | Activity timeline | Not started |
 | C6 | Inspector | Not started |
@@ -442,7 +442,7 @@ The order lets you use the new UI for real as early as possible. After C4 you ca
   - 409 conflict handling and dirty-draft bridge.
 - **Tests (re-added):** a 409 keeps goal, transport and request ID and links the owner; a lost reply recovers through `requests/<id>`; a changed goal after an accepted start isn't silently resubmitted; Steam never enables from stale rows or App ID 480; the draft bridge sends only booleans.
 - **Review:** start a real instance from the new composer. Check the blocked-slot and not-ready states. Afterwards the app lands on the C4 placeholder.
-- **Notes:**
+- **Notes:** Composer mounts a skeleton once per project and patches named regions, so polls never re-create the textarea. Readiness probes on view open, on agent change and from a small Re-check button next to the readiness chip; Start stays disabled while it runs. A request ID is bound to one payload: a changed goal first checks `requests/<id>`, and only a never-launched request gets a new ID. Leaving a typed, unsent goal confirms and then discards it. Steam enables only from a fresh probe for the selected build.
 
 #### C4: Instance thread (header, camera, controls)
 

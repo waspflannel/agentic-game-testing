@@ -1,8 +1,10 @@
-import { esc, api, parseRoute, legacyNewTarget, createEpoch, patchHTML, runGoal, runStatus } from './core.js';
+import { esc, icon, href, newId, api, parseRoute, legacyNewTarget, createEpoch, patchHTML, dirtyBridge, runGoal, runStatus } from './core.js';
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
+import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
 
 const $ = selector => document.querySelector(selector);
-const icon = (name, cls = 'icon') => `<svg class="${cls}" aria-hidden="true"><use href="#i-${name}"/></svg>`;
+const enc = encodeURIComponent;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 const POLL_MS = 5000;
 const LOST_AFTER_FAILURES = 3;
 
@@ -13,8 +15,12 @@ const state = {
   failures: 0,
   polling: false,
   ui: { expanded: new Map(), showAll: new Set(), lastProject: null },
+  drafts: new Map(),   // projectId -> composer draft
+  readiness: null,     // { key, loading, result, error } for the open composer; probed on view open only
+  isCurrent: () => true,
 };
 const epoch = createEpoch();
+const setDirty = dirtyBridge(() => window.ashadDesktop);
 
 // ── Toasts and dialogs ──────────────────────────────────────────────────────
 function toast(message, kind = 'info') {
@@ -63,12 +69,8 @@ function viewFor(route, data) {
   const projects = data?.projects || [];
   const project = id => projects.find(p => p.id === id);
   switch (route.name) {
-    case 'home':
-      return projects.length
-        ? placeholder({ iconName: 'square-pen', tag: 'Coming in C3', title: `What should the agent do in ${(project(state.ui.lastProject) || projects[0]).name}?`, body: 'The new-instance composer lands here.' })
-        : placeholder({ iconName: 'gamepad', tag: 'Coming in C3', title: 'Set up your first game agent', body: 'ASHAD prepares a desktop, tunes instructions from your build, then runs one bot against a goal you give it.', extra: '<a class="btn btn-primary" href="#/setup">Set up new game agent</a>' });
-    case 'composer':
-      return project(route.id) ? placeholder({ iconName: 'square-pen', tag: 'Coming in C3', title: `What should the agent do in ${project(route.id).name}?` }) : notFound('Project');
+    case 'home': return projects.length ? noAgentsHTML(project(composerProject(route, data))) : emptyHTML(data);
+    case 'composer': return project(route.id) ? noAgentsHTML(project(route.id)) : notFound('Project');
     case 'project':
       return project(route.id) ? placeholder({ iconName: 'folder-open', tag: 'Coming in C7', title: project(route.id).name, body: 'Builds, agent configurations, desktop readiness and recent instances.' }) : notFound('Project');
     case 'instance': {
@@ -87,6 +89,8 @@ function viewFor(route, data) {
 
 function windowTitle(route, data) {
   const projects = data?.projects || [];
+  const composer = composerProject(route, data);
+  if (composer) return projects.find(p => p.id === composer)?.name || '';
   if (route.name === 'instance') { const run = (data?.runs || []).find(r => r.id === route.id); return run ? runGoal(run) : ''; }
   if (route.name === 'project' || route.name === 'composer') return projects.find(p => p.id === route.id)?.name || '';
   return { setup: 'Setup', usage: 'Usage', settings: 'Settings', styleguide: 'Styleguide' }[route.name] || '';
@@ -98,7 +102,94 @@ function renderView() {
   $('#window-title').textContent = title;
   document.title = title ? `${title} · ASHAD` : 'ASHAD';
   $('#inspector').hidden = route.name !== 'instance';
-  if (state.data) patchHTML($('#view'), viewFor(route, state.data), document.activeElement);
+  if (!state.data) return;
+  const view = $('#view');
+  const composer = composerProject(route, state.data);
+  if (composer && projectAgents(state.data, composer).length) return renderComposer(view, composer);
+  if (view.dataset.mount) { view.dataset.mount = ''; view.renderedHTML = undefined; }
+  patchHTML(view, viewFor(route, state.data), document.activeElement);
+}
+
+// Views with live inputs mount a skeleton once per key and then patch named regions, so polls never re-create them.
+function mount(view, key, html) {
+  if (view.dataset.mount === key) return false;
+  view.dataset.mount = key;
+  view.innerHTML = html;
+  view.renderedHTML = undefined;
+  return true;
+}
+
+function patchRegions(root, regions) {
+  for (const [name, html] of Object.entries(regions)) {
+    const el = root.querySelector(`[data-region="${name}"]`);
+    if (el) patchHTML(el, html, document.activeElement);
+  }
+}
+
+// ── Composer (C3) ───────────────────────────────────────────────────────────
+// The composer shows on #/p/<id>/new, and on #/ for the last-opened project.
+function composerProject(route, data) {
+  const projects = data?.projects || [];
+  if (route.name === 'composer') return projects.some(p => p.id === route.id) ? route.id : null;
+  if (route.name === 'home' && projects.length) return (projects.find(p => p.id === state.ui.lastProject) || projects[0]).id;
+  return null;
+}
+
+function draftFor(projectId) {
+  if (!state.drafts.has(projectId)) state.drafts.set(projectId, newDraft());
+  return state.drafts.get(projectId);
+}
+
+function renderComposer(view, projectId) {
+  const draft = draftFor(projectId);
+  const agents = projectAgents(state.data, projectId);
+  if (!agents.some(a => a.id === draft.agentId)) draft.agentId = agents[0].id;
+  const agent = agents.find(a => a.id === draft.agentId);
+  if (state.readiness?.key !== readinessKey(projectId, agent)) loadReadiness(projectId, agent);
+  mount(view, `composer:${projectId}`, composerSkeleton(projectId, draft));
+  patchRegions(view, composerRegions(composerModel(state.data, projectId, draft, state.readiness), draft));
+}
+
+async function loadReadiness(projectId, agent) {
+  const record = state.readiness = { key: readinessKey(projectId, agent), loading: true };
+  try { record.result = await api(`/api/projects/${enc(projectId)}/readiness?build_id=${enc(agent.build_id)}&agent_id=${enc(agent.id)}`); }
+  catch (error) { record.error = error.message; }
+  record.loading = false;
+  if (state.readiness === record) renderView();
+}
+
+const dirtyComposer = () => {
+  const id = composerProject(state.route, state.data);
+  const draft = id && state.drafts.get(id);
+  return draft && !draft.busy && draft.goal.trim() ? id : null;
+};
+
+async function startFromComposer(projectId) {
+  const draft = draftFor(projectId);
+  if (draft.busy) return;
+  if (!composerModel(state.data, projectId, draft, state.readiness).canStart) { $('#composer-status')?.scrollIntoView({ block: 'nearest' }); return; }
+  const current = state.isCurrent;
+  draft.busy = true;
+  draft.result = null;
+  renderView();
+  let result = await startInstance(draft, projectId, api);
+  while (result.kind === 'in-progress') { await sleep(2000); result = await checkStart(draft, api); }
+  draft.busy = false;
+  const run = result.run;
+  if (run?.id) state.data.runs = [run, ...state.data.runs.filter(r => r.id !== run.id)];
+  if (result.kind === 'accepted') {
+    state.drafts.delete(projectId);
+    setDirty(false);
+    if (current()) location.hash = href('i', run.id);
+    else toast('Instance started.', 'ok');
+    poll();
+    return;
+  }
+  draft.result = result;
+  if (result.kind === 'conflict') state.data.instance_slot = { ...state.data.instance_slot, available: false, owners: result.owners };
+  if (!current()) return;
+  renderView();
+  if (result.field === 'goal') $('#composer-goal')?.focus();
 }
 
 function render() {
@@ -115,14 +206,29 @@ function rememberProject(route) {
   if (id && (state.data?.projects || []).some(p => p.id === id)) state.ui.lastProject = id;
 }
 
-function onRoute() {
+let acceptedHash = location.hash;
+async function onRoute() {
   const route = parseRoute(location.hash);
   if (route.name === 'redirect' || (route.name === 'legacy-new' && state.data)) {
     history.replaceState(null, '', route.name === 'redirect' ? route.to : legacyNewTarget(route.agent, state.data));
     return onRoute();
   }
+  // Leaving a typed, unsent goal asks first (spec §11). Moving between #/ and the same project's composer is not leaving.
+  const dirty = dirtyComposer();
+  if (dirty && composerProject(route, state.data) !== dirty) {
+    const target = location.hash;
+    history.replaceState(null, '', acceptedHash);
+    if (!await confirmDialog({ title: 'Discard this goal?', body: 'The goal you typed has not been started. Leaving discards it.', confirm: 'Discard goal', danger: true })) return;
+    state.drafts.delete(dirty);
+    setDirty(false);
+    location.hash = target;
+    return;
+  }
+  acceptedHash = location.hash;
   state.route = route;
-  epoch.next();  // Any response started for the previous route is now stale.
+  state.isCurrent = epoch.next();  // Any response started for the previous route is now stale.
+  if (composerProject(route, state.data)) state.readiness = null;  // Readiness probes on view open, never on the poll.
+  if (route.name === 'composer' && route.query.agent) draftFor(route.id).agentId = route.query.agent;
   rememberProject(route);
   render();
   $('#view').scrollTop = 0;
@@ -165,6 +271,11 @@ document.addEventListener('click', async event => {
   } else if (action === 'show-all') {
     state.ui.showAll.has(id) ? state.ui.showAll.delete(id) : state.ui.showAll.add(id);
     renderSidebar();
+  } else if (action === 'composer-retry') {
+    startFromComposer(composerProject(state.route, state.data));
+  } else if (action === 'composer-recheck') {
+    state.readiness = null;
+    renderView();
   } else if (action === 'sg-toast') {
     toast(target.dataset.message, target.dataset.kind);
   } else if (action === 'sg-confirm') {
@@ -178,6 +289,39 @@ document.addEventListener('keydown', event => {
     event.preventDefault();
     toggleSidebar();
   }
+  // Plain Enter inserts a newline; launching is costly and stays explicit.
+  if (event.ctrlKey && event.key === 'Enter' && event.target.id === 'composer-goal') {
+    event.preventDefault();
+    event.target.form.requestSubmit();
+  }
+});
+
+// Composer fields update the in-memory draft; the textarea itself is never re-rendered.
+document.addEventListener('input', event => {
+  const form = event.target.closest?.('[data-form="composer"]');
+  if (!form || event.target.dataset.field !== 'goal') return;
+  const draft = draftFor(form.dataset.project);
+  draft.goal = event.target.value;
+  draft.requestId ||= newId();  // Created once, when the draft is first edited.
+  if (draft.result?.field === 'goal') draft.result = null;
+  setDirty(Boolean(draft.goal.trim()));
+  renderView();
+});
+
+document.addEventListener('change', event => {
+  const field = event.target.dataset?.field;
+  const projectId = composerProject(state.route, state.data);
+  if (!projectId || !['agent', 'transport', 'project'].includes(field)) return;
+  if (field === 'project') { location.hash = href('p', event.target.value, 'new'); return; }
+  draftFor(projectId)[field === 'agent' ? 'agentId' : 'transport'] = event.target.value;
+  renderView();
+});
+
+document.addEventListener('submit', event => {
+  const form = event.target.closest('[data-form="composer"]');
+  if (!form) return;
+  event.preventDefault();
+  startFromComposer(form.dataset.project);
 });
 
 $('#nav-toggle').addEventListener('click', toggleSidebar);

@@ -121,9 +121,9 @@ export function composerRegions(m, draft) {
     + `${m.canStart ? '' : ' aria-disabled="true"'}${draft.busy ? ' aria-busy="true"' : ''}>${icon(draft.busy ? 'loader' : 'arrow-up', draft.busy ? 'icon spin' : 'icon')}</button>`;
 
   const res = draft.result;
-  const goalError = res?.kind === 'error' && res.field === 'goal' ? `<p class="field-error" role="alert">${esc(res.message)}</p>` : '';
+  const goalError = res?.kind === 'error' && res.field === 'goal' ? `<p class="field-error" data-announce>${esc(res.message)}</p>` : '';
   const notes = [];
-  if (draft.busy) notes.push(`<p class="note" role="status">${icon('loader', 'icon spin')}Starting… This can take a minute while the desktop is checked.</p>`);
+  if (draft.busy) notes.push(`<p class="note">${icon('loader', 'icon spin')}Starting… This can take a minute while the desktop is checked.</p>`);
   else if (res) notes.push(resultHTML(res));
   if (!m.steam.enabled) notes.push(`<p class="note" id="composer-steam-note">${esc(m.steam.reason)}.</p>`);
   if (!draft.busy && m.blockers.length) notes.push(`<div class="note note-blocked"><p>Start is unavailable:</p><ul>${m.blockers.map(b => `<li>${esc(b)}</li>`).join('')}</ul></div>`);
@@ -143,14 +143,14 @@ function resultHTML(res) {
   switch (res.kind) {
     case 'conflict': {
       const owner = res.owners?.[0]?.run_id;
-      return `<p class="note note-error" role="alert">${icon('alert')}<span>${esc(res.message || 'Another instance owns the slot.')} ${owner ? runLink(owner, 'Open the running instance') + '.' : ''} Your goal is kept.</span></p>`;
+      return `<p class="note note-error" data-announce>${icon('alert')}<span>${esc(res.message || 'Another instance owns the slot.')} ${owner ? runLink(owner, 'Open the running instance') + '.' : ''} Your goal is kept.</span></p>`;
     }
     case 'not-started':
-      return `<p class="note note-error" role="alert">${icon('alert')}<span>Not started. ${esc(res.message || '')}</span> <button type="button" class="btn btn-secondary btn-sm" data-action="composer-retry" data-key="c-retry">Retry</button></p>`;
+      return `<p class="note note-error" data-announce>${icon('alert')}<span>Not started. ${esc(res.message || '')}</span> <button type="button" class="btn btn-secondary btn-sm" data-action="composer-retry" data-key="c-retry">Retry</button></p>`;
     case 'earlier-accepted':
-      return `<p class="note" role="status">${icon('info')}<span>An earlier start was accepted: ${runLink(res.run.id, 'open that instance')}. Your changed goal was not sent; Start again to launch it separately.</span></p>`;
+      return `<p class="note">${icon('info')}<span>An earlier start was accepted: ${runLink(res.run.id, 'open that instance')}. Your changed goal was not sent; Start again to launch it separately.</span></p>`;
     case 'error':
-      return res.field === 'goal' ? '' : `<p class="note note-error" role="alert">${icon('alert')}<span>${esc(res.message)}</span></p>`;
+      return res.field === 'goal' ? '' : `<p class="note note-error" data-announce>${icon('alert')}<span>${esc(res.message)}</span></p>`;
     default: return '';
   }
 }

@@ -90,12 +90,12 @@ Dark only for v1 (`color-scheme: dark`). Light theme is out of scope. All colour
 | `--border` | `#2e2e2e` | Hairlines only (1px); prefer spacing over borders |
 | `--text` | `#ececec` | Primary text |
 | `--text-2` | `#a8a8a8` | Secondary, meta |
-| `--text-3` | `#8a8a8a` | Tertiary; still ≥4.5:1 on `--bg` |
+| `--text-3` | `#949494` | Tertiary; ≥4.5:1 on every surface up to `--surface-2` (C10 raised it from `#8a8a8a`, which was 4.2:1 on `--surface-2`) |
 | `--accent` | `#7aa2ff` | Primary button, focus ring, links, active row marker |
 | `--live` | `#4ade80` | Running / live camera |
 | `--attention` | `#fbbf24` | Paused, investigating, stale, human control |
 | `--danger` | `#f87171` | Stop, errors, failed outcomes |
-| `--muted` | `#6b6b6b` | Ended, offline, unknown (always paired with a text label) |
+| `--muted` | `#7d7d7d` | Ended, offline, unknown (always paired with a text label); ≥3:1 on `--surface-3` (C10 raised it from `#6b6b6b`, which was 2.7:1 on a selected row) |
 
 - **Type:** `"Segoe UI Variable Text", "Segoe UI", system-ui` at a 13px base and 1.45 line height. Meta text 12px. Section headings 12px/600, sentence case, `--text-2`. Thread title 15px/600. Hero 24px/600. Mono (`"Cascadia Mono", Consolas, monospace`, 12px) for IDs, raw evidence and action calls.
 - **Spacing:** 4px grid. Radii are 6px for rows and buttons, 10px for cards, 14px for the composer and camera frame.
@@ -356,12 +356,14 @@ A transcript-style list, newest at the bottom, like a harness conversation. Each
 - The control bar wraps rather than scrolling horizontally, and Stop never wraps out of view (it's pinned as the last flex item, `margin-left:auto`).
 - No horizontal page scroll at any width ≥800.
 - Drawers close on Esc and on navigation, and return focus to their toggle.
+- **Mechanics (C10):** a drawer is a `<dialog>` in `index.html` (`#drawer-left`, `#drawer-right`). Opening moves the existing `nav` or `aside` node into it and calls `showModal()`; closing moves the node back, so the inspector's mounted sections and the sidebar's state survive. Drawers sit below the 40px title strip. A click on the backdrop also closes them, and crossing a breakpoint closes any open drawer. The toggle is looked up again on close, because closing re-renders the header that holds the inspector toggle.
 
 ## 13. Accessibility
 
 - Keyboard reaches everything in a logical order.
 - Shortcuts: Ctrl+B sidebar, Ctrl+I inspector, Ctrl+Enter start (composer only). No single-key shortcuts.
 - A single polite live region announces control outcomes, state changes (Running → Paused, Ended) and errors. It never announces telemetry, ticking ages or new timeline cards.
+  - **Mechanics (C10):** `#announcer` in `index.html` is the only `aria-live` element. Toasts are visual and pass their text to it. View markup carries no `role="status"` or `role="alert"`; an error block is marked `data-announce` instead, and when a patch newly shows one, its text is announced once. Field errors announce their first message. A thread announces "Instance paused." and similar once per change of its §9 state, never on first render or on an unchanged poll.
 - Status is never colour-only: dot plus text, icon plus text.
 - Disabled buttons that matter (Start, Continue, Stop) stay focusable via `aria-disabled` and say why in adjacent text.
 - Contrast: body and meta text ≥4.5:1, focus ring and status dots ≥3:1 against their background.
@@ -410,7 +412,7 @@ Rules:
 | C7 | Project overview | Built, awaiting review |
 | C8 | Setup flow | Built, awaiting review |
 | C9 | Settings and Usage | Built, awaiting review |
-| C10 | Narrow widths, accessibility audit, docs | Not started |
+| C10 | Narrow widths, accessibility audit, docs | Built, awaiting review |
 
 The order lets you use the new UI for real as early as possible. After C4 you can start an instance from the composer and drive it. After C6 you can watch it fully. C7–C9 cover setup and admin, which existing data can do without until then.
 
@@ -515,4 +517,4 @@ The order lets you use the new UI for real as early as possible. After C4 you ca
 - **Build:** inspector and sidebar drawers at the §12 breakpoints; header chip overflow; live-region audit; contrast check of every token pair; delete `#/styleguide`; rewrite `docs/ui.md`; mark §10 of the refactor plan superseded.
 - **Tests:** Stop is visible with no horizontal scroll at 800px across every §9 state; drawers return focus; only state changes are announced.
 - **Review:** resize from 1920 down to 800 on a live instance. Then do a keyboard-only pass of the whole app. Finish with a desktop smoke run from the packaged build.
-- **Notes:**
+- **Notes:** `createDrawer` lives in `core.js` and `stateAnnouncement` in `views/instance.js`, so both are unit-tested; the narrow-width, drawer, live-region and contrast checks are in `tests/test_shell.js`. The 800px check is a markup and CSS invariant test; the actual layout was measured in a browser at 800px for every §9 state (no horizontal scroll, Stop on screen and right-most). The contrast audit raised `--text-3` and `--muted` (§5). `#/styleguide` and its CSS are gone; the route now redirects home. `docs/ui.md` was rewritten for this renderer, and §10 of the refactor plan is marked superseded.

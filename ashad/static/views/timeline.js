@@ -251,7 +251,7 @@ export function timelineRegions(tl, { runTotal, cards }) {
       : tl.search ? `No activity matches “${tl.search}”.`
         : !tl.events.length ? 'No activity recorded yet.' : `No ${label} activity in the loaded window.`;
   const foot = (empty ? `<p class="tl-empty">${esc(empty)}</p>` : '')
-    + (tl.error ? `<p class="note note-error" role="alert">${icon('alert')}<span>Activity could not load: ${esc(tl.error)}</span></p>` : '');
+    + (tl.error ? `<p class="note note-error" data-announce>${icon('alert')}<span>Activity could not load: ${esc(tl.error)}</span></p>` : '');
   const pill = tl.unseen > 0 && tl.mode === 'latest' ? `<button type="button" class="tl-pill" data-action="tl-to-bottom" data-key="tl-pill">${icon('arrow-down')}${tl.unseen} new</button>` : '';
   return { 'tl-tools': tools, 'tl-top': top, 'tl-foot': foot, 'tl-pill': pill };
 }

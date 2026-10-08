@@ -1,7 +1,7 @@
-import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, patchHTML, dirtyBridge, runGoal, ago } from './core.js';
+import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, createDrawer, patchHTML, dirtyBridge, runGoal, ago } from './core.js';
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
 import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
-import { isActiveRun, playerIds, instanceState, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions } from './views/instance.js';
+import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions } from './views/instance.js';
 import { inspectorSkeleton, inspectorRegions, mergeEvents, latestObservation } from './views/inspector.js';
 import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discardSetup, tuneAgent, setupSkeleton, setupRegions, prepareDialogText, prepareDesktop, registerBuild, elapsed } from './views/setup.js';
 import { settingsSkeleton, accountSkeleton, accountRegions, accountBlocker, settleLogin, desktopsSkeleton, desktopsRegions, workerPayload, steamSkeleton, steamRegions, steamErrors,
@@ -43,8 +43,16 @@ const state = {
 const epoch = createEpoch();
 const setDirty = dirtyBridge(() => window.ashadDesktop);
 
-// ── Toasts and dialogs ──────────────────────────────────────────────────────
+// ── Announcements, toasts and dialogs ───────────────────────────────────────
+// The single polite live region. Only control outcomes, state changes and errors reach it; never telemetry or ticks.
+function announce(text) {
+  const el = $('#announcer');
+  el.textContent = '';
+  setTimeout(() => { el.textContent = text; }, 50);  // Cleared first, so a repeated message is read again.
+}
+
 function toast(message, kind = 'info') {
+  announce(message);
   const node = document.createElement('div');
   node.className = `toast toast-${kind}`;
   node.innerHTML = `${icon(kind === 'error' ? 'alert' : kind === 'ok' ? 'check' : 'info')}<span>${esc(message)}</span>`;
@@ -79,11 +87,19 @@ function renderSidebar() {
   patchHTML($('#sidebar'), sidebarHTML(model), document.activeElement);
 }
 
+// Patches a block and announces any error it newly shows (marked data-announce in the markup).
+function patchAnnounced(el, html) {
+  if (!patchHTML(el, html, document.activeElement)) return;
+  const text = [...el.querySelectorAll('[data-announce]')].map(n => n.textContent.trim()).join(' ');
+  if (text && text !== el.announced) announce(text);
+  el.announced = text;
+}
+
 function renderBanners() {
   const banners = [];
-  if (state.failures >= LOST_AFTER_FAILURES) banners.push(`<div class="banner banner-danger" role="alert">${icon('alert')}<span>Lost connection to ASHAD. Data shown may be stale. Retrying…</span></div>`);
-  if (state.data?.workspace_import?.interrupted) banners.push(`<div class="banner" role="alert">${icon('alert')}<span>Workspace import is interrupted. Changes are disabled until it is reconciled.</span></div>`);
-  patchHTML($('#banners'), banners.join(''), document.activeElement);
+  if (state.failures >= LOST_AFTER_FAILURES) banners.push(`<div class="banner banner-danger" data-announce>${icon('alert')}<span>Lost connection to ASHAD. Data shown may be stale. Retrying…</span></div>`);
+  if (state.data?.workspace_import?.interrupted) banners.push(`<div class="banner" data-announce>${icon('alert')}<span>Workspace import is interrupted. Changes are disabled until it is reconciled.</span></div>`);
+  patchAnnounced($('#banners'), banners.join(''));
 }
 
 const placeholder = ({ iconName = 'monitor', tag, title, body = '', extra = '' }) =>
@@ -103,7 +119,6 @@ function viewFor(route, data) {
     case 'instance': return state.runMissing ? notFound('Instance') : `<div class="boot"><p>Loading instance…</p></div>`;
     case 'setup': return notFound('Project');  // renderSetup handles every setup route whose project exists.
     case 'settings': return notFound('Settings section');  // renderSettings handles the known sections.
-    case 'styleguide': return styleguide();
     default: return '';
   }
 }
@@ -114,7 +129,7 @@ function windowTitle(route, data) {
   if (composer) return projects.find(p => p.id === composer)?.name || '';
   if (route.name === 'instance') { const run = threadRun(); return run ? runGoal(run) : ''; }
   if (route.name === 'project' || route.name === 'composer') return projects.find(p => p.id === route.id)?.name || '';
-  return { setup: 'Setup', usage: 'Usage', settings: 'Settings', styleguide: 'Styleguide' }[route.name] || '';
+  return { setup: 'Setup', usage: 'Usage', settings: 'Settings' }[route.name] || '';
 }
 
 function renderView() {
@@ -122,7 +137,7 @@ function renderView() {
   const title = windowTitle(route, state.data);
   $('#window-title').textContent = title;
   document.title = title ? `${title} · ASHAD` : 'ASHAD';
-  $('#inspector').hidden = route.name !== 'instance' || !state.ui.inspectorOpen;
+  $('#inspector').hidden = !inspectorShown();
   if (!state.data) return;
   const view = $('#view');
   if (route.name === 'instance' && threadRun()) return renderThread(view);
@@ -134,7 +149,7 @@ function renderView() {
   if (route.name === 'usage') return renderUsage(view);
   if (route.name === 'project' && findProject(route.id)) return renderOverview(view);
   if (view.dataset.mount) { view.dataset.mount = ''; view.renderedHTML = undefined; }
-  patchHTML(view, viewFor(route, state.data), document.activeElement);
+  patchAnnounced(view, viewFor(route, state.data));
 }
 
 // Views with live inputs mount a skeleton once per key and then patch named regions, so polls never re-create them.
@@ -149,7 +164,7 @@ function mount(view, key, html) {
 function patchRegions(root, regions) {
   for (const [name, html] of Object.entries(regions)) {
     const el = root.querySelector(`[data-region="${name}"]`);
-    if (el) patchHTML(el, html, document.activeElement);
+    if (el) patchAnnounced(el, html);
   }
 }
 
@@ -409,6 +424,7 @@ function showErrors(form, errors) {
     if (message) input.setAttribute('aria-invalid', 'true'); else input?.removeAttribute('aria-invalid');
   }
   form.querySelector('[aria-invalid="true"]')?.focus();
+  if (Object.keys(errors).length) announce(Object.values(errors)[0]);
   return !Object.keys(errors).length;
 }
 
@@ -722,6 +738,8 @@ function renderThread(view) {
   const status = instanceState(run, owner);
   const mine = () => [...state.commands].filter(([k]) => k.startsWith(`${run.id}:`));
   if (t.statusKey !== status.key) {
+    const said = stateAnnouncement(t.statusKey, status);
+    if (said) announce(said);
     // A failed command for an earlier state is moot once the state moves on.
     for (const [k, c] of mine()) if (!c.pending) state.commands.delete(k);
     t.statusKey = status.key;
@@ -731,7 +749,7 @@ function renderThread(view) {
   state.camera.sync(cameraTarget(run, player, document.hidden));
   const pending = new Set(mine().filter(([, c]) => c.pending).map(([k]) => k.slice(run.id.length + 1)));
   const error = mine().find(([, c]) => c.error)?.[1].error;
-  patchRegions(view, threadRegions(run, { status, owner, data: state.data, ui: { ...t, inspectorOpen: state.ui.inspectorOpen }, pending, error, cameraStatus: state.camera.status, player }));
+  patchRegions(view, threadRegions(run, { status, owner, data: state.data, ui: { ...t, inspectorOpen: inspectorShown() }, pending, error, cameraStatus: state.camera.status, player }));
   const reason = view.querySelector('#resume-reason');
   if (reason && reason.value !== t.instructionText) reason.value = t.instructionText;
   renderTimeline(view, run);
@@ -964,8 +982,18 @@ async function showEvidence(run) {
   } catch (error) { toast(`Evidence unavailable: ${error.message}`, 'error'); }
 }
 
+// §12: the inspector is a right drawer below 1280px and the sidebar a left drawer below 960px.
+const wideInspector = matchMedia('(min-width: 1280px)');
+const wideSidebar = matchMedia('(min-width: 960px)');
+const sidebarDrawer = createDrawer($('#drawer-left'), $('#sidebar'), pane => { $('.layout').prepend(pane); syncNavToggle(); });
+const inspectorDrawer = createDrawer($('#drawer-right'), $('#inspector'), pane => { $('.layout').append(pane); renderView(); });
+const inspectorShown = () => state.route.name === 'instance' && (inspectorDrawer.open || (wideInspector.matches && state.ui.inspectorOpen));
+const syncNavToggle = () => $('#nav-toggle').setAttribute('aria-expanded', String(wideSidebar.matches ? !document.body.classList.contains('nav-collapsed') : sidebarDrawer.open));
+
 function toggleInspector() {
-  state.ui.inspectorOpen = !state.ui.inspectorOpen;
+  if (wideInspector.matches) state.ui.inspectorOpen = !state.ui.inspectorOpen;
+  else if (inspectorDrawer.open) inspectorDrawer.close();
+  else if (state.route.name === 'instance') inspectorDrawer.show(() => $('#view [data-key="t-inspector"]'));
   renderView();
 }
 
@@ -994,6 +1022,8 @@ async function onRoute() {
     return;
   }
   acceptedHash = location.hash;
+  sidebarDrawer.close();  // Drawers close on navigation and hand focus back to their toggle.
+  inspectorDrawer.close();
   const previous = state.route;
   if (previous.name === 'setup' && state.setups.get(setupKey(previous))?.agent) state.setups.delete(setupKey(previous));  // A finished setup starts fresh next time.
   if (route.name === 'setup' && (previous.name !== 'setup' || setupKey(previous) !== setupKey(route))) {
@@ -1046,8 +1076,10 @@ function schedule() {
 
 // ── Events ──────────────────────────────────────────────────────────────────
 function toggleSidebar() {
-  const collapsed = document.body.classList.toggle('nav-collapsed');
-  $('#nav-toggle').setAttribute('aria-expanded', String(!collapsed));
+  if (wideSidebar.matches) document.body.classList.toggle('nav-collapsed');
+  else if (sidebarDrawer.open) sidebarDrawer.close();
+  else sidebarDrawer.show(() => $('#nav-toggle'));
+  syncNavToggle();
 }
 
 document.addEventListener('click', async event => {
@@ -1113,11 +1145,6 @@ document.addEventListener('click', async event => {
     const field = $('#takeover-password');
     try { await navigator.clipboard.writeText(field.value); toast('Password copied.', 'ok'); }
     catch { field.select(); toast('Press Ctrl+C to copy the selected password.'); }
-  } else if (action === 'sg-toast') {
-    toast(target.dataset.message, target.dataset.kind);
-  } else if (action === 'sg-confirm') {
-    const ok = await confirmDialog({ title: 'Stop this instance?', body: 'The bot stops and its desktop is torn down. Retained history stays readable.', confirm: 'Stop instance', danger: true });
-    toast(ok ? 'Confirmed (styleguide only, nothing was stopped).' : 'Cancelled.', ok ? 'ok' : 'info');
   }
 });
 
@@ -1242,6 +1269,10 @@ document.addEventListener('submit', async event => {
 });
 
 $('#nav-toggle').addEventListener('click', toggleSidebar);
+// A click on a drawer's backdrop (the dialog itself, outside the pane) closes it.
+for (const drawer of document.querySelectorAll('.drawer')) drawer.addEventListener('click', event => { if (event.target === drawer) drawer.close(); });
+// Crossing a breakpoint closes any drawer; the pane returns to the layout.
+for (const query of [wideInspector, wideSidebar]) query.addEventListener('change', () => { sidebarDrawer.close(); inspectorDrawer.close(); syncNavToggle(); renderView(); });
 // <details> toggle does not bubble, so listen in the capture phase.
 document.addEventListener('toggle', event => {
   const el = event.target;
@@ -1266,50 +1297,6 @@ document.addEventListener('visibilitychange', () => {
   renderView();
   if (!document.hidden) { poll(); pollRun(); }
 });
-
-// ── Styleguide (temporary; removed in C10) ─────────────────────────────────
-function styleguide() {
-  const tokens = ['bg', 'bg-sidebar', 'surface', 'surface-2', 'surface-3', 'border', 'text', 'text-2', 'text-3', 'accent', 'live', 'attention', 'danger', 'muted'];
-  const swatches = tokens.map(t => `<div class="swatch"><span style="background:var(--${t})"></span><div><strong>--${t}</strong><code>${esc(getComputedStyle(document.documentElement).getPropertyValue('--' + t).trim())}</code></div></div>`).join('');
-  const statuses = [['live', 'Running'], ['attention', 'Paused'], ['attention', 'Needs review'], ['attention', 'You have control'], ['pending', 'Starting'], ['pending', 'Stopping'], ['muted', 'Ended'], ['danger', 'Failed']];
-  return `<div class="page">
-    <div class="page-head"><h1>Styleguide</h1><p>Every token and base component. Temporary page for the C1 look-and-feel review.</p></div>
-    <section><h2 class="section-title">Colour tokens</h2><div class="sg-grid">${swatches}</div></section>
-    <section class="sg-type"><h2 class="section-title">Type</h2>
-      <p style="font-size:var(--fs-hero);font-weight:600">What should the agent do in Agronauts?</p>
-      <p style="font-size:var(--fs-title);font-weight:600">Reach the second village and craft a stone pickaxe</p>
-      <p>Body 13px. The bot selected an action; selection is not dispatch, and delivered input is not proof of effect.</p>
-      <p style="font-size:var(--fs-meta);color:var(--text-2)">Meta 12px · observed 14s ago · coverage partial</p>
-      <p class="mono">interact(target="door_3", action="open") · obs_8f2c1a</p>
-    </section>
-    <section><h2 class="section-title">Buttons</h2><div class="sg-row">
-      <button class="btn btn-primary">${icon('play')}Resume</button>
-      <button class="btn btn-secondary">${icon('pause')}Pause</button>
-      <button class="btn btn-ghost">Load older activity</button>
-      <button class="btn btn-danger" data-action="sg-confirm">${icon('stop')}Stop</button>
-      <button class="btn btn-primary" aria-disabled="true">Start</button>
-      <button class="btn btn-primary btn-round" aria-label="Start instance">${icon('arrow-up')}</button>
-      <button class="icon-btn" aria-label="Toggle inspector" title="Toggle inspector">${icon('panel-right')}</button>
-    </div></section>
-    <section><h2 class="section-title">Status and chips</h2>
-      <div class="sg-row">${statuses.map(([tone, label]) => `<span class="badge badge-${tone}"><span class="dot dot-${tone}"></span>${label}</span>`).join('')}</div>
-      <div class="sg-row" style="margin-top:12px"><span class="chip">${icon('gamepad')}Scout agent</span><span class="chip">GPT-6 Astra</span><span class="chip">build 0.3.1</span><button class="chip">ENet</button><span class="chip"><span class="dot dot-live"></span>Desktop ready</span></div>
-    </section>
-    <section><h2 class="section-title">Card and form controls</h2><div class="sg-forms">
-      <div class="card"><h3>Desktop readiness</h3><p style="color:var(--text-2)">ChatGPT signed in · build validated · desktop ready</p></div>
-      <div class="field"><label for="sg-name">Configuration name</label><input id="sg-name" class="input" placeholder="Scout agent"><span class="hint">Shown in the agent selector.</span></div>
-      <div class="field"><label for="sg-bad">Goal</label><textarea id="sg-bad" class="textarea" rows="2" aria-invalid="true" aria-describedby="sg-bad-err"></textarea><span id="sg-bad-err" class="error">Describe the goal before starting.</span></div>
-      <div class="field"><label for="sg-model">Model</label><select id="sg-model" class="select"><option>GPT-6 Astra</option><option>GPT-6 Luna</option></select></div>
-      <label class="check"><input type="checkbox" checked> I understand this creates a desktop container</label>
-    </div></section>
-    <section><h2 class="section-title">Feedback</h2><div class="sg-row">
-      <button class="btn btn-secondary" data-action="sg-toast" data-kind="info" data-message="Readiness re-checked.">Info toast</button>
-      <button class="btn btn-secondary" data-action="sg-toast" data-kind="ok" data-message="Instance paused.">Success toast</button>
-      <button class="btn btn-secondary" data-action="sg-toast" data-kind="error" data-message="Stop failed: worker did not confirm teardown.">Error toast</button>
-      <button class="btn btn-secondary" data-action="sg-confirm">Confirm dialog</button>
-    </div></section>
-  </div>`;
-}
 
 onRoute();
 poll().then(schedule);

@@ -72,7 +72,7 @@ export function sidebarHTML(m) {
   const active = m.active
     ? (m.active.linked
       ? `<a class="active-pill" href="${href('i', m.active.runId)}" data-key="active">`
-      : `<div class="active-pill" role="status">`)
+      : `<div class="active-pill">`)
       + `${dot(m.active.status)}<span class="active-text"><span class="active-state">${esc(m.active.status.label)}</span><span class="row-label">${esc(m.active.goal)}</span></span><span class="row-meta">${esc(m.active.age)}</span>`
       + (m.active.linked ? '</a>' : '</div>')
     : '';

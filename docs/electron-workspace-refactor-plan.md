@@ -468,6 +468,8 @@ Use retained context for routine rendering. Do not trigger game-side observation
 
 ## 10. Frontend refactor boundaries
 
+> **Superseded (2026-10-08).** The renderer was replaced rather than reused; see the [frontend spec](<frontend-spec.md>) (chunks C1–C10) and the [app guide](<ui.md>). The "preserve or add" guarantees below still hold and are carried by spec §11–§14. The original text is kept for history, and its file links point at files that no longer exist.
+
 Reuse [the current renderer](<../ashad/static/app.js>), [styles](<../ashad/static/style.css>), and [HTML entry](<../ashad/static/index.html>) rather than introducing a new frontend stack.
 
 Refactor by responsibility:

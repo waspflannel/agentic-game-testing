@@ -5,8 +5,8 @@ import { esc, icon, ago } from '../core.js';
 const enc = encodeURIComponent;
 export const SECTIONS = [['account', 'Account'], ['desktops', 'Desktops'], ['steam', 'Steam accounts'], ['limits', 'Limits'], ['maintenance', 'Maintenance']];
 const since = (t, now) => { const a = ago(t, now); return !a ? 'never' : a === 'now' ? 'just now' : `${a} ago`; };
-const errorNote = text => (text ? `<p class="note note-error" role="alert">${icon('alert')}<span>${esc(text)}</span></p>` : '');
-const okNote = text => (text ? `<p class="note" role="status">${icon('check')}<span>${esc(text)}</span></p>` : '');
+const errorNote = text => (text ? `<p class="note note-error" data-announce>${icon('alert')}<span>${esc(text)}</span></p>` : '');
+const okNote = text => (text ? `<p class="note">${icon('check')}<span>${esc(text)}</span></p>` : '');
 const disabled = reason => (reason ? ` aria-disabled="true" title="${esc(reason)}"` : '');
 export const isAbsolutePath = value => /^([A-Za-z]:[\\/]|\\\\[^\\]|\/)/.test(String(value || '').trim());
 
@@ -280,7 +280,7 @@ export function maintenanceRegions(ui) {
   const p = m.preview?.result;
   const valid = previewValid(m, m.groupsText);
   let preview = '';
-  if (m.previewing) preview = `<p class="note" role="status">${icon('loader', 'icon spin')}<span>Previewing…</span></p>`;
+  if (m.previewing) preview = `<p class="note">${icon('loader', 'icon spin')}<span>Previewing…</span></p>`;
   else if (p && !valid) preview = `<p class="note">${icon('info')}<span>The grouping changed since the preview. Preview again before applying.</span></p>`;
   else if (p) {
     const count = obj => Object.keys(obj || {}).length;

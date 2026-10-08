@@ -9,13 +9,13 @@
   --border: #2e2e2e;
   --text: #ececec;
   --text-2: #a8a8a8;
-  --text-3: #8a8a8a;
+  --text-3: #949494;
   --accent: #7aa2ff;
   --accent-ink: #0d1424;
   --live: #4ade80;
   --attention: #fbbf24;
   --danger: #f87171;
-  --muted: #6b6b6b;
+  --muted: #7d7d7d;
 
   --font: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --mono: "Cascadia Mono", Consolas, ui-monospace, monospace;
@@ -90,8 +90,15 @@ body.nav-collapsed .sidebar { margin-left: calc(-1 * var(--sidebar-w)); visibili
 body.nav-collapsed .workspace { border-top-left-radius: 0; }
 .view { flex: 1; overflow: auto; }
 .inspector { width: var(--inspector-w); flex: none; background: var(--bg-sidebar); overflow: auto; padding: 12px; }
-/* ponytail: below 1280 the inspector simply hides; C10 turns it into the §12 drawer. */
-@media (max-width: 1279px) { .inspector { display: none; } }
+/* §12: below 1280 the inspector, and below 960 the sidebar, leave the layout and open as modal drawers. */
+@media (max-width: 1279px) { .layout > .inspector { display: none; } }
+@media (max-width: 959px) { .layout > .sidebar { display: none; } .workspace { border-top-left-radius: 0; } }
+.drawer { position: fixed; inset: var(--titlebar) auto 0 0; width: var(--sidebar-w); max-width: 100vw; height: calc(100vh - var(--titlebar)); max-height: none; margin: 0; padding: 0; border: 0; background: var(--bg-sidebar); color: var(--text); box-shadow: 0 0 48px rgb(0 0 0 / .6); }
+.drawer-right { inset: var(--titlebar) 0 0 auto; width: 360px; }
+.drawer:focus-visible { outline: none; }
+.drawer::backdrop { background: rgb(0 0 0 / .5); }
+.drawer[open] { display: flex; }
+body .drawer > .sidebar, body .drawer > .inspector { flex: 1; width: 100%; margin-left: 0; visibility: visible; }
 
 /* ── Buttons ── */
 .btn {
@@ -400,6 +407,10 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .menu-item:hover { background: var(--surface-3); }
 .menu-item .icon { color: var(--text-2); }
 .menu-item[aria-disabled="true"] { opacity: .45; cursor: not-allowed; }
+.meta-more { display: none; }
+.meta-pop { position-area: bottom span-left; margin-top: 4px; display: none; flex-wrap: wrap; gap: 6px; max-width: min(420px, 90vw); }
+.meta-pop:popover-open { display: flex; }
+@media (max-width: 959px) { .thread-meta { display: none; } .meta-more { display: inline-grid; margin-left: auto; } .thread-goal { max-width: none; flex: 1; } }
 
 .thread-body { max-width: 1280px; margin: 0 auto; padding: 16px 20px 64px; display: grid; gap: 12px; }
 .thread-banner { display: flex; gap: 10px; padding: 10px 12px; border-radius: var(--r-card); background: color-mix(in srgb, var(--attention) 10%, var(--bg)); color: var(--text); }
@@ -555,12 +566,3 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .dialog p { color: var(--text-2); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 
-/* ── Styleguide (temporary, removed in C10) ── */
-.sg-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
-.swatch { border-radius: var(--r-card); overflow: hidden; background: var(--surface); font-size: var(--fs-meta); }
-.swatch span { display: block; height: 44px; border-bottom: 1px solid var(--border); }
-.swatch div { padding: 8px 10px; display: grid; }
-.swatch code { color: var(--text-3); }
-.sg-row { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.sg-type > * + * { margin-top: 8px; }
-.sg-forms { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 16px; }

@@ -104,11 +104,11 @@ export async function registerBuild(form, projectId, kind, { bridge, api, onBusy
 // ── Markup ──────────────────────────────────────────────────────────────────
 const since = (t, now) => { const a = ago(t, now); return a === 'now' ? 'just now' : `${a} ago`; };
 export const elapsed = seconds => { const s = Math.max(0, Math.floor(seconds)); return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
-const note = (kind, text, extra = '') => `<p class="note${kind ? ` note-${kind}` : ''}"${kind === 'error' ? ' role="alert"' : ''}>${icon(kind === 'error' ? 'alert' : 'info')}<span>${text}</span>${extra}</p>`;
+const note = (kind, text, extra = '') => `<p class="note${kind ? ` note-${kind}` : ''}"${kind === 'error' ? ' data-announce' : ''}>${icon(kind === 'error' ? 'alert' : 'info')}<span>${text}</span>${extra}</p>`;
 
 // Desktop readiness checklist, shared with the project overview. record: { loading, result, error, at }.
 export function readinessHTML(record, now) {
-  if (!record || record.loading) return `<p class="note" role="status">${icon('loader', 'icon spin')}<span>Checking this computer. This probes each desktop and can take a few seconds.</span></p>`;
+  if (!record || record.loading) return `<p class="note">${icon('loader', 'icon spin')}<span>Checking this computer. This probes each desktop and can take a few seconds.</span></p>`;
   if (record.error) return note('error', `Readiness check failed: ${esc(record.error)}`);
   const r = record.result;
   const row = (ok, label, detail) => `<li class="check-row">${ok === true ? icon('check', 'icon check-ok') : ok === false ? icon('alert', 'icon check-bad') : icon('info', 'icon check-info')}`
@@ -167,7 +167,7 @@ function mainHTML(data, s, m, now) {
       if (m.project) return `<p>Project <strong>${esc(m.project.name || m.project.id)}</strong> exists. Continue to its build.</p>`;
       const op = s.project;
       const others = (data?.projects || []).map(p => `<li><a href="#/setup?project=${enc(p.id)}" data-key="sp-${esc(p.id)}">${esc(p.name || p.id)}</a></li>`).join('');
-      return (op.status === 'busy' ? `<p class="note" role="status">${icon('loader', 'icon spin')}<span>Creating the project…</span></p>`
+      return (op.status === 'busy' ? `<p class="note">${icon('loader', 'icon spin')}<span>Creating the project…</span></p>`
         : op.error ? note('error', esc(op.error), op.status === 'lost' ? ' <button type="button" class="btn btn-secondary btn-sm" data-action="setup-create" data-key="sp-retry">Retry</button>' : '') : '')
         + (others ? `<div class="setup-aside"><p class="hint">Or add an agent configuration to an existing project:</p><ul class="link-list">${others}</ul></div>` : '');
     }
@@ -181,12 +181,12 @@ function mainHTML(data, s, m, now) {
       return (list ? `<ul class="radio-list" aria-label="Builds in this project">${list}</ul>` : `<p class="lede">No build is registered for this project yet.</p>`)
         + `<div class="btn-row"><button type="button" class="btn btn-secondary" data-action="setup-add-build" data-kind="manifest" data-key="sb-manifest"${chooser.busy ? ' aria-disabled="true"' : ''}>${icon('file-text')}Choose manifest.json…</button>`
         + `<button type="button" class="btn btn-secondary" data-action="setup-add-build" data-kind="folder" data-key="sb-folder"${chooser.busy ? ' aria-disabled="true"' : ''}>${icon('folder-open')}Choose build folder…</button></div>`
-        + (chooser.busy ? `<p class="note" role="status">${icon('loader', 'icon spin')}<span>Registering the build…</span></p>` : chooser.error ? note('error', esc(chooser.error)) : '')
+        + (chooser.busy ? `<p class="note">${icon('loader', 'icon spin')}<span>Registering the build…</span></p>` : chooser.error ? note('error', esc(chooser.error)) : '')
         + catalog;
     }
     case 3: {
       const op = s.prepare;
-      const prep = op.status === 'busy' ? `<p class="note" role="status">${icon('loader', 'icon spin')}<span>Preparing the desktop. This can take several minutes; you can leave this page and it keeps going.</span></p>`
+      const prep = op.status === 'busy' ? `<p class="note">${icon('loader', 'icon spin')}<span>Preparing the desktop. This can take several minutes; you can leave this page and it keeps going.</span></p>`
         : op.error ? note('error', esc(op.error)) : '';
       return `<div class="row-between"><p class="hint">Probes run when this step opens and when you re-check, never in the background.</p>`
         + `<button type="button" class="btn btn-ghost btn-sm" data-action="setup-recheck" data-key="s3-recheck"${m.check?.loading ? ' aria-disabled="true"' : ''}>${icon('refresh')}Re-check</button></div>`
@@ -201,9 +201,9 @@ function mainHTML(data, s, m, now) {
       const model = (data?.model_options || []).find(o => o.id === s.model)?.label || s.model;
       const summary = `<dl class="kv"><dt>Configuration</dt><dd>${esc(s.agentName.trim())}</dd><dt>Model</dt><dd>${esc(model)}</dd><dt>Build</dt><dd>${esc(m.build?.name || s.buildId)}</dd></dl>`;
       const about = `<p class="hint">Tuning reads the build's source and writes a controls manual for the agent. This prepares instructions, not model weights.</p>`;
-      if (op.waiting) return summary + `<p class="note" role="status">${icon('clock')}<span>Another agent is being tuned. Only one tuning runs at a time, so this one starts when that finishes.</span>`
+      if (op.waiting) return summary + `<p class="note">${icon('clock')}<span>Another agent is being tuned. Only one tuning runs at a time, so this one starts when that finishes.</span>`
         + ` <button type="button" class="btn btn-secondary btn-sm" data-action="setup-stop-waiting" data-key="s5-stop">Stop waiting</button></p>`;
-      if (op.status === 'busy') return summary + `<div class="tuning" role="status"><progress class="progress" aria-label="Tuning in progress"></progress>`
+      if (op.status === 'busy') return summary + `<div class="tuning"><progress class="progress" aria-label="Tuning in progress"></progress>`
         + `<p>Tuning… <time data-elapsed="${op.startedAt}">${elapsed(now - op.startedAt)}</time> elapsed. You can leave this page; tuning keeps going.</p></div>` + about;
       return summary + about + (op.error ? note('error', esc(op.error)) : '');
     }

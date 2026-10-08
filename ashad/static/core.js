@@ -80,7 +80,6 @@ export function parseRoute(hash) {
   if (head === 'setup' && n === 1) return { name: 'setup', query };
   if (head === 'usage' && n === 1) return { name: 'usage', query };
   if (head === 'settings' && n <= 2) return { name: 'settings', section: id || 'account', query };
-  if (head === 'styleguide' && n === 1) return { name: 'styleguide', query };
   if (head === 'new' && n === 2) return { name: 'legacy-new', agent: id };
   return { name: 'redirect', to: '#/' };  // Includes legacy #/sessions and #/agents.
 }
@@ -98,6 +97,28 @@ export function ago(seconds, now = Date.now() / 1000) {
   if (s < 3600) return `${Math.floor(s / 60)}m`;
   if (s < 86400) return `${Math.floor(s / 3600)}h`;
   return `${Math.floor(s / 86400)}d`;
+}
+
+// §12 drawers: below a breakpoint a pane moves into a modal <dialog> (focus trap, Esc) and goes back to the layout
+// when the dialog closes, returning focus to its toggle. place(pane) re-inserts it; toggle() finds the toggle at close
+// time, because re-rendering on close may have replaced the element that opened the drawer.
+export function createDrawer(dialog, pane, place) {
+  let opener = null;
+  dialog.addEventListener('close', () => {
+    place(pane);
+    opener?.()?.focus?.();
+    opener = null;
+  });
+  return {
+    get open() { return dialog.open; },
+    show(toggle) {
+      if (dialog.open) return;
+      opener = toggle;
+      dialog.append(pane);
+      dialog.showModal();
+    },
+    close() { if (dialog.open) dialog.close(); },
+  };
 }
 
 // Each view render takes a ticket; a response whose ticket is no longer current is dropped.

@@ -46,8 +46,8 @@ export function usageRegions(usage, ui, modelLabels, now = Date.now() / 1000) {
   const refresh = `<span class="hint">${usage?.at ? `Fetched ${ago(usage.at, now) === 'now' ? 'just now' : `${ago(usage.at, now)} ago`}` : ''}</span>`
     + `<button type="button" class="btn btn-secondary" data-action="usage-refresh" data-key="u-refresh"${usage?.loading ? ' aria-busy="true" aria-disabled="true"' : ''}>${icon(usage?.loading ? 'loader' : 'refresh', usage?.loading ? 'icon spin' : 'icon')}Refresh</button>`;
   if (!usage?.rows) {
-    const body = usage?.error ? `<p class="note note-error" role="alert">${icon('alert')}<span>Usage is unavailable: ${esc(usage.error)}. Refresh to try again.</span></p>`
-      : `<p class="note" role="status">${icon('loader', 'icon spin')}<span>Loading usage…</span></p>`;
+    const body = usage?.error ? `<p class="note note-error" data-announce>${icon('alert')}<span>Usage is unavailable: ${esc(usage.error)}. Refresh to try again.</span></p>`
+      : `<p class="note">${icon('loader', 'icon spin')}<span>Loading usage…</span></p>`;
     return { refresh, summary: summaryHTML(null), controls: '', table: body };
   }
   const m = usageModel(usage.rows, ui, now);

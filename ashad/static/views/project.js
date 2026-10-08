@@ -42,7 +42,7 @@ export const overviewSkeleton = () => `<div class="page overview"><div class="pa
   + `<section class="card" aria-labelledby="ov-ready"><h2 id="ov-ready" class="card-title">Desktop readiness</h2><div data-region="readiness"></div></section>`
   + `<section class="card" aria-labelledby="ov-recent"><h2 id="ov-recent" class="card-title">Recent instances</h2><div data-region="recent"></div></section></div></div>`;
 
-const note = (kind, text) => `<p class="note${kind ? ` note-${kind}` : ''}"${kind === 'error' ? ' role="alert"' : ' role="status"'}>${icon(kind === 'error' ? 'alert' : kind === 'busy' ? 'loader' : 'info', kind === 'busy' ? 'icon spin' : 'icon')}<span>${esc(text)}</span></p>`;
+const note = (kind, text) => `<p class="note${kind ? ` note-${kind}` : ''}"${kind === 'error' ? ' data-announce' : ''}>${icon(kind === 'error' ? 'alert' : kind === 'busy' ? 'loader' : 'info', kind === 'busy' ? 'icon spin' : 'icon')}<span>${esc(text)}</span></p>`;
 
 export function overviewRegions(m, ov, now = Date.now() / 1000) {
   const pid = ov.projectId;

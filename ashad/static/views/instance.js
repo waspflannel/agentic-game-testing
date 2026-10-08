@@ -34,6 +34,9 @@ export function instanceState(run, owner) {
   }
 }
 
+// Announced once per change of the §9 state (Running → Paused, Ended…), never on a thread's first render or a poll.
+export const stateAnnouncement = (previousKey, status) => (previousKey && previousKey !== status.key ? `Instance ${status.badge.label.toLowerCase()}.` : null);
+
 // ── Camera ──────────────────────────────────────────────────────────────────
 // The live URL is a pure function of (run, player, epoch); null means no feed may be requested.
 export function cameraTarget(run, playerId, hidden) {
@@ -150,10 +153,12 @@ export function threadRegions(run, ctx) {
     + `<div id="goal-full" class="popover goal-pop" popover>${esc(goal)}</div>`
     + `<span class="badge badge-${status.badge.tone}"><span class="dot dot-${status.badge.tone}" aria-hidden="true"></span>${esc(status.badge.label)}</span>`
     + `<div class="thread-meta">${chips}</div>`
+    + (chips ? `<button type="button" class="icon-btn meta-more" popovertarget="meta-pop" data-key="t-meta" aria-label="Instance details" title="Instance details">${icon('ellipsis')}</button>`
+      + `<div id="meta-pop" class="popover menu meta-pop" popover>${chips}</div>` : '')
     + `<button type="button" class="icon-btn" data-action="toggle-inspector" data-key="t-inspector" aria-controls="inspector" aria-expanded="${ui.inspectorOpen}" aria-label="Toggle inspector" title="Toggle inspector (Ctrl+I)">${icon('panel-right')}</button>`;
 
   const banner = status.banner
-    ? `<div class="thread-banner" role="status">${icon('alert')}<div><strong>Needs review.</strong> ${esc(run.pause?.reason || 'The monitor paused the bot. The reason was not recorded.')}`
+    ? `<div class="thread-banner">${icon('alert')}<div><strong>Needs review.</strong> ${esc(run.pause?.reason || 'The monitor paused the bot. The reason was not recorded.')}`
       + `${run.pause?.recovery ? `<p>${esc(run.pause.recovery)}</p>` : ''}</div></div>`
     : '';
 
@@ -181,7 +186,7 @@ function overlayHTML(run, status, cameraStatus) {
   else if (cameraStatus === 'connecting') pills.push(pill('pending', '', 'Connecting camera…'));
   else if (cameraStatus === 'offline') pills.push(pill('muted', '', 'Camera offline'));
   const waiting = cameraStatus === 'offline' ? `<div class="camera-wait">${icon('monitor')}<span>${status.key === 'starting' ? 'Waiting for the desktop to start…' : 'No camera feed'}</span></div>` : '';
-  return `<div class="camera-pills" role="status">${pills.join('')}</div>${waiting}`;
+  return `<div class="camera-pills">${pills.join('')}</div>${waiting}`;
 }
 
 function button(action, pending, extra = '') {
@@ -214,7 +219,7 @@ function controlsHTML(status, pending, error) {
     : '';
   const note = status.note ? `<span class="control-note">${icon('loader', 'icon spin')}${esc(status.note)}</span>` : '';
   const bar = `<div class="control-bar" role="toolbar" aria-label="Instance controls">${left}${note}<span class="control-right">${menu}${stop}</span></div>`;
-  return bar + (error ? `<p class="note note-error control-error" role="alert">${icon('alert')}<span>${esc(error)} Try again to retry the same command.</span></p>` : '');
+  return bar + (error ? `<p class="note note-error control-error" data-announce>${icon('alert')}<span>${esc(error)} Try again to retry the same command.</span></p>` : '');
 }
 
 function instructionHTML(ui, pending) {

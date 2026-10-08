@@ -1,5 +1,6 @@
 """Reusable source-grounded controls manuals, pinned to one game build."""
 import asyncio
+import contextlib
 import hashlib
 import json
 from pathlib import Path
@@ -86,6 +87,15 @@ class AgentProfiles:
     def __init__(self, store, ai):
         self.store, self.ai = store, ai
         self.lock = asyncio.Lock()
+        self.progress = None  # The running tuning's stage and batch, for GET /api/agents/tuning/<id>.
+
+    @contextlib.asynccontextmanager
+    async def _tracking(self):
+        self.progress = {"stage": "reading_source", "batch": 0, "batch_count": 0, "started_at": time.time()}
+        try:
+            yield self.progress
+        finally:
+            self.progress = None
 
     async def tune(self, build_id, model=MODEL, *, request_id=None, name=None, project_id=None):
         if request_id is not None:
@@ -102,7 +112,7 @@ class AgentProfiles:
             return self.store.require("agents", previous["agent_id"])
         if self.lock.locked():
             raise ValueError("An agent is already being tuned. Wait for it to finish before tuning another.")
-        async with self.lock:
+        async with self.lock, self._tracking() as progress:
             assigned_project = Projects(self.store).project_for_build(build_id, project_id)
             build = self.store.require("builds", build_id)
             evidence, inventory_hash = await asyncio.to_thread(source_evidence, build)
@@ -118,11 +128,13 @@ class AgentProfiles:
             if len(batches) > 12:
                 raise ValueError("Relevant source exceeds 12 bounded tuning batches. Narrow the build source before tuning; no partial agent was saved.")
             evidence["coverage"]["source_batches"] = len(batches)
+            progress.update(stage="instructions" if len(batches) == 1 else "source_notes", batch_count=len(batches) if len(batches) > 1 else 0)
             if len(batches) == 1:
                 instructions = await self.ai.tune_agent(evidence, model=model)
             else:
                 notes = []
                 for index, batch in enumerate(batches):
+                    progress["batch"] = index + 1
                     batch_evidence = {"build_id": build_id, "source_revision": build["source_revision"],
                         "batch": index + 1, "batch_count": len(batches), "sources": batch}
                     notes_key = hashlib.sha256(json.dumps({"evidence": batch_evidence, "model": model,
@@ -134,6 +146,7 @@ class AgentProfiles:
                         self.store.put("tuning_notes", {"id": notes_key, "build_id": build_id, "model": model,
                             "prompt_version": TUNING_PROMPT_VERSION, "instructions": note})
                     notes.append(note)
+                progress["stage"] = "instructions"
                 instructions = await self.ai.tune_agent({"build_id": build_id, "source_revision": build["source_revision"],
                     "source_notes": notes, "coverage": evidence["coverage"]}, model=model)
             profile = {"id": uid("agent_"), "name": name or f"{build.get('name', build_id)} agent",

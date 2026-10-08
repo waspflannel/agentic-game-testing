@@ -76,7 +76,7 @@ export function composerModel(data, projectId, draft, readiness) {
   return {
     project, agents, agent, build, steam, desktop, blockers,
     projects: data?.projects || [],
-    agentOptions: agents.map(a => ({ id: a.id, label: `${a.name || a.id} · ${modelLabel(a.model)}` })),
+    agentOptions: agents.map(a => ({ id: a.id, label: a.name || a.id, title: `${a.name || a.id} · ${modelLabel(a.model)}` })),
     summary: agent ? `${modelLabel(agent.model)} · build ${build?.name || agent.build_id} · Fresh world` : '',
     canStart: !blockers.length && !draft.busy,
   };
@@ -111,12 +111,12 @@ export function composerRegions(m, draft) {
     : `<span class="chip chip-${m.desktop.tone}">${chipDot(m.desktop.tone)}<span class="chip-text">${esc(m.desktop.label)}</span></span>`;
   const recheck = `<button type="button" class="icon-btn icon-btn-sm" data-action="composer-recheck" data-key="c-recheck" aria-label="Re-check readiness" title="Re-check readiness">${icon('refresh')}</button>`;
 
-  const agentChip = `<label class="chip chip-select">${icon('bot')}<span class="sr-only">Agent</span>`
+  const agentChip = `<label class="chip chip-select" title="${esc(m.agentOptions.find(o => o.id === m.agent.id)?.title || '')}">${icon('bot')}<span class="sr-only">Agent</span>`
     + `<select data-field="agent" data-key="c-agent" aria-label="Agent configuration">${m.agentOptions.map(o => `<option value="${esc(o.id)}"${o.id === m.agent.id ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>`;
-  const transportChip = `<label class="chip chip-select">${icon('network')}<span class="sr-only">Transport</span>`
+  const transportChip = `<label class="chip chip-select"${m.steam.enabled ? '' : ` title="${esc(m.steam.reason)}"`}>${icon('network')}<span class="sr-only">Transport</span>`
     + `<select data-field="transport" data-key="c-transport" aria-label="Transport" aria-describedby="composer-steam-note">`
     + `<option value="enet"${draft.transport === 'enet' ? ' selected' : ''}>ENet</option>`
-    + `<option value="steam"${draft.transport === 'steam' ? ' selected' : ''}${m.steam.enabled ? '' : ' disabled'}>Steam</option></select></label>`;
+    + `<option value="steam"${draft.transport === 'steam' ? ' selected' : ''}${m.steam.enabled ? '' : ' disabled'}>Steam${m.steam.enabled ? '' : ' (unavailable)'}</option></select></label>`;
   const start = `<button type="submit" class="btn btn-primary btn-round" data-key="c-start" aria-label="Start instance" title="Start instance (Ctrl+Enter)"`
     + `${m.canStart ? '' : ' aria-disabled="true"'}${draft.busy ? ' aria-busy="true"' : ''}>${icon(draft.busy ? 'loader' : 'arrow-up', draft.busy ? 'icon spin' : 'icon')}</button>`;
 
@@ -125,7 +125,7 @@ export function composerRegions(m, draft) {
   const notes = [];
   if (draft.busy) notes.push(`<p class="note">${icon('loader', 'icon spin')}Starting… This can take a minute while the desktop is checked.</p>`);
   else if (res) notes.push(resultHTML(res));
-  if (!m.steam.enabled) notes.push(`<p class="note" id="composer-steam-note">${esc(m.steam.reason)}.</p>`);
+  if (!m.steam.enabled) notes.push(draft.transport === 'steam' ? `<p class="note" id="composer-steam-note">${esc(m.steam.reason)}.</p>` : `<span class="sr-only" id="composer-steam-note">${esc(m.steam.reason)}.</span>`);
   if (!draft.busy && m.blockers.length) notes.push(`<div class="note note-blocked"><p>Start is unavailable:</p><ul>${m.blockers.map(b => `<li>${esc(b)}</li>`).join('')}</ul></div>`);
   notes.push(`<p class="note note-hint"><span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> to start</span></p>`);
 
@@ -133,7 +133,7 @@ export function composerRegions(m, draft) {
     hero: `What should the agent do in <strong>${name}</strong>?`,
     chips: projectChip + desktopChip + recheck,
     'goal-error': goalError,
-    bar: `<div class="composer-bar-left">${agentChip}${transportChip}</div><div class="composer-bar-right"><span class="composer-summary">${esc(m.summary)}</span>${start}</div>`,
+    bar: `<div class="composer-bar-left">${agentChip}${transportChip}</div><div class="composer-bar-right"><span class="composer-summary" title="${esc(m.summary)}">${esc(m.summary)}</span>${start}</div>`,
     status: notes.join(''),
   };
 }

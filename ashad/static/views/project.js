@@ -1,6 +1,6 @@
 // Project overview (spec §8.3). Model and markup are pure; app.js owns the DOM, the chooser and I/O.
 import { esc, icon, href, ago, newOp, runGoal, runTime, runStatus } from '../core.js';
-import { readinessHTML, projectBuilds } from './setup.js';
+import { readinessHTML, projectBuilds, tuningProgressHTML } from './setup.js';
 
 const enc = encodeURIComponent;
 const RECENT = 10;
@@ -66,7 +66,7 @@ export function overviewRegions(m, ov, now = Date.now() / 1000) {
     const op = ov.retunes.get(a.id);
     const busy = op && (op.status === 'busy' || op.waiting);
     const status = !op ? '' : op.waiting ? note('', 'Another agent is being tuned; this retune starts when it finishes.')
-      : op.status === 'busy' ? note('busy', 'Retuning… a new configuration appears here when it finishes.')
+      : op.status === 'busy' ? `<div class="tuning">${tuningProgressHTML(op, now)}</div>`
       : op.status === 'done' ? note('', `Retuned as ${op.value?.name || op.value?.id || 'a new configuration'}.`) : op.error ? note('error', op.error) : '';
     return `<li class="list-row"><div class="list-main"><span class="list-title">${esc(a.name || a.id)}</span>`
       + `<span class="check-detail">${esc(m.modelLabel(a.model))} · build ${esc(m.buildName(a.build_id))} · tuned ${a.created_at ? esc(ago(a.created_at, now) === 'now' ? 'just now' : `${ago(a.created_at, now)} ago`) : 'at an unrecorded time'}</span>${status}</div>`

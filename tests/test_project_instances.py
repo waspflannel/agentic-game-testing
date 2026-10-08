@@ -260,6 +260,19 @@ def test_request_reconciliation_apis_return_saved_outputs_without_work(tmp_path)
         app.state.tuning_task = object()
         app.state.tuning_request_id = "active-request"
         assert client.get("/api/agents/tuning/active-request").json()["status"] == "in_progress"
+        # Progress: stage and batch from the running tune, model calls since it started from usage rows.
+        app.state.profiles.progress = {"stage": "source_notes", "batch": 3, "batch_count": 8, "started_at": 1000.0}
+        for i, status in enumerate(["completed", "invalid_tuning", "completed"]):
+            app.state.store.put("usage", {"id": f"u{i}", "purpose": "tuning", "status": status, "timestamp": 1001.0 + i})
+        app.state.store.put("usage", {"id": "old", "purpose": "tuning", "status": "completed", "timestamp": 999.0})
+        app.state.store.put("usage", {"id": "play", "purpose": "player", "status": "completed", "timestamp": 1005.0})
+        progress = client.get("/api/agents/tuning/active-request").json()["progress"]
+        assert progress == {"stage": "source_notes", "batch": 3, "batch_count": 8, "started_at": 1000.0,
+                            "model_calls": 3, "rejected_replies": 1, "last_call_at": 1003.0}
+        assert "progress" not in client.get("/api/agents/tuning/missing").json()
+        app.state.profiles.progress = None
+        for record in ("u0", "u1", "u2", "old", "play"):
+            app.state.store.delete("usage", record)  # The rest of this test asserts that no work was recorded.
         saved = client.post("/api/agents/tune", json={"build_id": "missing", "request_id": "tune-saved"}, headers={"X-ASHAD-Request": "1"})
         assert saved.status_code == 200 and saved.json()["id"] == "saved"
         assert app.state.tuning_task is not None  # Never clear the other live tuning task.

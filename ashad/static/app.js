@@ -365,10 +365,25 @@ function onSetupAction(action, target, event) {
   else if (action === 'setup-stop-waiting') { s.tune.stopWaiting = true; renderView(); }
 }
 
+// While a tuning runs, its progress is read every 3s from the tuning recovery route: no probe, no inference.
+async function watchTuning(op) {
+  while (op.status === 'busy' || op.waiting) {
+    if (op.status === 'busy' && op.requestId && !document.hidden) {
+      try {
+        const r = await api(`/api/agents/tuning/${enc(op.requestId)}`);
+        if (r?.status === 'in_progress') op.progress = r.progress || null;
+      } catch { /* The next tick retries; the tuning itself is unaffected. */ }
+      renderView();
+    }
+    await sleep(3000);
+  }
+}
+
 async function startTuning(s) {
   if (s.tune.status === 'busy' || s.tune.waiting || !setupModel(state.data, s).done[3]) return;
   const payload = { build_id: s.buildId, model: s.model, project_id: s.projectId, name: s.agentName.trim() };
   const pending = tuneAgent(s.tune, payload, api, ms => { renderView(); return sleep(ms); });
+  watchTuning(s.tune);
   renderView();
   syncDirty();
   await pending;
@@ -671,6 +686,7 @@ async function retune(ov, agent) {
   const op = newOp();  // An explicit retune is a new request with its own ID.
   ov.retunes.set(agent.id, op);
   const pending = tuneAgent(op, { build_id: agent.build_id, model: agent.model, project_id: ov.projectId, name: agent.name || agent.id }, api, ms => { renderView(); return sleep(ms); });
+  watchTuning(op);
   renderView();
   await pending;
   if (op.status === 'done') {
@@ -771,9 +787,24 @@ function renderInspector(run) {
 }
 
 // ── Activity timeline (C5) ──────────────────────────────────────────────────
+// Newest first. "At the latest" means the top of the list is in view below the sticky header and control bar.
 const AUTO_SCROLL_PX = 80;
-const nearBottom = () => { const v = $('#view'); return v.scrollHeight - v.scrollTop - v.clientHeight < AUTO_SCROLL_PX; };
-const scrollToBottom = () => { const v = $('#view'); v.scrollTop = v.scrollHeight; };
+const latestInView = () => {
+  const list = timelineList();
+  const covered = $('#view .control-wrap')?.getBoundingClientRect().bottom ?? $('#view').getBoundingClientRect().top;
+  return !list || list.getBoundingClientRect().top >= covered - AUTO_SCROLL_PX;
+};
+const scrollToLatest = () => $('#view .activity')?.scrollIntoView({ block: 'start' });
+
+// New cards go in above; a reader further down keeps exactly what they were looking at.
+function keepReadingPosition(render) {
+  const view = $('#view');
+  const covered = $('#view .control-wrap')?.getBoundingClientRect().bottom ?? view.getBoundingClientRect().top;
+  const anchor = [...(timelineList()?.children || [])].find(li => li.getBoundingClientRect().bottom > covered);
+  const before = anchor?.getBoundingClientRect().top;
+  render();
+  if (anchor?.isConnected) view.scrollTop += anchor.getBoundingClientRect().top - before;
+}
 const timelineList = () => $('#view [data-timeline]');
 
 function renderTimeline(view, run) {
@@ -828,13 +859,13 @@ async function pollTimeline(runId) {
   let page;
   try { page = await api(`/api/runs/${enc(runId)}/events?after=${after}&limit=${MAX_EVENTS}${searchQuery(tl)}`); } catch { return; }  // The next run poll retries.
   if (!current() || state.thread.tl !== tl) return;
-  const atBottom = nearBottom();
+  const atLatest = latestInView();
   const added = applyLive(tl, token, page, after);
   if (added === 'reload') { loadPage('latest'); return; }
   if (!added) return;
-  if (!atBottom) tl.unseen += added;
-  renderView();
-  if (atBottom) scrollToBottom();
+  if (atLatest) return renderView();
+  tl.unseen += added;
+  keepReadingPosition(renderView);
 }
 
 const findCard = seq => [...(timelineList()?.children || [])].find(li => li.card?.events.some(e => e.seq === seq));
@@ -1130,10 +1161,10 @@ document.addEventListener('click', async event => {
   } else if (action === 'tl-older') {
     if (target.getAttribute('aria-disabled') !== 'true') loadPage('history', state.thread.tl.events[0]?.seq);
   } else if (action === 'tl-latest') {
-    if (await loadPage('latest')) scrollToBottom();
-  } else if (action === 'tl-to-bottom') {
+    if (await loadPage('latest')) scrollToLatest();
+  } else if (action === 'tl-to-latest') {
     state.thread.tl.unseen = 0;
-    scrollToBottom();
+    scrollToLatest();
     renderView();
   } else if (action === 'tl-jump') {
     jumpTo(Number(target.dataset.seq));
@@ -1281,7 +1312,7 @@ document.addEventListener('toggle', event => {
 }, true);
 $('#view').addEventListener('scroll', () => {
   const tl = state.thread.tl;
-  if (state.route.name === 'instance' && tl?.unseen && nearBottom()) { tl.unseen = 0; renderView(); }
+  if (state.route.name === 'instance' && tl?.unseen && latestInView()) { tl.unseen = 0; renderView(); }
 }, { passive: true });
 // Ages tick locally (observation age, Fresh to Stale, card times); nothing is fetched.
 setInterval(() => {

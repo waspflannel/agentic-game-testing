@@ -109,7 +109,7 @@ test('Steam never enables from stale account rows or App ID 480', async () => {
     assert.equal(m.steam.enabled, false);
     assert.equal(m.canStart, false);
     assert.match(m.blockers.join(' '), /No ENet fallback/);
-    assert.match(composerRegions(m, draft).bar, /<option value="steam" selected disabled>Steam<\/option>/);
+    assert.match(composerRegions(m, draft).bar, /<option value="steam" selected disabled>Steam \(unavailable\)<\/option>/);
   }
   const fresh = composerModel(stale, 'p', draft, { key: 'p|b|a', result: { ...ready, steam: { ready: true } } });
   assert.equal(fresh.steam.enabled, true, 'only a fresh probe for this build enables Steam');
@@ -125,6 +125,23 @@ test('disabled Start always says why', async () => {
   assert.match(reasons(data({ instance_slot: { available: false, owners: [{ run_id: 'r' }], blocked_reason: 'One instance already owns the global slot' } })), /already owns the global slot/);
   assert.match(reasons(data(), { key: 'p|b|a', result: { ...ready, ready: false, environments: [{ ready: false, reason: 'Docker is not running' }] } }), /Desktop not ready: Docker is not running/);
   assert.match(reasons(data(), { key: 'p|b|a', loading: true }), /Checking desktop readiness/);
+});
+
+test('long agent and build names stay on one composer row', async () => {
+  const { composerModel, composerRegions, newDraft } = await load();
+  const long = 'Agronauts DEMO - Decisions and corrected input scaling';
+  const d = data({ builds: [{ id: 'b', name: long, project_id: 'p' }], agents: [{ ...data().agents[0], name: `${long} agent` }] });
+  const draft = { ...newDraft(), agentId: 'a' };
+  const r = composerRegions(composerModel(d, 'p', draft, { key: 'p|b|a', result: ready }), draft);
+  assert.match(r.bar, /<option value="a" selected>Agronauts DEMO - Decisions and corrected input scaling agent<\/option>/, 'the chip shows the name; the model is in the summary');
+  assert.match(r.bar, /<label class="chip chip-select" title="Agronauts DEMO[^"]* agent · GPT-6 Astra">/);
+  assert.match(r.bar, /<span class="composer-summary" title="GPT-6 Astra · build Agronauts DEMO[^"]*· Fresh world">/);
+  assert.doesNotMatch(r.status, /class="note"[^>]*id="composer-steam-note"/, 'with ENet chosen, the Steam reason is not shown as a note');
+  assert.match(r.status, /<span class="sr-only" id="composer-steam-note">/, 'but stays available to assistive tech');
+  const css = require('node:fs').readFileSync(require('node:path').join(__dirname, '../ashad/static/app.css'), 'utf8');
+  const bar = css.match(/\.composer-bar \{[^}]*\}/)[0];
+  assert.doesNotMatch(bar, /flex-wrap: wrap/, 'the bar never wraps; the summary ellipsizes instead');
+  assert.match(css, /\.composer-summary \{ min-width: 0;[^}]*text-overflow: ellipsis/);
 });
 
 test('composer and empty workspace escape project names, agents and goals', async () => {

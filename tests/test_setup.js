@@ -31,7 +31,7 @@ test('re-entry jumps to the first incomplete step, and never past it', async () 
   assert.equal(setupModel(data(), s).step, 3, 'readiness is re-probed on entry, so the desktop step comes first');
   s.readiness = readyProbe;
   applyDefaults(data(), s);
-  assert.equal(s.agentName, '0.3.1 agent');
+  assert.equal(s.agentName, 'Agronauts agent', 'named after the project, not the long build name');
   assert.equal(setupModel(data(), s).step, 5, 'step 4 is complete once signed in with a name and model');
   assert.equal(setupModel(data({ ai: { status: 'configuration_required' } }), s).first, 4, 'signed out blocks at step 4');
   s.step = 6;
@@ -142,6 +142,25 @@ test('a lost reply locks the payload; a refusal frees the ID for corrected input
   await submitOnce(op, { name: 'C' }, send({ name: 'C' }));
   assert.equal(op.status, 'done');
   assert.deepEqual(sent.map(s => s[0]), Array(3).fill(op.requestId));
+});
+
+test('tuning shows real progress: batch, step count, replies and a stall warning', async () => {
+  const { tuningProgressHTML, STALL_SECONDS } = await load();
+  const { newOp } = await core();
+  const op = Object.assign(newOp(), { status: 'busy', startedAt: 1000 });
+  assert.match(tuningProgressHTML(op, 1010), /<progress class="progress" aria-label="Tuning in progress"><\/progress><p>Starting…/, 'no progress yet: indeterminate');
+  op.progress = { stage: 'source_notes', batch: 6, batch_count: 8, started_at: 1000, model_calls: 10, rejected_replies: 4, last_call_at: 1550 };
+  let html = tuningProgressHTML(op, 1580);
+  assert.match(html, /<progress class="progress" max="9" value="5" aria-label="Tuning progress, step 6 of 9">/);
+  assert.match(html, /Writing source notes: batch 6 of 8 · <time data-elapsed="1000">9m 40s<\/time> elapsed/);
+  assert.match(html, /10 model replies \(4 rejected and retried\) · last reply <time data-elapsed="1550">0m 30s<\/time> ago/);
+  assert.doesNotMatch(html, /No model reply/);
+  html = tuningProgressHTML(op, 1550 + STALL_SECONDS + 60);
+  assert.match(html, /No model reply for 4 minutes/, 'a long silence is called out');
+  op.progress = { ...op.progress, stage: 'instructions' };
+  assert.match(tuningProgressHTML(op, 1600), /max="9" value="8"[\s\S]*Writing the final instructions from 8 batches of notes/);
+  op.progress = { stage: 'instructions', batch: 0, batch_count: 0, started_at: 1000, model_calls: 0, rejected_replies: 0, last_call_at: null };
+  assert.match(tuningProgressHTML(op, 1030), /max="1" value="0"[\s\S]*0 model replies · started <time data-elapsed="1000">0m 30s<\/time> ago/);
 });
 
 test('setup markup escapes names, build labels and instructions', async () => {

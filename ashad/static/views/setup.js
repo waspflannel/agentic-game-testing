@@ -17,7 +17,8 @@ export const projectBuilds = (data, projectId) => (data?.builds || []).filter(b 
 export function applyDefaults(data, s) {
   const build = projectBuilds(data, s.projectId).find(b => b.id === s.buildId);
   if (s.edited || !build) return;
-  s.agentName ||= `${build.name || build.id} agent`;
+  const project = (data?.projects || []).find(p => p.id === s.projectId);
+  s.agentName ||= `${project?.name || build.name || build.id} agent`;
   const models = (data?.model_options || []).map(m => m.id);
   s.model ||= models.includes(data?.ai?.model) ? data.ai.model : models[0] || '';
 }
@@ -99,6 +100,27 @@ export async function registerBuild(form, projectId, kind, { bridge, api, onBusy
     form.chooser = { busy: false, error: '' };
   } catch (error) { form.chooser = { busy: false, error: error.message }; }
   return build;
+}
+
+// Live tuning progress from GET /api/agents/tuning/<id> (op.progress), shared with the overview's Retune row.
+// Batches and the final call are counted steps; a long silence is called out so a stall doesn't look like work.
+export const STALL_SECONDS = 180;
+export function tuningProgressHTML(op, now) {
+  const p = op.progress;
+  const steps = p?.batch_count ? p.batch_count + 1 : p?.stage === 'instructions' ? 1 : 0;
+  const done = p?.stage === 'source_notes' ? p.batch - 1 : p?.stage === 'instructions' ? p.batch_count || 0 : 0;
+  const stage = !p ? 'Starting…' : p.stage === 'reading_source' ? 'Reading the build source'
+    : p.stage === 'source_notes' ? `Writing source notes: batch ${p.batch} of ${p.batch_count}`
+      : `Writing the final instructions${p.batch_count ? ` from ${p.batch_count} batches of notes` : ''}`;
+  const bar = steps ? `<progress class="progress" max="${steps}" value="${done}" aria-label="Tuning progress, step ${done + 1} of ${steps}"></progress>`
+    : `<progress class="progress" aria-label="Tuning in progress"></progress>`;
+  const started = op.startedAt || p?.started_at || now;
+  const lastAt = p?.last_call_at || p?.started_at;
+  const calls = !p ? '' : `${p.model_calls} model ${p.model_calls === 1 ? 'reply' : 'replies'}${p.rejected_replies ? ` (${p.rejected_replies} rejected and retried)` : ''}`
+    + ` · ${p.last_call_at ? 'last reply' : 'started'} <time data-elapsed="${lastAt}">${elapsed(now - lastAt)}</time> ago`;
+  const stalled = p && now - lastAt > STALL_SECONDS
+    ? `<p class="note note-attention">${icon('clock')}<span>No model reply for ${Math.floor((now - lastAt) / 60)} minutes. A call usually takes under 2 minutes; ChatGPT may be slow or rate limited. Tuning is still running.</span></p>` : '';
+  return `${bar}<p>${esc(stage)} · <time data-elapsed="${started}">${elapsed(now - started)}</time> elapsed</p>${calls ? `<p class="hint">${calls}</p>` : ''}${stalled}`;
 }
 
 // ── Markup ──────────────────────────────────────────────────────────────────
@@ -203,8 +225,7 @@ function mainHTML(data, s, m, now) {
       const about = `<p class="hint">Tuning reads the build's source and writes a controls manual for the agent. This prepares instructions, not model weights.</p>`;
       if (op.waiting) return summary + `<p class="note">${icon('clock')}<span>Another agent is being tuned. Only one tuning runs at a time, so this one starts when that finishes.</span>`
         + ` <button type="button" class="btn btn-secondary btn-sm" data-action="setup-stop-waiting" data-key="s5-stop">Stop waiting</button></p>`;
-      if (op.status === 'busy') return summary + `<div class="tuning"><progress class="progress" aria-label="Tuning in progress"></progress>`
-        + `<p>Tuning… <time data-elapsed="${op.startedAt}">${elapsed(now - op.startedAt)}</time> elapsed. You can leave this page; tuning keeps going.</p></div>` + about;
+      if (op.status === 'busy') return summary + `<div class="tuning">${tuningProgressHTML(op, now)}<p class="hint">You can leave this page; tuning keeps going.</p></div>` + about;
       return summary + about + (op.error ? note('error', esc(op.error)) : '');
     }
     case 6: {

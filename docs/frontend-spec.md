@@ -198,7 +198,7 @@ A centred column (max 720px) with a horizontal stepper on top (numbered, current
 | 2 | **Build:** choose manifest or folder, show catalog summary | `chooseBuild`, `POST /api/builds`, `GET /api/builds/<id>/catalog` | Build registered and validated |
 | 3 | **Compatibility and desktop:** readiness checklist, Prepare desktop | `GET …/readiness`, `POST …/environments/prepare` | `build_validation.ready` and one environment ready |
 | 4 | **Agent and model:** configuration name, model `<select>` from `model_options`, sign-in gate with a link to Settings › Account | none | Valid name, `ai.status === 'ready'` |
-| 5 | **Tuning:** indeterminate progress, elapsed time, "This prepares instructions, not model weights" | `POST /api/agents/tune`; recovery via `GET /api/agents/tuning/<request_id>` | `status: completed` |
+| 5 | **Tuning:** progress by batch from the tuning route (§15 item 4), elapsed time, "This prepares instructions, not model weights" | `POST /api/agents/tune`; recovery via `GET /api/agents/tuning/<request_id>` | `status: completed` |
 | 6 | **Instruction review:** the saved instructions in a scrollable mono panel (read-only), with model, build and timestamp | none | **Start an instance** goes to the composer with `?agent=` |
 
 - Setup is resumable. Re-entering `#/setup?project=<id>` jumps to the first incomplete step. Steps 1–2 are complete from data (project exists, project has a build). Desktop readiness is a probe, so re-entry re-probes and lands on step 3 at the earliest; a project that already has agents still lands there, because re-entry means adding another configuration. `?step=` is honoured on entry and capped at the first incomplete step. A finished setup (tuned agent) is dropped when you leave it, so the next visit starts a new configuration.
@@ -321,11 +321,12 @@ A transcript-style list, newest at the bottom, like a harness conversation. Each
 
 - Cards without attribution are labelled "Instance activity".
 - **Filter chips** above the list: All · Actions · Plan · Problems · Model, plus a search box (server `search=`).
+- **Order:** newest first (changed 2026-10-08, §15 item 6). "Return to latest" and "N newer" sit above the list; "Load older activity" sits below it.
 - **Window:** start from `GET /api/runs/<id>` (newest 200, render the latest 100).
   - "Load older activity" replaces the window using `before=<first seq>`.
   - "Return to latest" restores it. "N newer" shows when you're away from the latest records.
   - At most 200 cards are rendered, ever.
-- **Live edge:** poll `events?after=<next>`. Auto-scroll only if the user is within 80px of the bottom. Otherwise show a floating "↓ N new" pill. Changing route or run resets scroll.
+- **Live edge:** poll `events?after=<next>`. New cards go in at the top. If the top of the list is in view, they simply appear. Otherwise the reader's position is kept and an "↑ N new" pill appears. Changing route or run resets scroll.
 - **Selecting a card** (click, or Enter on a focused card) highlights it and drives the inspector's "At decision" toggle.
 
 ## 11. Data and polling
@@ -380,6 +381,33 @@ A transcript-style list, newest at the bottom, like a harness conversation. Each
 1. **`terminate`:** when should the UI offer force-terminate over Stop? Proposal: only in Stopping after the run's deadline passes, behind a second confirm. Hidden until the backend semantics are confirmed.
 2. **Light theme:** deferred. The tokens make it a later CSS-only addition.
 3. **Multi-player runs:** v1 assumes one player per instance (current backend limit). The switcher in §8.5 is the only provision.
+4. **Tuning progress (raised and fixed 2026-10-08):** step 5 shows only an indeterminate bar and elapsed time, so a long tuning looks the same whether it is working or stuck. A real `agronauts-decisions` tune took 15–20 minutes: 8 source batches plus a final call, each about 45–75s on `gpt-6-astra`, and `invalid_tuning` replies retry a batch. Show real progress: batches done out of total, the current stage (source notes or final instructions), retries, and the time since the last model call. This needs an API addition: `GET /api/agents/tuning/<request_id>` returns only `completed | in_progress | unknown` today. The data exists in the backend (batch count in `AgentProfiles.tune`, cached `tuning_notes` rows, `usage` rows with `purpose: "tuning"`), but the renderer can't see it. The overview's Retune row should show the same progress.
+   - **Fixed:** the tuning route now returns `progress` while in progress (see the API contract). Step 5 and the Retune row read it every 3s and show the stage ("Writing source notes: batch 6 of 8", then the final instructions), a determinate bar over batches plus the final call, model replies with rejected-and-retried counts, and time since the last reply. After 3 minutes with no reply they say so in `--attention`.
+5. **Composer layout is broken with real names (raised and fixed 2026-10-08):** in the desktop app with the `agronauts-decisions` build, the composer card (§8.2) falls apart:
+   - The bottom row wraps. The summary (`GPT-6 Astra · build Agronauts DEMO - Decisions and corrected input scaling · Fresh world`) drops to its own left-aligned line and Start floats after it, instead of left chips and right summary-plus-Start on one row.
+   - The agent chip shows a truncated default agent name (`Agronauts DEMO - Decisions and corrected in…`), so the model in its label is cut off. The build's long name then repeats in the summary.
+   - The Steam-unavailable reason shows under the card even while ENet is selected, so it reads like an error.
+
+   Fix: keep one row and let the summary shrink and ellipsize (full text in `title`) before anything wraps. Shorten the chip label, for example to the agent name with the model in the tooltip, or a shorter default agent name from setup. Show the Steam reason only when Steam is focused or selected. Check against long real build and agent names, not just the mock's short ones.
+   - **Fixed:** the bar never wraps. Left chips shrink, the summary ellipsizes with its full text in `title`, and Start never shrinks. The agent chip shows only the name, with "name · model" in its tooltip. Steam reads "Steam (unavailable)" in the transport list; its full reason is a tooltip and screen-reader text, and is shown as a note only when Steam is selected. Setup's default configuration name is now "<project> agent".
+6. **Activity order: newest first (raised and fixed 2026-10-08):** the timeline (§10) lists newest at the bottom like a chat transcript, so seeing what just happened means scrolling past the camera and the whole window. Reverse it: newest card at the top, directly under the filter chips. Knock-on changes to §10 and C5:
+   - "Load older activity" moves to the bottom of the list. "Return to latest" and "N newer" move to the top.
+   - New cards from the live poll go in at the top. The "follow only within 80px of the bottom" rule becomes "insert above without moving what the reader is looking at". When the user has scrolled down into older cards, keep their position (anchor on the first visible card) and show the "N new" pill pointing up, not "↓".
+   - Merged "Model turn" rows still group adjacent events. Recent activity in the inspector already lists newest first, so the two would then agree.
+   - The C5 tests on live-edge scrolling and the pill need updating with it.
+   - **Fixed** as described: the window logic still keeps events oldest-first, and only the rendered order is reversed. `#view` sets `overflow-anchor: none` and the app keeps the reading position itself, anchored on the first visible card. The "N new" pill is sticky under the control bar and scrolls to the top of Activity.
+7. **Instance thread stretches wider than the window (bug, raised and fixed 2026-10-08):** on a real paused run (goal "have at least 10 wheat in your inventory", 300+ events), the thread is wider than the workspace and scrolls sideways. The fixes in items 5 and 6 don't cover it.
+   - The goal title is cut off on the left.
+   - The camera is pushed off to the right.
+   - The control bar and the recovery-instruction form run past the right edge, so **Stop is off-screen**. That breaks §9 ("Stop always reachable") and §12 ("no horizontal scroll at ≥800").
+   - The "↓ 166 new" pill floats in the middle.
+
+   Likely cause: `.thread-body` is a CSS grid with an implicit `auto` column. Grid items default to `min-width: auto`, so a long unbreakable line widens the column past the container. Candidates are a timeline summary, raw mono text or the long header chips. The C10 800px check passed only because the mock's names and events were short. Fix:
+   - Give `.thread-body` `grid-template-columns: minmax(0, 1fr)` and add `min-width: 0` on its children.
+   - Make long mono or event text wrap or ellipsize.
+   - Re-test with real long data (a long agent and build name, 300+ events) at 800px and at full width.
+   - Add a regression check in `tests/test_shell.js` for the grid column rule.
+   - **Fixed:** confirmed in the mock with long names and 300+ events. With the old rules the thread overflowed by 705px and Stop sat at x=1927 in a 1240px view; with one shared `grid-template-columns: minmax(0, 1fr)` rule on the page and thread grids it is 0px. Header chips also ellipsize at 240px. `tests/test_shell.js` checks the rule.
 
 ## 16. Delivery in chunks
 

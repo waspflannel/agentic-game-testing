@@ -41,12 +41,22 @@ test('Stop stays the last control and the layout cannot scroll sideways at 800px
   assert.ok(sidebar + workspaceMin <= 960, 'sidebar and workspace fit at 960px');
 });
 
+test('long lines never widen the thread past the window', () => {
+  // Grid tracks default to their longest unbreakable line (a raw summary, a long build name), which pushed Stop off-screen.
+  const rule = css.match(/^([^{}\n]+)\{ grid-template-columns: minmax\(0, 1fr\); \}$/m);
+  assert.ok(rule, 'one shared rule pins grid columns to the container');
+  const selectors = rule[1].split(',').map(s => s.trim());
+  for (const selector of ['.page', '.thread-body', '.activity', '.timeline', '.insp-body', '.setup-card', '.settings-card']) assert.ok(selectors.includes(selector), selector);
+  assert.match(css, /\.thread-meta \.chip \{ flex: 0 1 auto; min-width: 0; \}/);
+  assert.match(css, /\.thread-meta \.chip-text, \.meta-pop \.chip-text \{ max-width: 240px; \}/);
+});
+
 test('narrow headers keep their meta chips in a popover', async () => {
   const { instanceState, threadRegions } = await import(url('views/instance.js'));
   const r = run('Running', { model: 'gpt-6-astra', plan: { primary_goal: 'Goal', players: [{ id: 'p1' }], transport: { mode: 'enet' } } });
   const { head } = threadRegions(r, { status: instanceState(r), data: {}, ui: { inspectorOpen: false }, pending: new Set(), cameraStatus: 'live', player: 'p1' });
   assert.match(head, /<button type="button" class="icon-btn meta-more" popovertarget="meta-pop"[^>]*aria-label="Instance details"/);
-  assert.match(head, /<div id="meta-pop" class="popover menu meta-pop" popover><span class="chip">gpt-6-astra<\/span><span class="chip">ENet<\/span><\/div>/);
+  assert.match(head, /<div id="meta-pop" class="popover menu meta-pop" popover><span class="chip" title="gpt-6-astra"><span class="chip-text">gpt-6-astra<\/span><\/span><span class="chip" title="ENet"><span class="chip-text">ENet<\/span><\/span><\/div>/);
 });
 
 function fakeDrawer() {

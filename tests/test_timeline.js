@@ -87,7 +87,7 @@ test('"selected", "delivered" and "confirmed" labels never merge', async () => {
     ev(3, 'structured_action_outcome', { result: { status: 'completed' } }),
     ev(4, 'structured_action_outcome', { result: { status: 'rejected', reason: 'target moved' } }),
   ];
-  const [selected, delivered, confirmed, failed] = timelineCards(tl).map(c => c.html);
+  const [failed, confirmed, delivered, selected] = timelineCards(tl).map(c => c.html);  // Newest first.
   assert.match(selected, new RegExp(SELECTED_LABEL));
   assert.match(selected, /interact\(target_id=door_3\)/);
   assert.match(delivered, /Input delivered/);
@@ -108,8 +108,8 @@ test('adjacent model events collapse into one turn row; filters narrow by kind',
     ev(3, 'decision_selected', { action: { tool: 'move_to', args: {} } }), ev(4, 'provider_request_finished', {}),
   ];
   const cards = timelineCards(tl);
-  assert.deepEqual(cards.map(c => c.key), ['m1', '3', 'm4']);
-  assert.match(cards[0].html, /Model turn · 2\.1k tokens · 4\.2s/);
+  assert.deepEqual(cards.map(c => c.key), ['m4', '3', 'm1'], 'newest first, model rows still grouped');
+  assert.match(cards[2].html, /Model turn · 2\.1k tokens · 4\.2s/);
   tl.filter = 'actions';
   assert.deepEqual(timelineCards(tl).map(c => c.key), ['3']);
 });
@@ -129,21 +129,37 @@ function fakeList() {
   return { list, doc };
 }
 
+test('newest activity is on top: Return to latest above the list, Load older below, the new pill points up', async () => {
+  const { createTimeline, seedFromRun, timelineCards, timelineRegions } = await load();
+  const tl = createTimeline();
+  seedFromRun(tl, runWith(range(1, 150, seq => ev(seq, 'run_paused', { reason: 'r' }))));
+  const cards = timelineCards(tl);
+  assert.deepEqual([cards[0].key, cards.at(-1).key], ['150', '51']);
+  tl.unseen = 3;
+  let r = timelineRegions(tl, { runTotal: 150, cards });
+  assert.equal(r['tl-top'], '');
+  assert.match(r['tl-foot'], /data-action="tl-older"[^>]*>Load older activity \(50 earlier\)/);
+  assert.match(r['tl-pill'], /data-action="tl-to-latest"[\s\S]*#i-arrow-up[\s\S]*3 new/);
+  tl.mode = 'history';
+  r = timelineRegions(tl, { runTotal: 150, cards });
+  assert.match(r['tl-top'], /data-action="tl-latest"[\s\S]*Return to latest/);
+  assert.equal(r['tl-pill'], '', 'no pill while reading history');
+});
+
 test('polls keep existing cards, so an open card stays open', async () => {
   const { timelineCards, syncCards, createTimeline } = await load();
   const { list, doc } = fakeList();
   const tl = createTimeline();
   tl.events = range(1, 3, seq => ev(seq, 'run_paused', { reason: 'r' }));
   syncCards(list, timelineCards(tl), doc);
-  const first = list.children[0];
-  first.details.open = true;
+  assert.deepEqual(list.children.map(c => c.dataset.card), ['3', '2', '1']);
   tl.events = range(2, 5, seq => ev(seq, 'run_paused', { reason: 'r' }));
   syncCards(list, timelineCards(tl), doc);
-  assert.deepEqual(list.children.map(c => c.dataset.card), ['2', '3', '4', '5']);
-  const kept = list.children[0];
+  assert.deepEqual(list.children.map(c => c.dataset.card), ['5', '4', '3', '2'], 'new cards go in at the top');
+  const kept = list.children.find(c => c.dataset.card === '3');
   tl.events = range(2, 5, seq => ev(seq, 'run_paused', { reason: 'r' }));
   kept.details.open = true;
   syncCards(list, timelineCards(tl), doc);
-  assert.equal(list.children[0], kept, 'an unchanged card is the same element');
+  assert.equal(list.children.find(c => c.dataset.card === '3'), kept, 'an unchanged card is the same element');
   assert.equal(kept.details.open, true);
 });

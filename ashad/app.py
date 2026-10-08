@@ -428,7 +428,21 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         if saved:
             return {"status": "completed", "request_id": request_id, "agent": store.require("agents", saved["agent_id"])}
         running = bool(app.state.tuning_task and app.state.tuning_request_id == request_id)
-        return {"status": "in_progress" if running else "unknown", "request_id": request_id}
+        if not running:
+            return {"status": "unknown", "request_id": request_id}
+        return {"status": "in_progress", "request_id": request_id, "progress": tuning_progress()}
+
+    def tuning_progress():
+        """The running tuning's stage and batch, plus its model calls so far (from usage rows), or None."""
+        progress = profiles.progress
+        if not progress:
+            return None
+        with store.lock:
+            rows = store.db.execute("SELECT json_extract(data, '$.status'), json_extract(data, '$.timestamp') FROM records "
+                                    "WHERE kind='usage' AND json_extract(data, '$.purpose')='tuning' AND json_extract(data, '$.timestamp') >= ?",
+                                    (progress["started_at"],)).fetchall()
+        return {**progress, "model_calls": len(rows), "rejected_replies": sum(status != "completed" for status, _ in rows),
+                "last_call_at": max((at for _, at in rows), default=None)}
 
     @app.get("/api/instances/requests/{request_id}")
     async def instance_request(request_id: str):

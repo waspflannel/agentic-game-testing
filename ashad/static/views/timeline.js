@@ -168,7 +168,7 @@ export function timelineCards(tl) {
     if (kind === 'model' && last?.kind === 'model') { last.events.push(event); continue; }
     cards.push({ key: kind === 'model' ? `m${event.seq}` : String(event.seq), kind, events: [event] });
   }
-  return cards.map(card => ({ ...card, html: cardHTML(card) }));
+  return cards.reverse().map(card => ({ ...card, html: cardHTML(card) }));  // Newest first; model rows still group in time order.
 }
 
 // The row only; the body is built when a card is first opened, so a page of heavy events stays small.
@@ -241,18 +241,17 @@ export function timelineRegions(tl, { runTotal, cards }) {
   const tools = `<div class="tl-filters" role="group" aria-label="Filter activity">${FILTERS.map(([id, label]) => `<button type="button" class="chip" data-action="tl-filter" data-filter="${id}" data-key="tl-f-${id}" aria-pressed="${tl.filter === id}">${label}</button>`).join('')}</div>`
     + `<form class="tl-search" data-form="tl-search" role="search">${icon('search')}<input type="search" class="input" name="q" data-key="tl-search" aria-label="Search activity" placeholder="Search activity" maxlength="200" autocomplete="off"></form>`;
   const newer = newerCount(tl, runTotal);
-  const top = [
-    tl.older > 0 ? `<button type="button" class="btn btn-ghost btn-sm" data-action="tl-older" data-key="tl-older"${tl.loading ? ' aria-disabled="true"' : ''}>Load older activity (${tl.older} earlier)</button>` : '',
-    tl.mode === 'history' ? `<span class="tl-note">Showing older activity${newer ? ` · ${newer} newer` : ''}</span><button type="button" class="btn btn-secondary btn-sm" data-action="tl-latest" data-key="tl-latest">${icon('arrow-down')}Return to latest</button>` : '',
-  ].join('');
+  // Newest first: "Return to latest" sits above the list and "Load older" below it.
+  const top = tl.mode === 'history' ? `<span class="tl-note">Showing older activity${newer ? ` · ${newer} newer` : ''}</span><button type="button" class="btn btn-secondary btn-sm" data-action="tl-latest" data-key="tl-latest">${icon('arrow-up')}Return to latest</button>` : '';
   const label = FILTERS.find(([id]) => id === tl.filter)[1].toLowerCase();
   const empty = !tl.loaded ? (tl.loading ? 'Loading activity…' : '')
     : cards.length ? ''
       : tl.search ? `No activity matches “${tl.search}”.`
         : !tl.events.length ? 'No activity recorded yet.' : `No ${label} activity in the loaded window.`;
   const foot = (empty ? `<p class="tl-empty">${esc(empty)}</p>` : '')
+    + (tl.older > 0 ? `<button type="button" class="btn btn-ghost btn-sm" data-action="tl-older" data-key="tl-older"${tl.loading ? ' aria-disabled="true"' : ''}>Load older activity (${tl.older} earlier)</button>` : '')
     + (tl.error ? `<p class="note note-error" data-announce>${icon('alert')}<span>Activity could not load: ${esc(tl.error)}</span></p>` : '');
-  const pill = tl.unseen > 0 && tl.mode === 'latest' ? `<button type="button" class="tl-pill" data-action="tl-to-bottom" data-key="tl-pill">${icon('arrow-down')}${tl.unseen} new</button>` : '';
+  const pill = tl.unseen > 0 && tl.mode === 'latest' ? `<button type="button" class="tl-pill" data-action="tl-to-latest" data-key="tl-pill">${icon('arrow-up')}${tl.unseen} new</button>` : '';
   return { 'tl-tools': tools, 'tl-top': top, 'tl-foot': foot, 'tl-pill': pill };
 }
 

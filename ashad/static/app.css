@@ -88,7 +88,7 @@ body.nav-collapsed .sidebar { margin-left: calc(-1 * var(--sidebar-w)); visibili
 .workspace { flex: 1; min-width: 480px; display: flex; flex-direction: column; background: var(--bg); border-top-left-radius: var(--r-card); overflow: hidden; }
 .workspace:focus { outline: none; }
 body.nav-collapsed .workspace { border-top-left-radius: 0; }
-.view { flex: 1; overflow: auto; }
+.view { flex: 1; overflow: auto; overflow-anchor: none; }  /* The timeline keeps the reading position itself. */
 .inspector { width: var(--inspector-w); flex: none; background: var(--bg-sidebar); overflow: auto; padding: 12px; }
 /* §12: below 1280 the inspector, and below 960 the sidebar, leave the layout and open as modal drawers. */
 @media (max-width: 1279px) { .layout > .inspector { display: none; } }
@@ -235,6 +235,10 @@ a.active-pill:hover { text-decoration: none; background: var(--surface-2); }
 .page-head p { color: var(--text-2); margin-top: 4px; }
 .section-title { font-size: var(--fs-meta); font-weight: 600; color: var(--text-2); margin-bottom: 10px; }
 
+/* Grid containers size their column to the container, never to their longest unbreakable line (spec §15 item 7). */
+.page, .thread-body, .activity, .timeline, .tl-body, .insp-body, .setup-page, .setup-card, .setup-main, .settings-body, .settings-card, .overview .card { grid-template-columns: minmax(0, 1fr); }
+.thread-body > *, .activity > * { min-width: 0; }
+
 /* ── Empty workspace and composer (§8.1, §8.2) ── */
 .center-col { width: 100%; max-width: 760px; margin: 0 auto; padding: 32px 24px; }
 .empty { max-width: 560px; min-height: 100%; display: grid; align-content: center; justify-items: start; gap: 16px; }
@@ -261,9 +265,14 @@ a.active-pill:hover { text-decoration: none; background: var(--surface-2); }
 }
 .composer-goal::placeholder { color: var(--text-3); }
 .composer-goal:focus-visible { outline: none; }
-.composer-bar { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
+.composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
 .composer-bar-left, .composer-bar-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.composer-summary { color: var(--text-3); font-size: var(--fs-meta); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.composer-bar-left { flex: 0 1 auto; }
+.composer-bar-left .chip-select { min-width: 0; }
+.composer-bar-left .chip-select select { max-width: 220px; min-width: 0; }
+.composer-bar-right { flex: 1 1 0; justify-content: flex-end; }
+.composer-bar-right .btn-round { flex: none; }
+.composer-summary { min-width: 0; color: var(--text-3); font-size: var(--fs-meta); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-status { display: grid; gap: 6px; min-height: 20px; }
 .chip-select { position: relative; padding-right: 6px; }
 .chip-select select { appearance: none; border: 0; background: transparent; color: var(--text); font-size: var(--fs-meta); max-width: 260px; text-overflow: ellipsis; cursor: pointer; padding-right: 2px; }
@@ -333,6 +342,8 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .tuning { display: grid; gap: 8px; }
 .progress { width: 100%; height: 4px; appearance: none; border: 0; border-radius: 2px; background: var(--surface-2); accent-color: var(--accent); }
 .progress::-webkit-progress-bar { background: var(--surface-2); border-radius: 2px; }
+.progress::-webkit-progress-value { background: var(--accent); border-radius: 2px; transition: width var(--ease); }
+.note-attention { color: var(--attention); }
 .progress:indeterminate { background: linear-gradient(90deg, var(--surface-2) 0 35%, var(--accent) 35% 65%, var(--surface-2) 65%) 0 0 / 300% 100%; animation: slide 1.4s linear infinite; }
 .progress:indeterminate::-webkit-progress-bar { background: transparent; }
 @keyframes slide { from { background-position: 100% 0; } to { background-position: -50% 0; } }
@@ -399,6 +410,8 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .thread-goal { min-width: 0; max-width: 50%; padding: 4px 6px; border: 0; border-radius: var(--r-row); background: transparent; color: var(--text); font-size: var(--fs-title); font-weight: 600; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
 .thread-goal:hover { background: var(--surface-2); }
 .thread-meta { flex: 1; min-width: 0; display: flex; justify-content: flex-end; gap: 6px; overflow: hidden; }
+.thread-meta .chip { flex: 0 1 auto; min-width: 0; }
+.thread-meta .chip-text, .meta-pop .chip-text { max-width: 240px; }
 .popover { inset: auto; margin: 0; padding: 6px; border: 1px solid var(--border); border-radius: var(--r-card); background: var(--surface-2); color: var(--text); box-shadow: 0 12px 32px rgb(0 0 0 / .5); }
 .goal-pop { position-area: bottom span-right; margin-top: 4px; max-width: min(640px, 80vw); padding: 12px 14px; white-space: pre-wrap; }
 .menu { position-area: bottom span-left; margin-top: 4px; min-width: 200px; gap: 2px; }
@@ -483,7 +496,10 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .tl-related { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: var(--fs-meta); color: var(--text-3); }
 .tl-raw-head { display: flex; align-items: center; gap: 8px; font-size: var(--fs-meta); color: var(--text-3); }
 .tl-raw pre { max-height: 320px; overflow: auto; margin: 4px 0 0; padding: 10px; border-radius: var(--r-row); background: var(--bg-sidebar); white-space: pre-wrap; overflow-wrap: anywhere; }
-.tl-pill-wrap { position: sticky; bottom: 12px; display: flex; justify-content: center; pointer-events: none; }
+.activity { scroll-margin-top: 136px; }  /* Clears the sticky header and control bar. */
+.tl-foot { display: grid; justify-items: start; gap: 6px; padding-top: 4px; }
+.tl-foot:empty { display: none; }
+.tl-pill-wrap { position: sticky; top: 132px; z-index: 3; height: 0; overflow: visible; display: flex; justify-content: center; pointer-events: none; }
 .tl-pill-wrap:empty { display: none; }
 .tl-pill { pointer-events: auto; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border: 0; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: var(--fs-meta); font-weight: 500; cursor: pointer; box-shadow: 0 6px 20px rgb(0 0 0 / .4); }
 .tl-pill .icon { width: 14px; height: 14px; }

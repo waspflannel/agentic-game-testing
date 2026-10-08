@@ -127,7 +127,7 @@ export const threadSkeleton = () => `<div class="thread">`
   + `<div class="control-wrap" data-region="controls"></div>`
   + `<div data-region="instruction"></div>`
   + `<section class="activity" aria-labelledby="activity-heading"><div class="activity-head"><h2 id="activity-heading" class="section-title">Activity</h2><div class="tl-tools" data-region="tl-tools"></div></div>`
-  + `<div class="tl-top" data-region="tl-top"></div><ol class="timeline" data-timeline></ol><div data-region="tl-foot"></div><div class="tl-pill-wrap" data-region="tl-pill"></div></section>`
+  + `<div class="tl-top" data-region="tl-top"></div><div class="tl-pill-wrap" data-region="tl-pill"></div><ol class="timeline" data-timeline></ol><div class="tl-foot" data-region="tl-foot"></div></section>`
   + `</div></div>`;
 
 const ACTIONS = {
@@ -148,7 +148,7 @@ export function threadRegions(run, ctx) {
   const model = (data?.model_options || []).find(m => m.id === run.model)?.label || run.model;
   const build = run.build?.name || run.plan?.build_id;
   const transport = { enet: 'ENet', steam: 'Steam' }[run.plan?.transport?.mode];
-  const chips = [agent?.name, model, build && `build ${build}`, transport].filter(Boolean).map(text => `<span class="chip">${esc(text)}</span>`).join('');
+  const chips = [agent?.name, model, build && `build ${build}`, transport].filter(Boolean).map(text => `<span class="chip" title="${esc(text)}"><span class="chip-text">${esc(text)}</span></span>`).join('');
   const head = `<button type="button" class="thread-goal" popovertarget="goal-full" data-key="t-goal" title="Show the full goal">${esc(goal)}</button>`
     + `<div id="goal-full" class="popover goal-pop" popover>${esc(goal)}</div>`
     + `<span class="badge badge-${status.badge.tone}"><span class="dot dot-${status.badge.tone}" aria-hidden="true"></span>${esc(status.badge.label)}</span>`

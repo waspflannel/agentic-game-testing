@@ -100,6 +100,8 @@ function summary(event, kind) {
   }
 }
 
+export const describeEvent = event => summary(event, eventKind(event.kind)).text;
+
 // Adjacent model events collapse into one "Model turn" row.
 function modelSummary(events) {
   let total = 0, known = false, seconds = 0;

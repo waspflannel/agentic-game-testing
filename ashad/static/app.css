@@ -380,6 +380,56 @@ kbd { font-family: var(--font); font-size: 11px; padding: 0 4px; border-radius: 
 .tl-pill { pointer-events: auto; display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 12px; border: 0; border-radius: 999px; background: var(--accent); color: var(--accent-ink); font-size: var(--fs-meta); font-weight: 500; cursor: pointer; box-shadow: 0 6px 20px rgb(0 0 0 / .4); }
 .tl-pill .icon { width: 14px; height: 14px; }
 
+/* ── Inspector (§8.6) ── */
+.inspector { padding: 8px 10px 24px; font-size: var(--fs-meta); }
+.insp-section + .insp-section { border-top: 1px solid var(--border); }
+.insp-head { display: flex; align-items: center; gap: 6px; padding: 10px 4px; font-weight: 600; color: var(--text-2); cursor: pointer; list-style: none; border-radius: var(--r-row); }
+.insp-head::-webkit-details-marker { display: none; }
+.insp-head:hover { color: var(--text); }
+.insp-section[open] > .insp-head .chevron { transform: rotate(90deg); }
+.insp-body { display: grid; gap: 10px; padding: 0 4px 14px; }
+.insp-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--text-2); }
+.insp-meta .dot-live { animation: none; }
+.insp-group h4 { font-size: 11px; font-weight: 600; color: var(--text-3); margin-bottom: 4px; }
+.insp-dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; }
+.insp-dl dt { color: var(--text-3); }
+.insp-dl dd { margin: 0; overflow-wrap: anywhere; }
+.insp-dl dt.insp-sub { padding-left: 10px; }
+.insp-tokens dd { font-variant-numeric: tabular-nums; }
+.insp-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.insp-dim, .insp-empty { color: var(--text-3); }
+.insp-missing { color: var(--text-3); font-style: italic; }
+.insp-note { color: var(--text-2); }
+.insp-action { font-size: 11px; padding: 0 4px; border-radius: 4px; background: var(--surface-2); color: var(--text-2); }
+.seg { display: inline-flex; padding: 2px; border-radius: var(--r-row); background: var(--surface-2); justify-self: start; }
+.seg-btn { height: 24px; padding: 0 10px; border: 0; border-radius: 4px; background: transparent; color: var(--text-2); font-size: var(--fs-meta); cursor: pointer; }
+.seg-btn[aria-pressed="true"] { background: var(--surface-3); color: var(--text); }
+.insp-recent { list-style: none; margin: 0; padding: 0; display: grid; gap: 1px; }
+.insp-row { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 26px; padding: 2px 6px; border: 0; border-radius: var(--r-row); background: transparent; color: var(--text); text-align: left; cursor: pointer; }
+.insp-row:hover { background: var(--surface-2); }
+.insp-row .icon { width: 14px; height: 14px; color: var(--text-3); }
+.insp-row .insp-warn { color: var(--attention); }
+.insp-row-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.insp-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; color: var(--text-2); }
+.insp-crumbs span:last-child { color: var(--text); font-weight: 500; }
+.crumb-sep { width: 12px; height: 12px; color: var(--text-3); }
+.goal-tree { list-style: none; margin: 0; padding: 0 0 0 14px; display: grid; gap: 2px; }
+.goal-root { padding-left: 0; }
+.goal-row { display: flex; gap: 8px; padding: 4px 6px; border-radius: var(--r-row); cursor: pointer; list-style: none; }
+.goal-row::-webkit-details-marker { display: none; }
+.goal-row:hover { background: var(--surface-2); }
+.goal-icon { width: 14px; height: 14px; margin-top: 2px; flex: none; color: var(--text-3); }
+.goal-live .goal-icon { color: var(--live); }
+.goal-accent .goal-icon { color: var(--accent); }
+.goal-attention .goal-icon, .goal-attention > details > summary .goal-status { color: var(--attention); }
+.goal-text { display: grid; min-width: 0; }
+.goal-title { color: var(--text); overflow-wrap: anywhere; }
+.goal-status { font-size: 11px; color: var(--text-2); }
+.goal-cond { color: var(--text-3); }
+.goal-reason { color: var(--attention); }
+.goal-body { display: grid; gap: 6px; padding: 2px 6px 8px 28px; }
+.goal-links { display: flex; flex-wrap: wrap; gap: 6px; }
+
 .copy-row { display: flex; gap: 8px; }
 .dialog.dialog-wide { width: min(760px, calc(100vw - 32px)); }
 .report { max-height: 60vh; overflow: auto; margin: 0; padding: 12px; border-radius: var(--r-row); background: var(--bg); white-space: pre-wrap; }

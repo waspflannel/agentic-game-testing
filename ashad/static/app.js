@@ -2,6 +2,7 @@ import { esc, icon, href, newId, api, parseRoute, legacyNewTarget, createEpoch, 
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
 import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
 import { isActiveRun, playerIds, instanceState, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions } from './views/instance.js';
+import { inspectorSkeleton, inspectorRegions, mergeEvents, latestObservation } from './views/inspector.js';
 import { PAGE, MAX_EVENTS, createTimeline, beginPage, applyPage, failPage, seedFromRun, applyLive, timelineCards, timelineRegions, syncCards, cardBody, rawJSON, eventIndex } from './views/timeline.js';
 
 const $ = selector => document.querySelector(selector);
@@ -16,7 +17,7 @@ const state = {
   route: parseRoute(location.hash),
   failures: 0,
   polling: false,
-  ui: { expanded: new Map(), showAll: new Set(), lastProject: null, inspectorOpen: true },
+  ui: { expanded: new Map(), showAll: new Set(), lastProject: null, inspectorOpen: true, goalOpen: new Set() },
   drafts: new Map(),   // projectId -> composer draft
   readiness: null,     // { key, loading, result, error } for the open composer; probed on view open only
   isCurrent: () => true,
@@ -24,7 +25,7 @@ const state = {
   runMissing: false,
   commands: new Map(),       // `${runId}:${action}` -> { id, pending, error }
   camera: null,
-  thread: {},                // per-open-thread UI: player, instruction draft, last status key, timeline
+  thread: {},                // per-open-thread UI: player, instruction draft, last status key, timeline, inspector view
 };
 const epoch = createEpoch();
 const setDirty = dirtyBridge(() => window.ashadDesktop);
@@ -251,6 +252,21 @@ function renderThread(view) {
   const reason = view.querySelector('#resume-reason');
   if (reason && reason.value !== t.instructionText) reason.value = t.instructionText;
   renderTimeline(view, run);
+  renderInspector(run);
+}
+
+// ── Inspector (C6) ──────────────────────────────────────────────────────────
+// Built only from the run and its retained events; it never asks the game for fresh state.
+function renderInspector(run) {
+  const aside = $('#inspector');
+  if (aside.hidden || !run) return;
+  if (!aside.dataset.mount) { aside.dataset.mount = '1'; aside.innerHTML = inspectorSkeleton(); }
+  const t = state.thread;
+  const events = mergeEvents(run.events, t.tl.events);
+  t.lastObs = latestObservation(events, t.lastObs);
+  const selectedSeq = t.tl.selected ? Number(t.tl.selected.replace('m', '')) : null;
+  const selectedEvent = events.find(e => e.seq === selectedSeq) || null;
+  patchRegions(aside, inspectorRegions(run, { latest: t.lastObs, selectedEvent, events, view: t.worldView, now: Date.now() / 1000, goalOpen: state.ui.goalOpen }));
 }
 
 // ── Activity timeline (C5) ──────────────────────────────────────────────────
@@ -501,7 +517,7 @@ async function onRoute() {
   if (composerProject(route, state.data)) state.readiness = null;  // Readiness probes on view open, never on the poll.
   if (route.name === 'composer' && route.query.agent) draftFor(route.id).agentId = route.query.agent;
   if (route.name === 'instance' && state.thread.runId !== route.id) {
-    state.thread = { runId: route.id, player: null, instructionOpen: false, instructionText: '', statusKey: null, tl: createTimeline() };
+    state.thread = { runId: route.id, player: null, instructionOpen: false, instructionText: '', statusKey: null, tl: createTimeline(), worldView: 'latest', lastObs: null };
     state.runSlot.set(null);  // Also drops a late GET for the previous thread.
     state.runMissing = false;
   }
@@ -563,6 +579,9 @@ document.addEventListener('click', async event => {
     toggleInspector();
   } else if (action === 'instruction-cancel') {
     Object.assign(state.thread, { instructionOpen: false, instructionText: '' });
+    renderView();
+  } else if (action === 'insp-view') {
+    state.thread.worldView = target.dataset.view;
     renderView();
   } else if (action === 'tl-filter') {
     state.thread.tl.filter = target.dataset.filter;
@@ -665,13 +684,21 @@ document.addEventListener('submit', async event => {
 
 $('#nav-toggle').addEventListener('click', toggleSidebar);
 // <details> toggle does not bubble, so listen in the capture phase.
-document.addEventListener('toggle', event => { if (event.target.matches?.('.tl-card > details')) fillBody(event.target.parentElement); }, true);
+document.addEventListener('toggle', event => {
+  const el = event.target;
+  if (el.matches?.('.tl-card > details')) fillBody(el.parentElement);
+  else if (el.dataset?.goal) el.open ? state.ui.goalOpen.add(el.dataset.goal) : state.ui.goalOpen.delete(el.dataset.goal);
+}, true);
 $('#view').addEventListener('scroll', () => {
   const tl = state.thread.tl;
   if (state.route.name === 'instance' && tl?.unseen && nearBottom()) { tl.unseen = 0; renderView(); }
 }, { passive: true });
-// Relative times tick locally; nothing is fetched.
-setInterval(() => { if (state.route.name === 'instance' && !document.hidden) updateTimes(timelineList()); }, 15000);
+// Ages tick locally (observation age, Fresh to Stale, card times); nothing is fetched.
+setInterval(() => {
+  if (state.route.name !== 'instance' || document.hidden) return;
+  updateTimes(timelineList());
+  renderInspector(threadRun());
+}, 1000);
 window.addEventListener('hashchange', onRoute);
 // Hidden: the camera stops at once. Visible again: data refreshes and the camera reconnects.
 document.addEventListener('visibilitychange', () => {

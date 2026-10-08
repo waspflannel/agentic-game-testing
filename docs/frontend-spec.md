@@ -399,7 +399,7 @@ Rules:
 | C3 | Empty workspace and composer | Built, awaiting review |
 | C4 | Instance thread: header, camera, controls | Built, awaiting review |
 | C5 | Activity timeline | Built, awaiting review |
-| C6 | Inspector | Not started |
+| C6 | Inspector | Built, awaiting review |
 | C7 | Project overview | Not started |
 | C8 | Setup flow | Not started |
 | C9 | Settings and Usage | Not started |
@@ -474,7 +474,7 @@ The order lets you use the new UI for real as early as possible. After C4 you ca
 - **Build:** `views/inspector.js` with four persistent `<details>` sections; world state from retained observations only; age ticker and Fresh/Stale/Partial/Unknown badges; latest vs decision-time toggle driven by C5 selection; tokens and estimate with "not a charge"; goal tree with statuses, blocked reasons, evidence links and primary acceptance; Ctrl+I toggle; open state remembered.
 - **Tests (re-added):** the inspector makes no `/context` request; stale, partial and unknown render from fixtures; a decision without a retained observation says so rather than showing the latest; cached and reasoning tokens aren't double-counted; blocked goals are escaped and explained.
 - **Review:** watch a live instance with the inspector open. Is the world state readable, and is stale state obvious? Does the goal tree make the bot's intent clear?
-- **Notes:**
+- **Notes:** The inspector is built only from the run and its loaded events: the run detail's newest 200 plus the timeline window. The latest observation is remembered per thread once seen, so model-heavy stretches don't lose it. Freshness uses the controller's receipt time (`event.timestamp`), not the game clock. The section `<details>` mount once, so collapsed sections stay collapsed across polls, threads and Ctrl+I; goal rows remember their open state by goal ID. The decision toggle starts on Latest and keeps your choice as the selection changes. A decision's observation is found from its own event or by `observation_id`/`source_observation`; otherwise it reads "Not retained for this decision". The world groups are Player (every scalar field the game reported), Inventory, Hotbar, Nearby entities (interactive ones first, top 12), Objectives, Completed quests, and UI and action state; any missing group reads "Not observed". The API-equivalent estimate sums `estimated_cost_usd` and reads "not available" when every row is null (subscription billing); no price is invented. Recent activity covers only loaded events, so a long run's older control events appear only after loading older activity. Ages tick each second locally.
 
 #### C7: Project overview
 

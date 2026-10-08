@@ -42,6 +42,28 @@ export async function api(path, { method = 'GET', body, signal, fetchImpl = glob
   return data;
 }
 
+// Long or idempotent operations (create project, prepare desktop, tune): one request ID per operation until it succeeds.
+// A refusal (4xx) stored nothing, so corrected input may reuse the ID. A lost reply (network error or 5xx) locks the
+// payload: only the same request is retried, after recover(id) (the contract's recovery route, when there is one)
+// has had its say. recover resolves to { status, value?, error? } and may throw to leave the reply lost.
+export const newOp = () => ({ requestId: null, sent: null, status: 'idle', error: '', value: null, startedAt: null });
+
+export async function submitOnce(op, payload, send, recover) {
+  const signature = JSON.stringify(payload);
+  if (op.status === 'busy' || (op.status === 'lost' && op.sent !== signature)) return op;
+  op.requestId ||= newId();
+  Object.assign(op, { sent: signature, status: 'busy', error: '', startedAt: Date.now() / 1000 });
+  try {
+    op.value = await send(op.requestId);
+    op.status = 'done';
+  } catch (error) {
+    const refused = error instanceof ApiError && error.status < 500;
+    Object.assign(op, refused ? { status: 'error', error: error.message, sent: null } : { status: 'lost', error: 'ASHAD did not answer. Retry sends the same request.' });
+    if (!refused && recover) Object.assign(op, await recover(op.requestId).catch(() => ({})));
+  }
+  return op;
+}
+
 export const href = (...parts) => '#/' + parts.map(encodeURIComponent).join('/');
 
 export function parseRoute(hash) {

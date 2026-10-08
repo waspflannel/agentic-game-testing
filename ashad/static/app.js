@@ -1,8 +1,9 @@
-import { esc, icon, href, newId, api, parseRoute, legacyNewTarget, createEpoch, patchHTML, dirtyBridge, runGoal, ago } from './core.js';
+import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, patchHTML, dirtyBridge, runGoal, ago } from './core.js';
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
 import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
 import { isActiveRun, playerIds, instanceState, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions } from './views/instance.js';
 import { inspectorSkeleton, inspectorRegions, mergeEvents, latestObservation } from './views/inspector.js';
+import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discardSetup, tuneAgent, setupSkeleton, setupRegions, prepareDialogText, prepareDesktop, registerBuild, elapsed } from './views/setup.js';
 import { PAGE, MAX_EVENTS, createTimeline, beginPage, applyPage, failPage, seedFromRun, applyLive, timelineCards, timelineRegions, syncCards, cardBody, rawJSON, eventIndex } from './views/timeline.js';
 
 const $ = selector => document.querySelector(selector);
@@ -26,6 +27,7 @@ const state = {
   commands: new Map(),       // `${runId}:${action}` -> { id, pending, error }
   camera: null,
   thread: {},                // per-open-thread UI: player, instruction draft, last status key, timeline, inspector view
+  setups: new Map(),         // project ID ('' before step 1) -> setup state; long operations survive leaving the page
 };
 const epoch = createEpoch();
 const setDirty = dirtyBridge(() => window.ashadDesktop);
@@ -89,7 +91,7 @@ function viewFor(route, data) {
     case 'project':
       return project(route.id) ? placeholder({ iconName: 'folder-open', tag: 'Coming in C7', title: project(route.id).name, body: 'Builds, agent configurations, desktop readiness and recent instances.' }) : notFound('Project');
     case 'instance': return state.runMissing ? notFound('Instance') : `<div class="boot"><p>Loading instance…</p></div>`;
-    case 'setup': return placeholder({ iconName: 'gamepad', tag: 'Coming in C8', title: 'Set up a game agent', body: 'Project, build, desktop, agent and model, tuning, instruction review.' });
+    case 'setup': return notFound('Project');  // renderSetup handles every setup route whose project exists.
     case 'usage': return placeholder({ iconName: 'chart-column', tag: 'Coming in C9', title: 'Usage' });
     case 'settings': return placeholder({ iconName: 'sliders', tag: 'Coming in C9', title: 'Settings' });
     case 'styleguide': return styleguide();
@@ -118,6 +120,7 @@ function renderView() {
   stopCamera();
   const composer = composerProject(route, state.data);
   if (composer && projectAgents(state.data, composer).length) return renderComposer(view, composer);
+  if (route.name === 'setup' && (!setupKey(route) || findProject(setupKey(route)))) return renderSetup(view);
   if (view.dataset.mount) { view.dataset.mount = ''; view.renderedHTML = undefined; }
   patchHTML(view, viewFor(route, state.data), document.activeElement);
 }
@@ -175,6 +178,25 @@ const dirtyComposer = () => {
   const draft = id && state.drafts.get(id);
   return draft && !draft.busy && draft.goal.trim() ? id : null;
 };
+const dirtySetup = () => (state.route.name === 'setup' && setupDirty(state.setups.get(setupKey(state.route))) ? state.setups.get(setupKey(state.route)) : null);
+const dirtySettings = () => state.route.name === 'settings' && state.settingsDirty;
+const syncDirty = () => setDirty(Boolean(dirtyComposer() || dirtySetup() || dirtySettings()));
+
+// Unsent input that moving to `route` would discard (spec §11). Moving within the same draft's view is not leaving.
+function dirtyGuard(route) {
+  const composer = dirtyComposer();
+  if (composer && composerProject(route, state.data) !== composer) {
+    return { title: 'Discard this goal?', body: 'The goal you typed has not been started. Leaving discards it.', confirm: 'Discard goal', discard: () => state.drafts.delete(composer) };
+  }
+  const s = dirtySetup();
+  if (s && !(route.name === 'setup' && setupKey(route) === s.projectId)) {
+    return { title: 'Discard setup changes?', body: 'What you typed in setup has not been saved. Leaving discards it; anything already created stays.', confirm: 'Discard changes', discard: () => discardSetup(s) };
+  }
+  if (dirtySettings() && !(route.name === 'settings' && route.section === state.route.section)) {
+    return { title: 'Discard unsaved settings?', body: 'This form has changes that were not saved. Leaving discards them.', confirm: 'Discard changes', discard: () => { state.settingsDirty = false; state.settingsForm = null; } };
+  }
+  return null;
+}
 
 async function startFromComposer(projectId) {
   const draft = draftFor(projectId);
@@ -191,7 +213,7 @@ async function startFromComposer(projectId) {
   if (run?.id) state.data.runs = [run, ...state.data.runs.filter(r => r.id !== run.id)];
   if (result.kind === 'accepted') {
     state.drafts.delete(projectId);
-    setDirty(false);
+    syncDirty();
     if (current()) location.hash = href('i', run.id);
     else toast('Instance started.', 'ok');
     poll();
@@ -202,6 +224,134 @@ async function startFromComposer(projectId) {
   if (!current()) return;
   renderView();
   if (result.field === 'goal') $('#composer-goal')?.focus();
+}
+
+// ── Setup (C8) ──────────────────────────────────────────────────────────────
+const setupKey = route => route.query?.project || '';
+const findProject = id => (state.data?.projects || []).find(p => p.id === id);
+
+function setupFor(route) {
+  const key = setupKey(route);
+  if (!state.setups.has(key)) state.setups.set(key, newSetup(key));
+  return state.setups.get(key);
+}
+
+function renderSetup(view) {
+  const s = setupFor(state.route);
+  const builds = projectBuilds(state.data, s.projectId);
+  if (!builds.some(b => b.id === s.buildId)) s.buildId = builds[0]?.id || '';
+  applyDefaults(state.data, s);
+  let m = setupModel(state.data, s);
+  if (m.step === 2 && m.build && s.catalog?.buildId !== m.build.id) loadCatalog(s, m.build.id);
+  if (m.step === 3 && m.build && s.readiness?.buildId !== m.build.id) { probeReadiness(s, s.projectId, m.build.id); m = setupModel(state.data, s); }
+  s.step = m.step;
+  if (mount(view, `setup:${s.projectId}:${m.step}`, setupSkeleton(state.data, s, m.step))) view.scrollTop = 0;
+  patchRegions(view, setupRegions(state.data, s, m));
+  // Submitted input is locked until its request settles, so a retry can only resend the same payload.
+  const name = view.querySelector('#setup-name');
+  if (name) name.readOnly = ['busy', 'lost'].includes(s.project.status);
+  for (const field of view.querySelectorAll('#setup-agent-name, #setup-model')) field.disabled = Boolean(s.agent) || ['busy', 'lost'].includes(s.tune.status) || s.tune.waiting;
+}
+
+// Readiness probes the machine: on view open and explicit Re-check only. owner.readiness is replaced by each probe.
+async function probeReadiness(owner, projectId, buildId) {
+  const record = owner.readiness = { buildId, loading: true };
+  try { record.result = await api(`/api/projects/${enc(projectId)}/readiness?build_id=${enc(buildId)}`); }
+  catch (error) { record.error = error.message; }
+  Object.assign(record, { loading: false, at: Date.now() / 1000 });
+  if (owner.readiness === record) renderView();
+}
+
+async function loadCatalog(s, buildId) {
+  const record = s.catalog = { buildId, loading: true };
+  try { record.result = await api(`/api/builds/${enc(buildId)}/catalog`); }
+  catch (error) { record.error = error.message; }
+  record.loading = false;
+  if (s.catalog === record) renderView();
+}
+
+async function createProject(s) {
+  const name = s.name.trim();
+  if (!name || s.project.status === 'busy') return;
+  const current = state.isCurrent;
+  const pending = submitOnce(s.project, { name }, id => api('/api/projects', { method: 'POST', body: { name, request_id: id } }));
+  renderView();
+  await pending;
+  syncDirty();
+  if (s.project.status !== 'done') { if (current()) renderView(); return; }
+  const created = s.project.value;
+  state.data.projects = [...state.data.projects.filter(p => p.id !== created.id), created];
+  state.setups.delete('');
+  state.setups.set(created.id, newSetup(created.id));
+  if (current()) location.hash = `#/setup?project=${enc(created.id)}`;
+  else toast(`Project ${created.name} created.`, 'ok');
+  poll();
+}
+
+// The chooser result applies only to the form that opened it; a cancelled chooser changes nothing.
+async function addBuild(form, projectId, kind) {
+  if (form.chooser.busy) return;
+  const pending = registerBuild(form, projectId, kind, { bridge: window.ashadDesktop, api, onBusy: renderView });
+  const build = await pending;
+  if (build) {
+    state.data.builds = [build, ...state.data.builds.filter(b => b.id !== build.id)];
+    toast(`Build ${build.name || build.id} added.`, 'ok');
+    poll();
+  }
+  renderView();
+}
+
+async function prepare(owner, projectId, build) {
+  if (!build || owner.prepare.status === 'busy') return;
+  if (!await confirmDialog({ title: 'Prepare desktop?', body: prepareDialogText(build), confirm: 'Prepare desktop' })) return;
+  const pending = prepareDesktop(owner.prepare, projectId, build.id, api);
+  renderView();
+  await pending;
+  if (owner.prepare.status === 'done') {
+    toast('Desktop prepared. Re-checking readiness.', 'ok');
+    owner.prepare = newOp();  // The next preparation is a new request.
+    owner.readiness = null;   // A user-started follow-up, not a poll: the open view probes again.
+    poll();
+  }
+  renderView();
+}
+
+function onSetupAction(action, target, event) {
+  const s = setupFor(state.route);
+  const off = target.getAttribute('aria-disabled') === 'true';
+  if (action === 'setup-finish') {  // The link navigates; the finished setup is dropped by onRoute.
+    syncDirty();
+    return;
+  }
+  if (off) return;
+  if (action === 'setup-step') {
+    s.step = Number(target.dataset.step);
+    renderView();
+    $('#setup-step-title')?.focus();
+  } else if (action === 'setup-create') createProject(s);
+  else if (action === 'setup-add-build') addBuild(s, s.projectId, target.dataset.kind);
+  else if (action === 'setup-recheck') { s.readiness = null; renderView(); }
+  else if (action === 'setup-prepare') prepare(s, s.projectId, setupModel(state.data, s).build);
+  else if (action === 'setup-tune') startTuning(s);
+  else if (action === 'setup-stop-waiting') { s.tune.stopWaiting = true; renderView(); }
+}
+
+async function startTuning(s) {
+  if (s.tune.status === 'busy' || s.tune.waiting || !setupModel(state.data, s).done[3]) return;
+  const payload = { build_id: s.buildId, model: s.model, project_id: s.projectId, name: s.agentName.trim() };
+  const pending = tuneAgent(s.tune, payload, api, ms => { renderView(); return sleep(ms); });
+  renderView();
+  syncDirty();
+  await pending;
+  if (s.tune.status === 'done') {
+    s.agent = s.tune.value;
+    state.data.agents = [s.agent, ...state.data.agents.filter(a => a.id !== s.agent.id)];
+    if (state.route.name === 'setup' && setupKey(state.route) === s.projectId && s.step === 5) s.step = 6;
+    else toast(`Agent ${s.agent.name || s.agent.id} is tuned.`, 'ok');
+    poll();
+  }
+  syncDirty();
+  renderView();
 }
 
 function render() {
@@ -500,18 +650,23 @@ async function onRoute() {
     history.replaceState(null, '', route.name === 'redirect' ? route.to : legacyNewTarget(route.agent, state.data));
     return onRoute();
   }
-  // Leaving a typed, unsent goal asks first (spec §11). Moving between #/ and the same project's composer is not leaving.
-  const dirty = dirtyComposer();
-  if (dirty && composerProject(route, state.data) !== dirty) {
+  const guard = dirtyGuard(route);
+  if (guard) {
     const target = location.hash;
     history.replaceState(null, '', acceptedHash);
-    if (!await confirmDialog({ title: 'Discard this goal?', body: 'The goal you typed has not been started. Leaving discards it.', confirm: 'Discard goal', danger: true })) return;
-    state.drafts.delete(dirty);
-    setDirty(false);
+    if (!await confirmDialog({ ...guard, danger: true })) return;
+    guard.discard();
+    syncDirty();
     location.hash = target;
     return;
   }
   acceptedHash = location.hash;
+  const previous = state.route;
+  if (previous.name === 'setup' && state.setups.get(setupKey(previous))?.agent) state.setups.delete(setupKey(previous));  // A finished setup starts fresh next time.
+  if (route.name === 'setup' && (previous.name !== 'setup' || setupKey(previous) !== setupKey(route))) {
+    // Re-entry jumps to the first incomplete step (or ?step=, never past it) and probes readiness again.
+    Object.assign(setupFor(route), { step: Number(route.query.step) || 0, readiness: null });
+  }
   state.route = route;
   state.isCurrent = epoch.next();  // Any response started for the previous route is now stale.
   if (composerProject(route, state.data)) state.readiness = null;  // Readiness probes on view open, never on the poll.
@@ -522,6 +677,7 @@ async function onRoute() {
     state.runMissing = false;
   }
   rememberProject(route);
+  syncDirty();
   render();
   $('#view').scrollTop = 0;
   if (route.name === 'instance') pollRun();
@@ -572,6 +728,8 @@ document.addEventListener('click', async event => {
   } else if (action === 'composer-recheck') {
     state.readiness = null;
     renderView();
+  } else if (action.startsWith('setup-')) {
+    onSetupAction(action, target, event);
   } else if (action === 'ctl') {
     target.closest('[popover]')?.hidePopover();
     if (target.getAttribute('aria-disabled') !== 'true') onControl(target.dataset.ctl);
@@ -637,19 +795,37 @@ document.addEventListener('input', event => {
     if (!tl.searchDraft.trim() && tl.search) { tl.search = ''; loadPage('latest'); }  // Clearing the box shows everything again.
     return;
   }
+  const field = event.target.dataset?.field;
+  if (field === 'setup-name' || field === 'setup-agent-name') {
+    const s = setupFor(state.route);
+    if (field === 'setup-name') s.name = event.target.value;
+    else Object.assign(s, { agentName: event.target.value, edited: true });
+    if (s.project.status === 'error') Object.assign(s.project, { status: 'idle', error: '' });
+    syncDirty();
+    renderView();
+    return;
+  }
   const form = event.target.closest?.('[data-form="composer"]');
   if (!form || event.target.dataset.field !== 'goal') return;
   const draft = draftFor(form.dataset.project);
   draft.goal = event.target.value;
   draft.requestId ||= newId();  // Created once, when the draft is first edited.
   if (draft.result?.field === 'goal') draft.result = null;
-  setDirty(Boolean(draft.goal.trim()));
+  syncDirty();
   renderView();
 });
 
 document.addEventListener('change', event => {
   const field = event.target.dataset?.field;
   if (field === 'player') { state.thread.player = event.target.value; renderView(); return; }
+  if (field === 'setup-model' || field === 'setup-build') {
+    const s = setupFor(state.route);
+    if (field === 'setup-model') Object.assign(s, { model: event.target.value, edited: true });
+    else Object.assign(s, { buildId: event.target.value, readiness: null });
+    syncDirty();
+    renderView();
+    return;
+  }
   const projectId = composerProject(state.route, state.data);
   if (!projectId || !['agent', 'transport', 'project'].includes(field)) return;
   if (field === 'project') { location.hash = href('p', event.target.value, 'new'); return; }
@@ -676,6 +852,11 @@ document.addEventListener('submit', async event => {
     }
     return;
   }
+  if (event.target.matches('[data-form^="setup-"]')) {
+    event.preventDefault();
+    $('#view [data-key="sn-create"], #view [data-key="sn-next"]')?.click();  // Enter acts like the step's primary button.
+    return;
+  }
   const form = event.target.closest('[data-form="composer"]');
   if (!form) return;
   event.preventDefault();
@@ -695,7 +876,9 @@ $('#view').addEventListener('scroll', () => {
 }, { passive: true });
 // Ages tick locally (observation age, Fresh to Stale, card times); nothing is fetched.
 setInterval(() => {
-  if (state.route.name !== 'instance' || document.hidden) return;
+  if (document.hidden) return;
+  for (const t of document.querySelectorAll('#view time[data-elapsed]')) t.textContent = elapsed(Date.now() / 1000 - Number(t.dataset.elapsed));
+  if (state.route.name !== 'instance') return;
   updateTimes(timelineList());
   renderInspector(threadRun());
 }, 1000);

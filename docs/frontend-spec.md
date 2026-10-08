@@ -200,9 +200,11 @@ A centred column (max 720px) with a horizontal stepper on top (numbered, current
 | 5 | **Tuning:** indeterminate progress, elapsed time, "This prepares instructions, not model weights" | `POST /api/agents/tune`; recovery via `GET /api/agents/tuning/<request_id>` | `status: completed` |
 | 6 | **Instruction review:** the saved instructions in a scrollable mono panel (read-only), with model, build and timestamp | none | **Start an instance** goes to the composer with `?agent=` |
 
-- Setup is resumable. Re-entering `#/setup?project=<id>` jumps to the first incomplete step.
-- Only one tuning can run at a time. If another is running, step 5 says so and waits.
-- Prepare and tuning are long operations. The page stays responsive, and leaving the page doesn't cancel them.
+- Setup is resumable. Re-entering `#/setup?project=<id>` jumps to the first incomplete step. Steps 1–2 are complete from data (project exists, project has a build). Desktop readiness is a probe, so re-entry re-probes and lands on step 3 at the earliest; a project that already has agents still lands there, because re-entry means adding another configuration. `?step=` is honoured on entry and capped at the first incomplete step. A finished setup (tuned agent) is dropped when you leave it, so the next visit starts a new configuration.
+- Step 1 also links to existing projects (`#/setup?project=<id>`). Step 2 lists the project's builds as radio rows (newest preselected) next to the two chooser buttons.
+- Create project, prepare and tune each keep one `request_id` until they succeed. A refusal (4xx) frees the ID for corrected input. A lost reply locks the submitted fields, so Retry can only resend the same request: project creation and preparation are idempotent per ID, and tuning recovers through `GET /api/agents/tuning/<request_id>` first.
+- Only one tuning can run at a time. If another is running (the backend's "already being tuned" refusal), step 5 says so, retries the same request every 5s and offers **Stop waiting**.
+- Prepare and tuning are long operations. The page stays responsive, and leaving the page doesn't cancel them. Their state lives in renderer memory per project, so it survives navigation but not a reload.
 
 ### 8.5 Instance thread (`#/i/<run>`)
 
@@ -401,11 +403,13 @@ Rules:
 | C5 | Activity timeline | Built, awaiting review |
 | C6 | Inspector | Built, awaiting review |
 | C7 | Project overview | Not started |
-| C8 | Setup flow | Not started |
+| C8 | Setup flow | Built, awaiting review |
 | C9 | Settings and Usage | Not started |
 | C10 | Narrow widths, accessibility audit, docs | Not started |
 
 The order lets you use the new UI for real as early as possible. After C4 you can start an instance from the composer and drive it. After C6 you can watch it fully. C7–C9 cover setup and admin, which existing data can do without until then.
+
+**Order change (2026-10-08):** C7–C10 are built in the order C8 → C9 → C7 → C10. The workspace under review is empty and ChatGPT is not signed in, so setup (C8) and Settings › Account sign-in (C9) are what unblock the rest of the app.
 
 ### 16.3 Chunks
 
@@ -490,7 +494,7 @@ The order lets you use the new UI for real as early as possible. After C4 you ca
 - **Build:** `views/setup.js` with stepper, six steps, resumable entry via `?project=`, tuning progress and recovery, instruction review, hand-off to the composer.
 - **Tests (re-added):** re-entry jumps to the first incomplete step; tuning recovery via `tuning/<id>`; one-tuning-at-a-time messaging; closing setup restores draft protection.
 - **Review:** set up a new game agent end to end from an empty project.
-- **Notes:**
+- **Notes:** Built before C7 (see §16.2). `core.js` gained `newOp`/`submitOnce`, the shared one-ID-per-operation helper used by create project, prepare and tune. Each step mounts its inputs once per (project, step) and patches `stepper`, `main` and `nav` regions. Readiness markup (`readinessHTML`) lives in `setup.js` for reuse by C7. The dirty-draft guard in `app.js` is now one `dirtyGuard(route)` covering the composer, setup and settings forms. Steam shows as "(optional)" in the checklist, because ENet needs no Steam account. Tuning progress uses a native indeterminate `<progress>` and an elapsed time ticking locally.
 
 #### C9: Settings and Usage
 

@@ -1,6 +1,7 @@
-import { esc, icon, href, newId, api, parseRoute, legacyNewTarget, createEpoch, patchHTML, dirtyBridge, runGoal, runStatus } from './core.js';
+import { esc, icon, href, newId, api, parseRoute, legacyNewTarget, createEpoch, patchHTML, dirtyBridge, runGoal } from './core.js';
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
 import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
+import { isActiveRun, playerIds, instanceState, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions } from './views/instance.js';
 
 const $ = selector => document.querySelector(selector);
 const enc = encodeURIComponent;
@@ -14,10 +15,15 @@ const state = {
   route: parseRoute(location.hash),
   failures: 0,
   polling: false,
-  ui: { expanded: new Map(), showAll: new Set(), lastProject: null },
+  ui: { expanded: new Map(), showAll: new Set(), lastProject: null, inspectorOpen: true },
   drafts: new Map(),   // projectId -> composer draft
   readiness: null,     // { key, loading, result, error } for the open composer; probed on view open only
   isCurrent: () => true,
+  runSlot: createRunSlot(),  // GET /api/runs/<id> for the open thread
+  runMissing: false,
+  commands: new Map(),       // `${runId}:${action}` -> { id, pending, error }
+  camera: null,
+  thread: {},                // per-open-thread UI: player, instruction draft, last status key
 };
 const epoch = createEpoch();
 const setDirty = dirtyBridge(() => window.ashadDesktop);
@@ -31,19 +37,26 @@ function toast(message, kind = 'info') {
   setTimeout(() => node.remove(), kind === 'error' ? 8000 : 5000);
 }
 
-function confirmDialog({ title, body, confirm = 'Confirm', danger = false }) {
+// Resolves to the form's FormData on confirm, or null. html is trusted markup built with esc().
+// Closing empties the dialog, so a shown password or typed text never outlives it in the DOM.
+function openDialog({ title, body = '', html = '', confirm = 'Confirm', cancel = 'Cancel', danger = false, wide = false }) {
   const dialog = $('#dialog');
   const opener = document.activeElement;
-  dialog.innerHTML = `<form method="dialog"><h2 id="dialog-title">${esc(title)}</h2><p>${esc(body)}</p>`
-    + `<div class="dialog-actions"><button class="btn btn-secondary" value="cancel"${danger ? ' autofocus' : ''}>Cancel</button>`
-    + `<button class="btn ${danger ? 'btn-danger-solid' : 'btn-primary'}" value="ok"${danger ? '' : ' autofocus'}>${esc(confirm)}</button></div></form>`;
+  dialog.classList.toggle('dialog-wide', wide);
+  dialog.innerHTML = `<form method="dialog"><h2 id="dialog-title">${esc(title)}</h2>${body ? `<p>${esc(body)}</p>` : ''}${html}`
+    + `<div class="dialog-actions"><button class="btn btn-secondary" value="cancel" formnovalidate${danger || !confirm ? ' autofocus' : ''}>${esc(cancel)}</button>`
+    + (confirm ? `<button class="btn ${danger ? 'btn-danger-solid' : 'btn-primary'}" value="ok"${danger ? '' : ' autofocus'}>${esc(confirm)}</button>` : '')
+    + `</div></form>`;
   dialog.returnValue = '';
   dialog.showModal();
   return new Promise(resolve => dialog.addEventListener('close', () => {
+    const data = dialog.returnValue === 'ok' ? new FormData(dialog.querySelector('form')) : null;
+    dialog.innerHTML = '';
     opener?.focus?.();
-    resolve(dialog.returnValue === 'ok');
+    resolve(data);
   }, { once: true }));
 }
+const confirmDialog = options => openDialog(options).then(Boolean);
 
 // ── Rendering ───────────────────────────────────────────────────────────────
 function renderSidebar() {
@@ -73,12 +86,7 @@ function viewFor(route, data) {
     case 'composer': return project(route.id) ? noAgentsHTML(project(route.id)) : notFound('Project');
     case 'project':
       return project(route.id) ? placeholder({ iconName: 'folder-open', tag: 'Coming in C7', title: project(route.id).name, body: 'Builds, agent configurations, desktop readiness and recent instances.' }) : notFound('Project');
-    case 'instance': {
-      const run = (data?.runs || []).find(r => r.id === route.id);
-      if (!run) return notFound('Instance');
-      const status = runStatus(run, (data.instance_slot?.owners || []).find(o => o.run_id === run.id));
-      return placeholder({ tag: 'Coming in C4', title: runGoal(run), extra: `<span class="badge badge-${status.tone}"><span class="dot dot-${status.tone}"></span>${esc(status.label)}</span>` });
-    }
+    case 'instance': return state.runMissing ? notFound('Instance') : `<div class="boot"><p>Loading instance…</p></div>`;
     case 'setup': return placeholder({ iconName: 'gamepad', tag: 'Coming in C8', title: 'Set up a game agent', body: 'Project, build, desktop, agent and model, tuning, instruction review.' });
     case 'usage': return placeholder({ iconName: 'chart-column', tag: 'Coming in C9', title: 'Usage' });
     case 'settings': return placeholder({ iconName: 'sliders', tag: 'Coming in C9', title: 'Settings' });
@@ -91,7 +99,7 @@ function windowTitle(route, data) {
   const projects = data?.projects || [];
   const composer = composerProject(route, data);
   if (composer) return projects.find(p => p.id === composer)?.name || '';
-  if (route.name === 'instance') { const run = (data?.runs || []).find(r => r.id === route.id); return run ? runGoal(run) : ''; }
+  if (route.name === 'instance') { const run = threadRun(); return run ? runGoal(run) : ''; }
   if (route.name === 'project' || route.name === 'composer') return projects.find(p => p.id === route.id)?.name || '';
   return { setup: 'Setup', usage: 'Usage', settings: 'Settings', styleguide: 'Styleguide' }[route.name] || '';
 }
@@ -101,9 +109,11 @@ function renderView() {
   const title = windowTitle(route, state.data);
   $('#window-title').textContent = title;
   document.title = title ? `${title} · ASHAD` : 'ASHAD';
-  $('#inspector').hidden = route.name !== 'instance';
+  $('#inspector').hidden = route.name !== 'instance' || !state.ui.inspectorOpen;
   if (!state.data) return;
   const view = $('#view');
+  if (route.name === 'instance' && threadRun()) return renderThread(view);
+  stopCamera();
   const composer = composerProject(route, state.data);
   if (composer && projectAgents(state.data, composer).length) return renderComposer(view, composer);
   if (view.dataset.mount) { view.dataset.mount = ''; view.renderedHTML = undefined; }
@@ -199,6 +209,174 @@ function render() {
   renderView();
 }
 
+// ── Instance thread (C4) ────────────────────────────────────────────────────
+// The detailed GET wins over the bootstrap row for the open thread.
+function threadRun() {
+  const id = state.route.id;
+  const detail = state.runSlot.get();
+  return detail?.id === id ? detail : (state.data?.runs || []).find(r => r.id === id);
+}
+
+const threadOwner = id => (state.data?.instance_slot?.owners || []).find(o => o.run_id === id);
+
+function stopCamera() {
+  state.camera?.stop();
+  state.camera = null;
+}
+
+function renderThread(view) {
+  const run = threadRun();
+  const t = state.thread;
+  const key = `thread:${run.id}`;
+  if (view.dataset.mount !== key) {
+    stopCamera();  // Clear the old feed before its <img> is dropped with the old markup.
+    mount(view, key, threadSkeleton());
+    state.camera = createCamera(view.querySelector('[data-camera]'), { onChange: () => queueMicrotask(renderView) });
+  }
+  const owner = threadOwner(run.id);
+  const status = instanceState(run, owner);
+  const mine = () => [...state.commands].filter(([k]) => k.startsWith(`${run.id}:`));
+  if (t.statusKey !== status.key) {
+    // A failed command for an earlier state is moot once the state moves on.
+    for (const [k, c] of mine()) if (!c.pending) state.commands.delete(k);
+    t.statusKey = status.key;
+  }
+  const ids = playerIds(run);
+  const player = ids.includes(t.player) ? t.player : ids[0];
+  state.camera.sync(cameraTarget(run, player, document.hidden));
+  const pending = new Set(mine().filter(([, c]) => c.pending).map(([k]) => k.slice(run.id.length + 1)));
+  const error = mine().find(([, c]) => c.error)?.[1].error;
+  patchRegions(view, threadRegions(run, { status, owner, data: state.data, ui: { ...t, inspectorOpen: state.ui.inspectorOpen }, pending, error, cameraStatus: state.camera.status, player }));
+  const reason = view.querySelector('#resume-reason');
+  if (reason && reason.value !== t.instructionText) reason.value = t.instructionText;
+}
+
+let runTimer;
+function scheduleRun() {
+  clearTimeout(runTimer);
+  if (state.route.name !== 'instance') return;
+  const live = isActiveRun(threadRun()) || Boolean(threadOwner(state.route.id));
+  runTimer = setTimeout(() => (document.hidden ? scheduleRun() : pollRun()), live ? 2000 : 15000);
+}
+
+async function pollRun() {
+  if (state.route.name !== 'instance') return;
+  const id = state.route.id;
+  const current = state.isCurrent;
+  const apply = state.runSlot.begin();
+  try {
+    const run = await api(`/api/runs/${enc(id)}`);
+    if (current() && apply(run)) state.runMissing = false;
+  } catch (error) {
+    if (current() && error.status === 404) state.runMissing = true;
+  }
+  if (!current()) return;
+  renderView();
+  scheduleRun();
+}
+
+// Runs one control through its stable command ID. runOf picks the run a successful response carries.
+async function command(action, send, ok, runOf = value => value) {
+  const runId = state.route.id;
+  const pending = runCommand(state.commands, `${runId}:${action}`, send);
+  renderView();
+  const { value, error, skipped } = await pending;
+  if (skipped) return undefined;
+  const onThread = state.route.name === 'instance' && state.route.id === runId;
+  if (!error) {
+    const run = runOf(value);
+    if (run?.id === runId) state.runSlot.set(run);  // Also drops any GET that started before this response.
+    if (ok) toast(ok, 'ok');
+  } else if (!onThread) toast(error.message, 'error');
+  if (onThread) { renderView(); pollRun(); }
+  poll();
+  return error ? undefined : value;
+}
+
+const runPath = run => `/api/runs/${enc(run.id)}`;
+const control = (run, name, extra = {}) => id => api(`${runPath(run)}/control`, { method: 'POST', body: { command: name, command_id: id, ...extra } });
+
+async function onControl(action) {
+  const run = threadRun();
+  if (!run) return;
+  const goal = runGoal(run);
+  switch (action) {
+    case 'pause': return command('pause', control(run, 'pause'), 'Paused. Bot input is held; the game may keep simulating.');
+    case 'resume': return command('resume', control(run, 'resume'), 'Resumed.');
+    case 'resume-with':
+      state.thread.instructionOpen = true;
+      renderView();
+      return $('#resume-reason')?.focus();
+    case 'stop':
+      if (!await confirmDialog({ title: 'Stop this instance?', body: `“${goal}” stops and its desktop is torn down. Retained history stays readable.`, confirm: 'Stop instance', danger: true })) return;
+      return command('stop', control(run, 'stop'), 'Stop requested.');
+    case 'extend': {
+      const form = await openDialog({ title: 'Extend investigation', confirm: 'Extend',
+        html: `<div class="field"><label for="extend-minutes">Extra minutes</label><input id="extend-minutes" class="input" name="minutes" type="number" min="1" max="1440" value="30" required><span class="hint">The run's overall duration limit is unchanged.</span></div>` });
+      if (!form) return;
+      return command('extend', control(run, 'extend', { seconds: Number(form.get('minutes')) * 60 }), 'Investigation extended.');
+    }
+    case 'recalculate':
+      if (!await confirmDialog({ title: 'Recalculate goals?', body: 'Bot input is held while ASHAD replans from fresh game state under the same primary goal. The old plan stays in the history. Resume separately when you are ready.', confirm: 'Recalculate goals' })) return;
+      return command('recalculate', id => api(`${runPath(run)}/recalculate-goals`, { method: 'POST', body: { command_id: id } }), 'Goals recalculated. Bot input stays paused until you resume.');
+    case 'takeover': return takeOver(run);
+    case 'handback': return command('handback', () => api(`${runPath(run)}/takeover/finish`, { method: 'POST', body: { resume: true, reason: '' } }), 'Control handed back. Bots resumed.');
+    case 'handback-paused': return command('handback-paused', () => api(`${runPath(run)}/takeover/finish`, { method: 'POST', body: { resume: false, reason: '' } }), 'Control handed back. Bots stay paused.');
+    case 'flag': {
+      const form = await openDialog({ title: 'Flag an issue', confirm: 'Flag issue',
+        html: `<div class="field"><label for="flag-description">What happened?</label><textarea id="flag-description" class="textarea" name="description" rows="3" required maxlength="4000"></textarea></div>`
+          + `<div class="field"><label for="flag-expected">What did you expect? (optional)</label><textarea id="flag-expected" class="textarea" name="expected" rows="2" maxlength="4000"></textarea></div>` });
+      if (!form) return;
+      return command('flag', () => api(`${runPath(run)}/flag`, { method: 'POST', body: { description: form.get('description'), expected: form.get('expected').trim() || undefined } }), 'Issue flagged.', () => null);
+    }
+    case 'reconcile':
+      if (!await confirmDialog({ title: 'Reconcile teardown?', body: 'ASHAD retries the desktop teardown. Reservations are released only after the worker confirms shutdown.', confirm: 'Reconcile teardown' })) return;
+      return command('reconcile', () => api(`${runPath(run)}/reconcile`, { method: 'POST', body: {} }), 'Teardown reconciliation finished.', () => null);
+    case 'report': return showReport(run);
+    case 'evidence': return showEvidence(run);
+  }
+}
+
+async function takeOver(run) {
+  const player = playerIds(run).includes(state.thread.player) ? state.thread.player : playerIds(run)[0];
+  const current = state.isCurrent;
+  const result = await command('takeover', () => api(`${runPath(run)}/players/${enc(player)}/takeover`, { method: 'POST', body: {} }), null, value => value?.run);
+  if (!result || !current()) return;
+  let url = null;
+  try { url = new URL(result.desktop_url); } catch { /* invalid below */ }
+  const safe = url && ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash;
+  // The password lives only in this dialog's DOM; openDialog empties it on close.
+  await openDialog({ title: 'You have control', confirm: null, cancel: 'Close',
+    html: `<p>All bots are paused. Open the desktop and enter this password. Closing the desktop window does not hand back; choose Hand back when you are done.</p>`
+      + `<div class="field"><label for="takeover-password">Desktop password</label><div class="copy-row">`
+      + `<input id="takeover-password" class="input mono" value="${esc(result.password || '')}" readonly autocomplete="off" spellcheck="false">`
+      + `<button type="button" class="btn btn-secondary" data-action="copy-password">Copy</button></div><span class="hint">Shown once. Cleared when this dialog closes.</span></div>`
+      + (safe ? `<a class="btn btn-primary" href="${esc(url.href)}" target="_blank" rel="noopener noreferrer">${icon('monitor')}Open desktop</a>`
+        : `<p class="field-error">The desktop address is not valid. Hand back, then fix the worker's desktop URL in Settings.</p>`) });
+}
+
+async function showReport(run) {
+  try {
+    const { markdown } = await api(`${runPath(run)}/report`);
+    await openDialog({ title: 'Report', confirm: null, cancel: 'Close', wide: true, html: `<pre class="report">${esc(markdown || 'The report is empty.')}</pre>` });
+  } catch (error) { toast(`Report unavailable: ${error.message}`, 'error'); }
+}
+
+async function showEvidence(run) {
+  try {
+    const { files = [], gaps = [], status } = await api(`${runPath(run)}/evidence`);
+    const list = files.filter(f => String(f.url).startsWith('/api/runs/')).map(f => `<li><a href="${esc(f.url)}" download>${icon('file-text')}${esc(f.name)}</a></li>`).join('');
+    await openDialog({ title: 'Evidence', confirm: null, cancel: 'Close', wide: true,
+      html: `<p>Status: ${esc(status || 'unknown')}</p>${list ? `<ul class="evidence">${list}</ul>` : '<p>No files were retained.</p>'}`
+        + (gaps.length ? `<h3 class="section-title">Gaps</h3><ul class="evidence-gaps">${gaps.map(g => `<li>${esc(typeof g === 'string' ? g : JSON.stringify(g))}</li>`).join('')}</ul>` : '') });
+  } catch (error) { toast(`Evidence unavailable: ${error.message}`, 'error'); }
+}
+
+function toggleInspector() {
+  state.ui.inspectorOpen = !state.ui.inspectorOpen;
+  renderView();
+}
+
 // ── Routing ─────────────────────────────────────────────────────────────────
 function rememberProject(route) {
   const run = route.name === 'instance' ? (state.data?.runs || []).find(r => r.id === route.id) : null;
@@ -229,9 +407,16 @@ async function onRoute() {
   state.isCurrent = epoch.next();  // Any response started for the previous route is now stale.
   if (composerProject(route, state.data)) state.readiness = null;  // Readiness probes on view open, never on the poll.
   if (route.name === 'composer' && route.query.agent) draftFor(route.id).agentId = route.query.agent;
+  if (route.name === 'instance' && state.thread.runId !== route.id) {
+    state.thread = { runId: route.id, player: null, instructionOpen: false, instructionText: '', statusKey: null };
+    state.runSlot.set(null);  // Also drops a late GET for the previous thread.
+    state.runMissing = false;
+  }
   rememberProject(route);
   render();
   $('#view').scrollTop = 0;
+  if (route.name === 'instance') pollRun();
+  else clearTimeout(runTimer);
 }
 
 // ── Polling ─────────────────────────────────────────────────────────────────
@@ -276,6 +461,18 @@ document.addEventListener('click', async event => {
   } else if (action === 'composer-recheck') {
     state.readiness = null;
     renderView();
+  } else if (action === 'ctl') {
+    target.closest('[popover]')?.hidePopover();
+    if (target.getAttribute('aria-disabled') !== 'true') onControl(target.dataset.ctl);
+  } else if (action === 'toggle-inspector') {
+    toggleInspector();
+  } else if (action === 'instruction-cancel') {
+    Object.assign(state.thread, { instructionOpen: false, instructionText: '' });
+    renderView();
+  } else if (action === 'copy-password') {
+    const field = $('#takeover-password');
+    try { await navigator.clipboard.writeText(field.value); toast('Password copied.', 'ok'); }
+    catch { field.select(); toast('Press Ctrl+C to copy the selected password.'); }
   } else if (action === 'sg-toast') {
     toast(target.dataset.message, target.dataset.kind);
   } else if (action === 'sg-confirm') {
@@ -290,6 +487,10 @@ document.addEventListener('keydown', event => {
     toggleSidebar();
   }
   // Plain Enter inserts a newline; launching is costly and stays explicit.
+  if (event.ctrlKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'i') {
+    event.preventDefault();
+    toggleInspector();
+  }
   if (event.ctrlKey && event.key === 'Enter' && event.target.id === 'composer-goal') {
     event.preventDefault();
     event.target.form.requestSubmit();
@@ -298,6 +499,7 @@ document.addEventListener('keydown', event => {
 
 // Composer fields update the in-memory draft; the textarea itself is never re-rendered.
 document.addEventListener('input', event => {
+  if (event.target.id === 'resume-reason') { state.thread.instructionText = event.target.value; return; }
   const form = event.target.closest?.('[data-form="composer"]');
   if (!form || event.target.dataset.field !== 'goal') return;
   const draft = draftFor(form.dataset.project);
@@ -310,6 +512,7 @@ document.addEventListener('input', event => {
 
 document.addEventListener('change', event => {
   const field = event.target.dataset?.field;
+  if (field === 'player') { state.thread.player = event.target.value; renderView(); return; }
   const projectId = composerProject(state.route, state.data);
   if (!projectId || !['agent', 'transport', 'project'].includes(field)) return;
   if (field === 'project') { location.hash = href('p', event.target.value, 'new'); return; }
@@ -317,7 +520,18 @@ document.addEventListener('change', event => {
   renderView();
 });
 
-document.addEventListener('submit', event => {
+document.addEventListener('submit', async event => {
+  if (event.target.matches('[data-form="resume-instruction"]')) {
+    event.preventDefault();
+    const run = threadRun();
+    const reason = state.thread.instructionText.trim();
+    if (!run || !reason) return;
+    if (await command('resume-with', control(run, 'resume', { reason }), 'Resumed with your instruction.')) {
+      Object.assign(state.thread, { instructionOpen: false, instructionText: '' });
+      renderView();
+    }
+    return;
+  }
   const form = event.target.closest('[data-form="composer"]');
   if (!form) return;
   event.preventDefault();
@@ -326,7 +540,11 @@ document.addEventListener('submit', event => {
 
 $('#nav-toggle').addEventListener('click', toggleSidebar);
 window.addEventListener('hashchange', onRoute);
-document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
+// Hidden: the camera stops at once. Visible again: data refreshes and the camera reconnects.
+document.addEventListener('visibilitychange', () => {
+  renderView();
+  if (!document.hidden) { poll(); pollRun(); }
+});
 
 // ── Styleguide (temporary; removed in C10) ─────────────────────────────────
 function styleguide() {

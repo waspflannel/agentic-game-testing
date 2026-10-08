@@ -275,9 +275,9 @@ A secondary nav on the left (inside `main`) with the section form on the right. 
 | Run state | Badge | Control bar (left → right) | `⋯` menu |
 |---|---|---|---|
 | Queued / Starting | `◌ Starting` (muted spinner) | **Stop** | Flag issue |
-| Running | `● Running` (live, pulsing) | **Pause**, **Take over** · **Stop** | Extend time, Recalculate goals, Flag issue |
+| Running | `● Running` (live, pulsing) | **Pause**, **Take over** · **Stop** | Recalculate goals, Flag issue |
 | Paused | `▲ Paused` | **Resume** (split button: plain, or with a recovery instruction), **Take over** · **Stop** | Recalculate goals, Flag issue |
-| Investigating | `▲ Needs review` | Same as Paused, plus a banner above the camera with `pause.reason` | Same |
+| Investigating | `▲ Needs review` | Same as Paused, plus a banner above the camera with `pause.reason` | Extend investigation, Recalculate goals, Flag issue |
 | Human control (`run.human_control`) | `✋ You have control` | **Hand back** (split: resume, or keep paused) · **Stop** | Flag issue |
 | Recalculating goals | `◌ Replanning` | **Stop** only; Resume appears when planning finishes | none |
 | Stopping | `◌ Stopping` | none (shows "Waiting for teardown confirmation") | none |
@@ -396,7 +396,7 @@ Rules:
 | C1 | Shell, tokens, title bar, router, polling | Done |
 | C2 | Sidebar | Done |
 | C3 | Empty workspace and composer | Built, awaiting review |
-| C4 | Instance thread: header, camera, controls | Not started |
+| C4 | Instance thread: header, camera, controls | Built, awaiting review |
 | C5 | Activity timeline | Not started |
 | C6 | Inspector | Not started |
 | C7 | Project overview | Not started |
@@ -457,7 +457,7 @@ The order lets you use the new UI for real as early as possible. After C4 you ca
   - Controls: each one uses a single `command_id` across retries; recalculate pauses once and ignores late GETs.
   - Ownership: paused, ended and unconfirmed ownership display correctly.
 - **Review:** drive a live instance through pause, resume, take over, hand back and stop. Open an ended thread and confirm nothing launches. Check that Stop stays reachable while scrolling.
-- **Notes:**
+- **Notes:** Extend moved from Running to Investigating's menu: the backend extends only an open investigation. Recalculate goals shows only when the backend would accept it (one launched player, no human or external control). The thread mounts once per run and patches regions; the camera owns its `<img>` outside the patched markup, retries with exponential backoff (cap 30s) and stops while hidden. Take over shows the password and an **Open desktop** link in a dialog that empties on close; the main process opens the viewer. Split-button menus and `⋯` use the native `popover` attribute. Report and Evidence open read-only dialogs.
 
 #### C5: Activity timeline
 

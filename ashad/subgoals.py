@@ -441,6 +441,21 @@ def block(plan, reason):
     plan.update(status="blocked", reason=reason, revision=plan["revision"] + 1)
 
 
+def retire(plan, focus, decision, context):
+    """Retirement is not success: the goal and its descendants keep their predicates and leave the active path."""
+    retired = {focus["id"]}
+    for goal in plan["goals"]:
+        if goal.get("parent_id") in retired:
+            retired.add(goal["id"])
+        if goal["id"] in retired and goal["status"] != "completed":
+            goal.update(retired=True, status="blocked", actionable=False, blocked_reason=decision["reason"],
+                        retirement_evidence={"observation": observation_ref(context["observation"]),
+                                             "references": decision["evidence"]})
+    selected = select_active(plan)
+    if selected:
+        selected["actionable"] = False
+
+
 def apply_decision(plan, raw, context):
     """Validate fully before editing a copy; callers commit only while their run is current."""
     decision = PlanningDecision.model_validate(raw).model_dump()
@@ -458,18 +473,8 @@ def apply_decision(plan, raw, context):
         grounded_evidence(decision["evidence"], context)
         if any(decision["completion"][k] != focus["completion"][k] for k in ("kind", "target", "quantity", "collection", "matches")):
             raise ValueError("Retirement must preserve the original completion condition")
-        retired = {focus["id"]}
-        for goal in result["goals"]:
-            if goal.get("parent_id") in retired:
-                retired.add(goal["id"])
-            if goal["id"] in retired and goal["status"] != "completed":
-                goal.update(retired=True, status="blocked", actionable=False, blocked_reason=decision["reason"],
-                            retirement_evidence={"observation": observation_ref(context["observation"]),
-                                                 "references": decision["evidence"]})
         result.update(reason=decision["reason"], revision=result["revision"] + 1)
-        selected = select_active(result)
-        if selected:
-            selected["actionable"] = False
+        retire(result, focus, decision, context)
         return result
     ancestors = goal_path(result)
     parent_condition = ancestors[-2]["completion"] if len(ancestors) > 1 else None
@@ -500,7 +505,12 @@ def apply_decision(plan, raw, context):
                  source_observation=observation_ref(context["observation"]), actionable=decision["mode"] == "act",
                  attempts=0, reviews=focus.get("reviews", 0) + 1)
     result.update(reason=decision["reason"], revision=result["revision"] + 1)
-    if decision["mode"] == "blocked":
+    if decision["mode"] == "blocked" and focus["id"] != result["root_id"]:
+        # Ask the parent before the operator: it replans with this reason; only a blocked root pauses the run.
+        # Parent review caps bound repeated skips.
+        result["reason"] = f"Skipped blocked goal \"{focus['objective']}\": {decision['reason']}"
+        retire(result, focus, {**decision, "reason": result["reason"]}, context)
+    elif decision["mode"] == "blocked":
         block(result, decision["reason"])
     elif focus["reviews"] > MAX_UNPRODUCTIVE_REVIEWS:
         block(result, "Repeated planning has not produced observable progress. " + decision["reason"])

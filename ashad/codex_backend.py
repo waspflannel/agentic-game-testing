@@ -170,7 +170,7 @@ class CodexBackend:
             "Expand missing prerequisites; act only on achievable goals; block unsupported progress. "
             "Use retire when current evidence makes a non-root goal obsolete (e.g. character setup after entering play). "
             "Retirement is NOT completion: preserve its completion condition, cite current evidence, and let the controller refocus. "
-            "Do not block merely because a passed setup screen can no longer be verified. "
+            "Blocking a non-root goal skips it and replans its parent; only a blocked root pauses for the operator. "
             "Only expand supplies nonempty subgoals; parents with prerequisites have actionable=false. "
             "Backward-chain missing prerequisites using actual visible quest and recipe data plus game_controls knowledge. "
             "Reuse existing inventory, equipment and resources; stop decomposing at an executable leaf supported by current "

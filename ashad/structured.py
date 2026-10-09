@@ -249,26 +249,31 @@ class StructuredPlayers:
         context = self.decision_context(run, player, observation)
         revision = plan["revision"]
         self.status(run_id, player_id, "planning", "Finding the next achievable prerequisite for: " + context["current_goal"]["objective"], generation)
-        self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": revision, "context": context})
-        proposal = await self.coordinator.ai.plan_subgoals(context, run_id)
-        if not current():
-            self.store.event(run_id, "subgoal_planning_cancelled", {"player_id": player_id, "reason": "Run control changed during planning"})
-            return False
-        fresh = await self.observe(run_id, player_id)
-        if not current():
-            return False
-        live, _ = self.binding(run_id, player_id)
-        latest_plan = live.get("subgoal_plan")
-        if (not latest_plan or latest_plan["revision"] != revision or
-                subgoals.planning_scene(fresh) != subgoals.planning_scene(observation)):
-            self.store.event(run_id, "subgoal_planning_cancelled", {"player_id": player_id, "reason": "Plan, game binding, or visible controls changed during planning"})
-            return False
-        try:
-            revised = subgoals.apply_decision(latest_plan, proposal, context)
-            verified = subgoals.reconcile(revised, fresh, generation)
-        except ValueError as exc:
-            self.store.event(run_id, "subgoal_plan_rejected", {"player_id": player_id, "reason": str(exc)})
-            raise ProviderError("invalid_plan", f"Planner returned an unsupported or ungrounded goal: {exc}") from exc
+        for attempt in range(2):
+            self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": revision, "context": context})
+            proposal = await self.coordinator.ai.plan_subgoals(context, run_id)
+            if not current():
+                self.store.event(run_id, "subgoal_planning_cancelled", {"player_id": player_id, "reason": "Run control changed during planning"})
+                return False
+            fresh = await self.observe(run_id, player_id)
+            if not current():
+                return False
+            live, _ = self.binding(run_id, player_id)
+            latest_plan = live.get("subgoal_plan")
+            if (not latest_plan or latest_plan["revision"] != revision or
+                    subgoals.planning_scene(fresh) != subgoals.planning_scene(observation)):
+                self.store.event(run_id, "subgoal_planning_cancelled", {"player_id": player_id, "reason": "Plan, game binding, or visible controls changed during planning"})
+                return False
+            try:
+                revised = subgoals.apply_decision(latest_plan, proposal, context)
+                verified = subgoals.reconcile(revised, fresh, generation)
+                break
+            except ValueError as exc:
+                self.store.event(run_id, "subgoal_plan_rejected", {"player_id": player_id, "reason": str(exc), "attempt": attempt + 1})
+                if attempt:
+                    raise ProviderError("invalid_plan", f"Planner returned an unsupported or ungrounded goal: {exc}") from exc
+                # One corrective retry: show the planner its rejected answer and the validator's reason.
+                context = {**context, "previous_attempt_rejected": {"reason": str(exc), "rejected_answer": proposal}}
         live["subgoal_plan"] = revised
         self.store.put("runs", live)
         self.store.event(run_id, "subgoal_plan_updated", {"player_id": player_id, "plan": revised})

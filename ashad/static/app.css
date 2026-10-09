@@ -322,6 +322,7 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .setup-aside { display: grid; gap: 4px; }
 .link-list { margin: 0; padding-left: 18px; display: grid; gap: 2px; }
 .btn-row { display: flex; flex-wrap: wrap; gap: 8px; }
+[data-region="builds"] > .btn-row { margin-top: 12px; }
 .row-between { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .hint { font-size: var(--fs-meta); color: var(--text-3); }
 .radio-list, .checks { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }

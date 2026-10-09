@@ -56,7 +56,8 @@ export function overviewRegions(m, ov, now = Date.now() / 1000) {
   };
   const builds = (m.builds.length ? `<ul class="list">${m.builds.map(b => `<li class="list-row"><div class="list-main"><span class="list-title">${esc(b.name || b.id)}</span>`
     + `<span class="mono check-detail" title="${esc(b.manifest_sha256 || '')}">${esc(String(b.source_revision || b.manifest_sha256 || b.id).slice(0, 48))}</span>`
-    + `<span class="check-detail">${ov.validation.get(b.id)?.ready ? icon('check', 'icon check-ok') : ov.validation.get(b.id) ? icon('alert', 'icon check-bad') : ''}${esc(validation(b))}</span></div></li>`).join('')}</ul>`
+    + `<span class="check-detail">${ov.validation.get(b.id)?.ready ? icon('check', 'icon check-ok') : ov.validation.get(b.id) ? icon('alert', 'icon check-bad') : ''}${esc(validation(b))}</span></div>`
+    + `<div class="list-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="ov-delete-build" data-id="${esc(b.id)}" data-key="ov-del-${esc(b.id)}">Remove</button></div></li>`).join('')}</ul>`
     : `<p class="hint">No build is registered yet.</p>`)
     + `<div class="btn-row"><button type="button" class="btn btn-ghost btn-sm" data-action="ov-add-build" data-kind="manifest" data-key="ov-manifest"${ov.chooser.busy ? ' aria-disabled="true"' : ''}>${icon('plus')}Add manifest…</button>`
     + `<button type="button" class="btn btn-ghost btn-sm" data-action="ov-add-build" data-kind="folder" data-key="ov-folder"${ov.chooser.busy ? ' aria-disabled="true"' : ''}>${icon('plus')}Add build folder…</button></div>`

@@ -330,6 +330,18 @@ async function addBuild(form, projectId, kind) {
   renderView();
 }
 
+async function deleteBuild(id) {
+  const build = (state.data.builds || []).find(b => b.id === id);
+  if (!await confirmDialog({ title: `Remove ${build?.name || id}?`, body: 'ASHAD forgets this build. Its files and past instances are kept; agents tuned on it can no longer start.', confirm: 'Remove', danger: true })) return;
+  try {
+    await api(`/api/builds/${enc(id)}`, { method: 'DELETE' });
+    state.data.builds = state.data.builds.filter(b => b.id !== id);
+    toast('Build removed.', 'ok');
+  } catch (error) { toast(error.message, 'error'); }
+  renderView();
+  poll();
+}
+
 async function prepare(owner, projectId, build) {
   if (!build || owner.prepare.status === 'busy') return;
   if (!await confirmDialog({ title: 'Prepare desktop?', body: prepareDialogText(build), confirm: 'Prepare desktop' })) return;
@@ -702,6 +714,7 @@ function onOverviewAction(action, target) {
   if (target.getAttribute('aria-disabled') === 'true') return;
   const agent = (state.data.agents || []).find(a => a.id === target.dataset.id);
   if (action === 'ov-add-build') addBuild(ov, ov.projectId, target.dataset.kind);
+  else if (action === 'ov-delete-build') deleteBuild(target.dataset.id);
   else if (action === 'ov-recheck') { ov.readiness = null; renderView(); }
   else if (action === 'ov-prepare') prepare(ov, ov.projectId, (state.data.builds || []).find(b => b.id === ov.buildId));
   else if (action === 'ov-retune') retune(ov, agent);

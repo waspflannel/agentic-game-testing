@@ -46,6 +46,13 @@ class Heartbeat(BoundCommand):
     investigation_deadline: str | float | None = None
     run_deadline: str | float | None = None
 
+    @field_validator("investigation_deadline", "run_deadline")
+    @classmethod
+    def _parseable_deadline(cls, value):
+        if value is not None:
+            timestamp(value)
+        return value
+
 
 class Launch(BoundCommand):
     command: list[str]

@@ -3,37 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 from pathlib import Path
 
 
-ALIASES = {
-    "ENTER": "Return", "RETURN": "Return", "ESC": "Escape", "ESCAPE": "Escape",
-    "SPACE": "space", "TAB": "Tab", "BACKSPACE": "BackSpace", "DELETE": "Delete",
-    "CTRL": "Control_L", "CONTROL": "Control_L", "SHIFT": "Shift_L", "ALT": "Alt_L",
-    "META": "Super_L", "SUPER": "Super_L", "UP": "Up", "DOWN": "Down", "LEFT": "Left",
-    "RIGHT": "Right", "ARROWUP": "Up", "ARROWDOWN": "Down", "ARROWLEFT": "Left", "ARROWRIGHT": "Right",
-    "HOME": "Home", "END": "End", "PAGEUP": "Prior", "PAGEDOWN": "Next",
-    "INSERT": "Insert", "CAPSLOCK": "Caps_Lock",
-}
-
-
-def key_name(key: str) -> str:
-    if key.upper() in ALIASES:
-        return ALIASES[key.upper()]
-    if re.fullmatch(r"[A-Za-z0-9]", key) or re.fullmatch(r"F(?:[1-9]|1[0-2])", key):
-        return key
-    if key in set(ALIASES.values()) | {"Control_R", "Shift_R", "Alt_R", "Super_R", "minus", "equal", "comma", "period", "slash", "semicolon", "apostrophe", "bracketleft", "bracketright", "backslash", "grave"}:
-        return key
-    raise ValueError(f"Unsupported key: {key!r}")
-
-
-def button_number(button: int | str) -> int:
-    names = {"left": 1, "middle": 2, "right": 3, "back": 8, "forward": 9}
-    number = names.get(str(button).lower(), button)
-    if str(number) not in {"1", "2", "3", "8", "9"}:
-        raise ValueError("Unsupported mouse button")
-    return int(number)
+SEGMENT_SECONDS = 5
 
 
 class Desktop:
@@ -89,7 +62,7 @@ class Desktop:
             except (RuntimeError, OSError):
                 pass
 
-    async def video(self, directory: Path, segment_seconds: int = 5, fps: int = 8) -> asyncio.subprocess.Process:
+    async def video(self, directory: Path, fps: int = 8) -> asyncio.subprocess.Process:
         directory.mkdir(parents=True, exist_ok=True)
         log = (directory.parent / "capture.log").open("ab")
         try:
@@ -97,7 +70,7 @@ class Desktop:
                 "ffmpeg", "-nostdin", "-hide_banner", "-loglevel", "warning", "-y", "-f", "x11grab",
                 "-video_size", f"{self.width}x{self.height}", "-framerate", str(fps), "-i", self.display,
                 "-an", "-c:v", "libx264", "-preset", "ultrafast", "-crf", str(round(40-self.capture_quality/5)), "-pix_fmt", "yuv420p", "-threads", "2",
-                "-force_key_frames", f"expr:gte(t,n_forced*{segment_seconds})", "-f", "segment", "-segment_time", str(segment_seconds),
+                "-force_key_frames", f"expr:gte(t,n_forced*{SEGMENT_SECONDS})", "-f", "segment", "-segment_time", str(SEGMENT_SECONDS),
                 "-segment_format", "mpegts", "-reset_timestamps", "1", "-strftime", "1", str(directory / "%Y%m%dT%H%M%S.ts"),
                 env=self.env, stdout=asyncio.subprocess.DEVNULL, stderr=log)
         finally:

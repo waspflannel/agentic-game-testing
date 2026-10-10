@@ -18,11 +18,11 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from .desktop import Desktop
+from .desktop import SEGMENT_SECONDS, Desktop
 from .game_bridge import GameBridge
-from .independent_watchdog import revoke_desktop
+from .independent_watchdog import kill_run_game, revoke_desktop
 from .models import GameAction
-from .models import Binding, BoundCommand, FixtureImport, Heartbeat, Launch, Pin, SteamVerify, Stop, timestamp, utc_now
+from .models import Binding, BoundCommand, FixtureImport, Heartbeat, Launch, Pin, SteamVerify, Stop, safe_id, timestamp, utc_now
 
 
 CONTRACT_VERSION = "ashad-worker/1"
@@ -112,9 +112,7 @@ class Runtime:
                 pid = data.get("game_pid")
                 if pid and os.name != "nt":
                     with contextlib.suppress(OSError, ValueError):
-                        environment = Path(f"/proc/{int(pid)}/environ").read_bytes().split(b"\x00")
-                        if f"ASHAD_RUN_ID={self.binding.run_id}".encode() in environment:
-                            os.killpg(int(pid), signal.SIGKILL)
+                        kill_run_game(int(pid), self.binding.run_id)
                 # A service restart cannot silently reauthorize a previous controller.
                 self.lifecycle = "ended"
                 self.infrastructure_error = "worker_restarted; game process and inputs require reconciliation"
@@ -242,10 +240,13 @@ class Runtime:
             self.build_record["steam_api_sha256"] = await asyncio.to_thread(sha256_file, steam_library) if steam_library.is_file() else None
             if "--main-pack" in request.command:
                 position = request.command.index("--main-pack") + 1
-                if position >= len(request.command) or not Path(request.command[position]).is_file():
+                pack = Path(request.command[position]).resolve() if position < len(request.command) else None
+                if pack is None or not pack.is_file():
                     raise HTTPException(422, "Pinned game pack is missing")
-                self.build_record["artifact_sha256"] = await asyncio.to_thread(sha256_file, Path(request.command[position]))
-                manifest_path = Path(request.command[position]).parent / "manifest.json"
+                if not executable_allowed(pack):
+                    raise HTTPException(422, "Game pack is outside the configured read-only build/runtime roots")
+                self.build_record["artifact_sha256"] = await asyncio.to_thread(sha256_file, pack)
+                manifest_path = pack.parent / "manifest.json"
                 if manifest_path.is_file():
                     with contextlib.suppress(ValueError, OSError):
                         manifest = json.loads(manifest_path.read_text())
@@ -440,9 +441,6 @@ class Runtime:
     async def heartbeat(self, request: Heartbeat) -> dict:
         self.check_binding(request)
         # Deadlines are explicit coordinator state, not extended by arrival of a heartbeat.
-        for deadline in (request.investigation_deadline, request.run_deadline):
-            if deadline is not None:
-                timestamp(deadline)
         self.last_heartbeat = time.monotonic()
         self.last_heartbeat_utc = time.time()
         self.deadline = request.investigation_deadline
@@ -657,7 +655,7 @@ class Runtime:
         # The active last segment must close before copying. MPEG-TS stays readable after abrupt capture failure.
         for source in segments if final else segments[:-1]:
             end_time = source.stat().st_mtime
-            if end_time >= pin["from_timestamp"] and end_time - 5 <= pin["to_timestamp"]:
+            if end_time >= pin["from_timestamp"] and end_time - SEGMENT_SECONDS <= pin["to_timestamp"]:
                 relative = str((directory / source.name).relative_to(self.run_dir)).replace("\\", "/")
                 if relative not in pin["segments"]:
                     shutil.copy2(source, directory / source.name)
@@ -803,9 +801,14 @@ class Runtime:
         self.resource_sample, self.resource_sample_at = result, now
         return result
 
+    def _run_root(self, run_id: str | None) -> Path:
+        try:
+            return self.root / "runs" / safe_id(run_id) if run_id else self.run_dir
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+
     def evidence_path(self, path: str, run_id: str | None = None) -> Path:
-        from .models import safe_id
-        root = self.root / "runs" / safe_id(run_id) if run_id else self.run_dir
+        root = self._run_root(run_id)
         candidate = (root / path).resolve()
         if not candidate.is_relative_to(root.resolve()) or not candidate.is_file():
             raise HTTPException(404, "Evidence file not found")
@@ -814,8 +817,7 @@ class Runtime:
         return candidate
 
     def evidence_index(self, run_id: str | None = None) -> dict:
-        from .models import safe_id
-        root = self.root / "runs" / safe_id(run_id) if run_id else self.run_dir
+        root = self._run_root(run_id)
         if not root.is_dir():
             raise HTTPException(404, "Run evidence is unavailable on this worker")
         files = []
@@ -829,9 +831,8 @@ class Runtime:
             "finalized": not (self.binding and self.binding.run_id == root.name and self.game_running), "captured_at": utc_now()}
 
     def export_fixture(self, manifest: dict) -> dict:
-        from .models import safe_id
-        run_id = safe_id(manifest.get("source_run_id") or (self.binding.run_id if self.binding else ""))
-        target_run = self.root / "runs" / run_id
+        target_run = self._run_root(manifest.get("source_run_id") or (self.binding.run_id if self.binding else ""))
+        run_id = target_run.name
         if not target_run.is_dir():
             raise HTTPException(404, "Requested run save tree is unavailable")
         if self.game_running and self.binding and self.binding.run_id == run_id:
@@ -854,6 +855,8 @@ class Runtime:
         required = {"world_id", "build_revision", "save_version", "starting_milestones", "identity_mapping"}
         if not required.issubset(manifest):
             raise HTTPException(422, f"Fixture manifest is missing {sorted(required - set(manifest))}")
+        if not isinstance(manifest["identity_mapping"], dict):
+            raise HTTPException(422, "Fixture identity_mapping must be an object")
         if str(manifest["identity_mapping"].get(binding.player_id)) != binding.identity or manifest.get("player_id", binding.player_id) != binding.player_id:
             raise HTTPException(422, "Fixture identity mapping does not contain the bound player identity")
         manifest = {**manifest, "transport": binding.transport, "source_run_id": run_id, "player_id": binding.player_id}
@@ -875,6 +878,8 @@ class Runtime:
         required = {"world_id", "build_revision", "save_version", "starting_milestones", "identity_mapping", "transport"}
         if not required.issubset(manifest):
             raise HTTPException(422, f"Fixture manifest is missing {sorted(required - set(manifest))}")
+        if not isinstance(manifest["identity_mapping"], dict):
+            raise HTTPException(422, "Fixture identity_mapping must be an object")
         original_identity = str(manifest["identity_mapping"].get(self.binding.player_id, ""))
         target_identity = request.identity_mapping.get(original_identity, original_identity)
         if target_identity != self.binding.identity:

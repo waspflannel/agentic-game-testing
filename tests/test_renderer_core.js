@@ -63,6 +63,13 @@ test('run status never reports a teardown-unconfirmed or human-controlled run as
   assert.equal(runStatus({ state: 'Weird' }).label, 'Unknown');
 });
 
+test('since words an age and says never when there is no time', async () => {
+  const { since } = await load();
+  assert.equal(since(1000, 1030), 'just now');
+  assert.equal(since(1000, 1000 + 180), '3m ago');
+  assert.equal(since(undefined), 'never');
+});
+
 test('ago is compact and never negative', async () => {
   const { ago } = await load();
   assert.equal(ago(1000, 1030), 'now');

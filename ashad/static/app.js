@@ -480,12 +480,12 @@ async function refreshAccount() {
   if (a.checking) return;
   a.checking = true;
   renderView();
-  try {
-    state.data.ai = await api('/api/settings/codex/status');
-    state.data.ai_claude = await api('/api/settings/claude/status');
-    a.error = '';
+  const errors = [];
+  for (const [key, path] of [['ai', 'codex'], ['ai_claude', 'claude']]) {
+    try { state.data[key] = await api(`/api/settings/${path}/status`); }
+    catch (error) { errors.push(error.message); }
   }
-  catch (error) { a.error = error.message; }
+  a.error = errors[0] || '';
   a.checking = false;
   a.login = settleLogin(a.login, state.data.ai);
   render();  // The sidebar's sign-in dot follows the status.
@@ -798,8 +798,7 @@ function renderThread(view) {
     t.statusKey = status.key;
   }
   t.tab ??= defaultTab(run);  // Chosen once per thread, so the tab never moves when the run ends.
-  const ids = playerIds(run);
-  const player = ids.includes(t.player) ? t.player : ids[0];
+  const player = selectedPlayer(run);
   state.camera.sync(cameraTarget(run, player, document.hidden || t.tab !== 'bot'));  // The MJPEG stream runs only while Bot view is shown.
   const pending = new Set(mine().filter(([, c]) => c.pending).map(([k]) => k.slice(run.id.length + 1)));
   const error = mine().find(([, c]) => c.error)?.[1].error;
@@ -842,15 +841,16 @@ const AUTO_SCROLL_PX = 80;
 const latestInView = () => {
   if (state.thread.tab !== 'actions') return false;  // A hidden list has no position; new events wait behind the "N new" pill.
   const list = timelineList();
-  const covered = $('#view .thread-sticky')?.getBoundingClientRect().bottom ?? $('#view').getBoundingClientRect().top;
+  const covered = stickyBottom();
   return !list || list.getBoundingClientRect().top >= covered - AUTO_SCROLL_PX;
 };
+const stickyBottom = () => $('#view .thread-sticky')?.getBoundingClientRect().bottom ?? $('#view').getBoundingClientRect().top;
 const scrollToLatest = () => $('#view .activity')?.scrollIntoView({ block: 'start' });
 
 // New cards go in above; a reader further down keeps exactly what they were looking at.
 // The first card below the sticky block and where it sits now.
 function readingAnchor() {
-  const covered = $('#view .thread-sticky')?.getBoundingClientRect().bottom ?? $('#view').getBoundingClientRect().top;
+  const covered = stickyBottom();
   const li = [...(timelineList()?.children || [])].find(card => card.getBoundingClientRect().bottom > covered);
   return li ? { li, top: li.getBoundingClientRect().top } : null;
 }
@@ -1034,8 +1034,13 @@ async function onControl(action) {
   }
 }
 
+function selectedPlayer(run) {
+  const ids = playerIds(run);
+  return ids.includes(state.thread.player) ? state.thread.player : ids[0];
+}
+
 async function takeOver(run) {
-  const player = playerIds(run).includes(state.thread.player) ? state.thread.player : playerIds(run)[0];
+  const player = selectedPlayer(run);
   const current = state.isCurrent;
   const result = await command('takeover', () => api(`${runPath(run)}/players/${enc(player)}/takeover`, { method: 'POST', body: {} }), null, value => value?.run);
   if (!result || !current()) return;

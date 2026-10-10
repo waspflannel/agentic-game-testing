@@ -212,3 +212,10 @@ test('Claude token buttons are disabled with the blocker reason', async () => {
   const open = (await claudeCard({ status: 'ready' }))['claude-actions'];
   assert.doesNotMatch(open.match(/<button[^>]*data-action="claude-token-save"[^>]*>/)[0], /aria-disabled/);
 });
+
+test('a blank storage reserve is an error and never an error string in the payload', async () => {
+  const { limitsPayload } = await settings();
+  const { errors, body } = limitsPayload({ duration: '10', spend: '5', reserve: '' });
+  assert.equal(errors.reserve, 'Enter a reserve, or 0 for none.');
+  assert.equal(body.storage_reserve_bytes, null);
+});

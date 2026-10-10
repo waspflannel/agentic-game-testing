@@ -1,10 +1,9 @@
 // Settings (spec §8.8). Models, validation and markup are pure; app.js owns the DOM and I/O.
 // Forms live in each section's skeleton (mounted once per section and edited record), so polls never touch typed input.
-import { esc, icon, ago } from '../core.js';
+import { esc, icon, since, badge } from '../core.js';
 
 const enc = encodeURIComponent;
 export const SECTIONS = [['account', 'Account'], ['desktops', 'Desktops'], ['steam', 'Steam accounts'], ['limits', 'Limits'], ['maintenance', 'Maintenance']];
-const since = (t, now) => { const a = ago(t, now); return !a ? 'never' : a === 'now' ? 'just now' : `${a} ago`; };
 const errorNote = text => (text ? `<p class="note note-error" data-announce>${icon('alert')}<span>${esc(text)}</span></p>` : '');
 const okNote = text => (text ? `<p class="note">${icon('check')}<span>${esc(text)}</span></p>` : '');
 const disabled = reason => (reason ? ` aria-disabled="true" title="${esc(reason)}"` : '');
@@ -44,7 +43,7 @@ export function accountRegions(a) {
   const ai = a.ai || {};
   const status = ai.status || 'not_validated';
   const tone = status === 'ready' ? 'live' : status === 'login_pending' ? 'pending' : 'attention';
-  const facts = [['Status', `<span class="badge badge-${tone}"><span class="dot dot-${tone}" aria-hidden="true"></span>${esc(AI_LABELS[status] || status)}</span>`],
+  const facts = [['Status', badge({ tone, label: AI_LABELS[status] || status })],
     ['Billing', 'ChatGPT subscription'], ['Model', esc(a.modelLabel || ai.model || 'Unknown')], ...(ai.plan_type ? [['Plan', esc(ai.plan_type)]] : [])];
   const pending = a.login || status === 'login_pending';
   const url = a.login && officialLoginUrl(a.login.auth_url);
@@ -59,7 +58,7 @@ export function accountRegions(a) {
   const claude = a.claude || {};
   const cStatus = claude.status || 'not_validated';
   const cTone = cStatus === 'ready' ? 'live' : 'attention';
-  const cFacts = [['Status', `<span class="badge badge-${cTone}"><span class="dot dot-${cTone}" aria-hidden="true"></span>${esc(AI_LABELS[cStatus] || cStatus)}</span>`], ['Billing', 'Claude subscription']];
+  const cFacts = [['Status', badge({ tone: cTone, label: AI_LABELS[cStatus] || cStatus })], ['Billing', 'Claude subscription']];
   const cDisabled = disabled(a.blocker || (a.busy && 'Working…'));
   const claudeActions = `<form class="claude-token-form" data-form="claude-token" novalidate><div class="field"><label for="claude-token">Claude token</label>`
     + `<input id="claude-token" class="input mono" type="password" autocomplete="off" name="claude-token" spellcheck="false" placeholder="Paste token from claude setup-token">`
@@ -208,16 +207,16 @@ export function limitsSkeleton(data) {
 
 export function limitsPayload(values) {
   const errors = {};
-  const num = (key, out, name, scale = 1, allowZero = false) => {
+  const num = (key, name, scale = 1, allowZero = false, required = false) => {
     const raw = String(values[key] ?? '').trim();
-    if (!raw) return out === 'storage_reserve_bytes' ? (errors[key] = 'Enter a reserve, or 0 for none.') : null;
+    if (!raw) { if (required) errors[key] = 'Enter a reserve, or 0 for none.'; return null; }
     const n = Number(raw);
     if (!Number.isFinite(n) || n < 0 || (!allowZero && n === 0)) { errors[key] = `${name} must be a positive number${allowZero ? ' or 0' : ''}.`; return undefined; }
     return n * scale;
   };
-  const duration = num('duration', 'duration_seconds', 'Duration', 60);
-  const spend = num('spend', 'spend_usd', 'Spend cap');
-  const reserve = num('reserve', 'storage_reserve_bytes', 'Storage reserve', GB, true);
+  const duration = num('duration', 'Duration', 60);
+  const spend = num('spend', 'Spend cap');
+  const reserve = num('reserve', 'Storage reserve', GB, true, true);
   return { errors, body: { duration_seconds: duration, spend_usd: spend, storage_reserve_bytes: Number.isFinite(reserve) ? Math.round(reserve) : reserve } };
 }
 

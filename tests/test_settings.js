@@ -222,5 +222,7 @@ test('Claude token clicks reach the token action and Enter in the form saves ins
     assert.match(buttons, new RegExp(`data-action="${action}"`));
     assert.match(action, route, `${action} is routed to settingsAction`);
   }
-  assert.match(app, /matches\('\[data-form="claude-token"\]'\)\) \{\n\s+event\.preventDefault\(\);[^}]*claudeTokenAction\('save'\)/);
+  assert.match(app, /matches\('\[data-form="claude-token"\]'\)\) \{\n\s+event\.preventDefault\(\);[^}]*settingsAction\('claude-token-save', event\.target\.querySelector\('\[data-action="claude-token-save"\]'\)\)/);
+  const gate = app.slice(app.indexOf('async function settingsAction('), app.indexOf("return claudeTokenAction(action.slice(13))"));
+  assert.match(gate, /aria-disabled'\) === 'true'\) return;/, 'Enter honours the disabled Save button');
 });

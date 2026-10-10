@@ -1333,7 +1333,7 @@ document.addEventListener('submit', async event => {
   }
   if (event.target.matches('[data-form="claude-token"]')) {
     event.preventDefault();  // Enter must not fall through to a GET submit that puts the token in the URL.
-    claudeTokenAction('save');
+    settingsAction('claude-token-save', event.target.querySelector('[data-action="claude-token-save"]'));  // Same disabled gate as clicking Save.
     return;
   }
   if (event.target.matches('[data-form^="settings-"]')) {

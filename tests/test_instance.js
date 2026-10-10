@@ -218,6 +218,6 @@ test('the header has no inspector toggle', async () => {
   const { instanceState, threadRegions } = await load();
   const r = run('Running');
   const regions = threadRegions(r, { status: instanceState(r), data: {}, ui: {}, pending: new Set(), cameraStatus: 'offline', player: 'p1', tab: 'bot' });
-  assert.doesNotMatch(regions.head, /toggle-inspector|Ctrl\+I/);
+  assert.doesNotMatch(regions.head, /toggle-?inspector|Ctrl\+I/i);
   assert.match(regions.tabs, /role="tablist"/);
 });

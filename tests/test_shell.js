@@ -23,16 +23,18 @@ test('Stop stays the last control and the layout cannot scroll sideways at 800px
   const { instanceState, threadRegions } = await import(url('views/instance.js'));
   for (const [r, owner] of STATES) {
     const status = instanceState(r, owner);
-    const { controls } = threadRegions(r, { status, owner, data: {}, ui: { inspectorOpen: false }, pending: new Set(), error: '', cameraStatus: 'offline', player: 'p1' });
+    const { controls } = threadRegions(r, { status, owner, data: {}, ui: {}, pending: new Set(), error: '', cameraStatus: 'offline', player: 'p1', tab: 'bot' });
     const bar = controls.match(/<div class="control-bar"[\s\S]*?<span class="control-right">([\s\S]*)<\/span><\/div>/);
     assert.ok(bar, `${r.state}: control bar renders`);
     if (status.stop) assert.match(bar[1], /data-ctl="stop"[^>]*>[\s\S]*Stop<\/button>$/, `${status.key}: Stop is the right-most control`);
     else assert.doesNotMatch(controls, /data-ctl="stop"/, status.key);
   }
-  // The bar wraps rather than scrolling, Stop's group is pushed right, and below each breakpoint a pane leaves the row.
+  // The bar wraps rather than scrolling, Stop's group is pushed right, the tab bar scrolls on its own, and below 960px the sidebar leaves the row.
   assert.match(css, /\.control-bar \{[^}]*flex-wrap: wrap/);
   assert.match(css, /\.control-right \{[^}]*margin-left: auto/);
-  assert.match(css, /@media \(max-width: 1279px\) \{ \.layout > \.inspector \{ display: none; \} \}/);
+  assert.doesNotMatch(css, /\.inspector\b|drawer-right|--inspector-w/, 'the inspector and its drawer are gone');
+  assert.match(css, /\.thread-sticky \{[^}]*position: sticky/);
+  assert.match(css, /\.thread-tabs \{[^}]*overflow-x: auto/);
   assert.match(css, /@media \(max-width: 959px\) \{ \.layout > \.sidebar \{ display: none; \}/);
   assert.match(css, /@media \(max-width: 959px\) \{ \.thread-meta \{ display: none; \} \.meta-more \{ display: inline-grid;/);
   const workspaceMin = Number(css.match(/\.workspace \{[^}]*min-width: (\d+)px/)[1]);
@@ -46,7 +48,7 @@ test('long lines never widen the thread past the window', () => {
   const rule = css.match(/^([^{}\n]+)\{ grid-template-columns: minmax\(0, 1fr\); \}$/m);
   assert.ok(rule, 'one shared rule pins grid columns to the container');
   const selectors = rule[1].split(',').map(s => s.trim());
-  for (const selector of ['.page', '.thread-body', '.activity', '.timeline', '.insp-body', '.setup-card', '.settings-card']) assert.ok(selectors.includes(selector), selector);
+  for (const selector of ['.page', '.thread-body', '.thread-panel', '.activity', '.timeline', '.insp-body', '.setup-card', '.settings-card']) assert.ok(selectors.includes(selector), selector);
   assert.match(css, /\.thread-meta \.chip \{ flex: 0 1 auto; min-width: 0; \}/);
   assert.match(css, /\.thread-meta \.chip-text, \.meta-pop \.chip-text \{ max-width: 240px; \}/);
 });
@@ -54,7 +56,7 @@ test('long lines never widen the thread past the window', () => {
 test('narrow headers keep their meta chips in a popover', async () => {
   const { instanceState, threadRegions } = await import(url('views/instance.js'));
   const r = run('Running', { model: 'gpt-6-astra', plan: { primary_goal: 'Goal', players: [{ id: 'p1' }], transport: { mode: 'enet' } } });
-  const { head } = threadRegions(r, { status: instanceState(r), data: {}, ui: { inspectorOpen: false }, pending: new Set(), cameraStatus: 'live', player: 'p1' });
+  const { head } = threadRegions(r, { status: instanceState(r), data: {}, ui: {}, pending: new Set(), cameraStatus: 'live', player: 'p1', tab: 'bot' });
   assert.match(head, /<button type="button" class="icon-btn meta-more" popovertarget="meta-pop"[^>]*aria-label="Instance details"/);
   assert.match(head, /<div id="meta-pop" class="popover menu meta-pop" popover><span class="chip" title="gpt-6-astra"><span class="chip-text">gpt-6-astra<\/span><\/span><span class="chip" title="ENet"><span class="chip-text">ENet<\/span><\/span><\/div>/);
 });
@@ -85,7 +87,9 @@ test('drawers open modally, return the pane to the layout and focus to their tog
   assert.equal(drawer.open, false);
   const app = read('app.js');
   const onRoute = app.slice(app.indexOf('async function onRoute()'), app.indexOf('// ── Polling'));
-  assert.match(onRoute, /sidebarDrawer\.close\(\);[\s\S]*inspectorDrawer\.close\(\);/, 'navigation closes both drawers');
+  assert.match(onRoute, /sidebarDrawer\.close\(\);/, 'navigation closes the drawer');
+  assert.doesNotMatch(app, /(toggle-?|wide)inspector|inspectordrawer/i, 'no inspector wiring remains');
+  assert.doesNotMatch(read('index.html'), /id="inspector"|drawer-right/);
   assert.match(read('index.html'), /<dialog id="drawer-left" class="drawer drawer-left" aria-label="Projects and instances"><\/dialog>/);
 });
 

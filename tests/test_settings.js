@@ -162,3 +162,39 @@ test('settings and usage markup escape every server string', async () => {
     + Object.values(u.usageRegions({ rows: [{ timestamp: NOW, model: evil, purpose: evil, run_id: evil, status: evil }] }, { ...u.newUsageUi(), range: 'all' }, new Map([[evil, evil]]), NOW)).join('');
   assert.doesNotMatch(html, /<img/);
 });
+
+const claudeCard = (claude, extra = {}) => settings().then(m => m.accountRegions({ ai: { status: 'ready' }, claude, ...extra }));
+
+test('the Claude token field is write-only and never echoes a value', async () => {
+  const r = await claudeCard({ status: 'ready', message: 'sk-ant-oat01-SECRET', configured: true });
+  const input = r['claude-actions'].match(/<input[^>]*name="claude-token"[^>]*>/)[0];
+  assert.match(input, /type="password"/);
+  assert.match(input, /autocomplete="off"/);
+  assert.doesNotMatch(input, /value=/);
+  assert.doesNotMatch(r['claude-actions'], /SECRET/);
+  const evil = await claudeCard({ status: 'ready', message: '<img src=x onerror=alert(1)>' });
+  assert.doesNotMatch(evil['claude-status'], /<img/);
+});
+
+test('the Claude card shows the terms note and status label', async () => {
+  const { accountSkeleton } = await settings();
+  assert.match(accountSkeleton(), /data-region="claude-status"[\s\S]*data-region="claude-actions"/);
+  for (const [status, label] of [['configuration_required', 'Not signed in'], ['ready', 'Signed in'], ['invalid_authentication', 'Sign-in expired']]) {
+    const r = await claudeCard({ status, message: 'Server says hi' });
+    assert.match(r['claude-status'], new RegExp(label));
+    assert.match(r['claude-status'], /Billing<\/dt><dd>Claude subscription/);
+    assert.match(r['claude-status'], /Server says hi/);
+    assert.match(r['claude-actions'], /unmodified Claude CLI\. See Anthropic's legal and compliance terms\./);
+  }
+});
+
+test('Claude token buttons are disabled with the blocker reason', async () => {
+  const blocked = (await claudeCard({ status: 'ready' }, { blocker: 'Pause or stop the active instance before changing sign-in.' }))['claude-actions'];
+  for (const action of ['claude-token-save', 'claude-token-remove']) {
+    const button = blocked.match(new RegExp(`<button[^>]*data-action="${action}"[^>]*>`))[0];
+    assert.match(button, /aria-disabled="true"/);
+    assert.match(button, /title="Pause or stop the active instance/);
+  }
+  const open = (await claudeCard({ status: 'ready' }))['claude-actions'];
+  assert.doesNotMatch(open.match(/<button[^>]*data-action="claude-token-save"[^>]*>/)[0], /aria-disabled/);
+});

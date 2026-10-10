@@ -18,7 +18,7 @@ const head = (title, lede) => `<div class="page-head"><h1>${esc(title)}</h1>${le
 
 // ── Account ─────────────────────────────────────────────────────────────────
 const AI_LABELS = { ready: 'Signed in', configuration_required: 'Not signed in', login_pending: 'Sign-in pending', not_validated: 'Not checked yet',
-  invalid_authentication: 'Sign-in expired', model_unavailable: 'Model unavailable', connection_failure: 'Cannot reach ChatGPT', rate_limited: 'Rate limited', provider_failure: 'Provider error' };
+  invalid_authentication: 'Sign-in expired', model_unavailable: 'Model unavailable', connection_failure: 'Cannot reach provider', rate_limited: 'Rate limited', provider_failure: 'Provider error' };
 
 // Only the official HTTPS sign-in hosts the main process also allows; anything else is never offered.
 export function officialLoginUrl(value) {
@@ -39,7 +39,7 @@ export function accountBlocker(data, tuning) {
   return '';
 }
 
-// a: { ai, login, blocker, checking, busy, error }. The sign-in link exists only while a login is pending.
+// a: { ai, claude, login, blocker, checking, busy, error }. The sign-in link exists only while a login is pending.
 export function accountRegions(a) {
   const ai = a.ai || {};
   const status = ai.status || 'not_validated';
@@ -56,14 +56,29 @@ export function accountRegions(a) {
   const link = !a.login ? '' : url
     ? `<div class="signin-step"><p>Finish signing in with your browser. ASHAD notices when it completes.</p><a class="btn btn-primary" href="${esc(url)}" target="_blank" rel="noopener noreferrer" data-key="acc-open">${icon('log-in')}Open ChatGPT sign-in</a></div>`
     : errorNote('ASHAD returned a sign-in address that is not an official ChatGPT page, so it is not offered. Cancel sign-in and try again.');
+  const claude = a.claude || {};
+  const cStatus = claude.status || 'not_validated';
+  const cTone = cStatus === 'ready' ? 'live' : 'attention';
+  const cFacts = [['Status', `<span class="badge badge-${cTone}"><span class="dot dot-${cTone}" aria-hidden="true"></span>${esc(AI_LABELS[cStatus] || cStatus)}</span>`], ['Billing', 'Claude subscription']];
+  const cDisabled = disabled(a.blocker || (a.busy && 'Working…'));
+  const claudeActions = `<form class="claude-token-form" data-form="claude-token" novalidate><div class="field"><label for="claude-token">Claude token</label>`
+    + `<input id="claude-token" class="input mono" type="password" autocomplete="off" name="claude-token" spellcheck="false" placeholder="Paste token from claude setup-token">`
+    + `<span class="hint">Write-only: stored in the OS credential store and never shown again.</span></div>`
+    + `<div class="btn-row"><button type="button" class="btn btn-primary" data-action="claude-token-save" data-key="claude-save"${cDisabled}>Save token</button>`
+    + `<button type="button" class="btn btn-secondary" data-action="claude-token-remove" data-key="claude-remove"${cDisabled}>Remove token</button></div></form>`
+    + (a.blocker ? `<p class="note">${icon('info')}<span>${esc(a.blocker)}</span></p>` : '')
+    + `<p class="hint">Personal use of your own subscription through the unmodified Claude CLI. See Anthropic's legal and compliance terms.</p>${errorNote(a.claudeError)}`;
   return {
+    'claude-status': `<dl class="kv">${cFacts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>${claude.message ? `<p class="hint">${esc(claude.message)}</p>` : ''}`,
+    'claude-actions': claudeActions,
     status: `<dl class="kv">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>${ai.message ? `<p class="hint">${esc(ai.message)}</p>` : ''}`,
     actions: `<div class="btn-row">${actions.join('')}</div>${a.blocker && !pending ? `<p class="note">${icon('info')}<span>${esc(a.blocker)}</span></p>` : ''}${link}${errorNote(a.error)}`,
   };
 }
 
-export const accountSkeleton = () => head('Account', 'ASHAD uses your ChatGPT subscription through Codex. There are no API keys.')
-  + `<section class="card settings-card"><h2 class="card-title">ChatGPT</h2><div data-region="status"></div><div data-region="actions" class="settings-actions"></div></section>`;
+export const accountSkeleton = () => head('Account', 'ASHAD uses your ChatGPT (Codex) or Claude subscription. There are no API keys.')
+  + `<section class="card settings-card"><h2 class="card-title">ChatGPT</h2><div data-region="status"></div><div data-region="actions" class="settings-actions"></div></section>`
+  + `<section class="card settings-card"><h2 class="card-title">Claude</h2><div data-region="claude-status"></div><div data-region="claude-actions" class="settings-actions"></div></section>`;
 
 // ── Desktops ────────────────────────────────────────────────────────────────
 export const leaseOf = (data, kind, id) => (data?.leases || []).find(l => l.kind === kind && l.resource_id === id);
@@ -77,7 +92,7 @@ export function desktopsSkeleton(data, editId) {
     + field('w-name', 'Name', `<input id="w-name" class="input" name="name" maxlength="200" value="${val('name')}" autocomplete="off">`)
     + field('w-url', 'Service URL', `<input id="w-url" class="input mono" name="url" required value="${val('url')}" placeholder="http://192.168.1.20:8101" autocomplete="off" spellcheck="false">`, 'The worker\'s private HTTP(S) address, without credentials.')
     + field('w-token', 'Service token', `<input id="w-token" class="input mono" name="token" type="password" autocomplete="new-password" spellcheck="false" placeholder="${w ? 'Stored. Leave blank to keep' : 'Required for a new desktop'}">`,
-      w ? 'Write-only. A moved URL needs the token again; a stored token is never sent to a different address.' : 'Write-only: stored in the Windows credential store and never shown again.')
+      w ? 'Write-only. A moved URL needs the token again; a stored token is never sent to a different address.' : 'Write-only: stored in the OS credential store and never shown again.')
     + field('w-desktop', 'Desktop viewer URL (optional)', `<input id="w-desktop" class="input mono" name="desktop_url" value="${val('desktop_url')}" autocomplete="off" spellcheck="false">`)
     + field('w-host', 'Host address (optional)', `<input id="w-host" class="input mono" name="host_address" value="${val('host_address')}" autocomplete="off" spellcheck="false">`)
     + `<label class="check"><input type="checkbox" name="enabled"${w?.enabled === false ? '' : ' checked'}> Enabled</label>`
@@ -306,7 +321,7 @@ export function importReviewHTML(body) {
   return `<dl class="kv"><dt>From</dt><dd class="mono">${esc(body.source_root)}</dd><dt>Backup to</dt><dd class="mono">${esc(body.backup_dir)}</dd><dt>Codex home</dt><dd class="mono">${esc(inv.codex_home)}</dd></dl>`
     + `<p class="hint">External build paths</p>${list(inv.external_build_paths)}<p class="hint">Worker registrations</p>${list(inv.worker_registration_paths)}`
     + `<p class="hint">Docker volumes</p>${list(inv.docker_volumes)}<p class="hint">Keyring services</p>${list(inv.keyring_services)}`
-    + `<p>Mutations are blocked while the import runs. Afterwards, sign in to ChatGPT again and re-check desktops.</p>`;
+    + `<p>Mutations are blocked while the import runs. Afterwards, sign in to your AI providers again and re-check desktops.</p>`;
 }
 
 function field(id, label, control, hint = '', errorId = '') {

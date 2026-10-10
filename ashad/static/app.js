@@ -421,7 +421,7 @@ function renderSettings(view) {
   let key = `settings:${section}`, inner, regions;
   if (section === 'account') {
     inner = accountSkeleton();
-    regions = accountRegions({ ai: state.data.ai, ...state.account, blocker: accountBlocker(state.data, tuningActive()), modelLabel: (state.data.model_options || []).find(m => m.id === state.data.ai?.model)?.label });
+    regions = accountRegions({ ai: state.data.ai, claude: state.data.ai_claude, ...state.account, blocker: accountBlocker(state.data, tuningActive()), modelLabel: (state.data.model_options || []).find(m => m.id === state.data.ai?.model)?.label });
   } else if (section === 'desktops') {
     const edit = (state.data.workers || []).some(w => w.id === query.edit) ? query.edit : '';
     key += `:${edit}`;
@@ -481,7 +481,11 @@ async function refreshAccount() {
   if (a.checking) return;
   a.checking = true;
   renderView();
-  try { state.data.ai = await api('/api/settings/codex/status'); a.error = ''; }
+  try {
+    state.data.ai = await api('/api/settings/codex/status');
+    state.data.ai_claude = await api('/api/settings/claude/status');
+    a.error = '';
+  }
   catch (error) { a.error = error.message; }
   a.checking = false;
   a.login = settleLogin(a.login, state.data.ai);
@@ -520,6 +524,26 @@ async function accountAction(kind) {
   poll();
 }
 
+// The token lives only in the input: it is cleared before the request and never enters state.
+async function claudeTokenAction(kind) {
+  const a = state.account;
+  if (a.busy) return;
+  const input = document.querySelector('[data-region="claude-actions"] input[name="claude-token"]');
+  const token = kind === 'save' ? String(input?.value || '').trim() : '';
+  if (kind === 'save' && !token) { a.claudeError = 'Paste the token from claude setup-token first.'; render(); return; }
+  if (input) input.value = '';
+  Object.assign(a, { busy: true, error: '', claudeError: '' });
+  renderView();
+  try {
+    state.data.ai_claude = kind === 'save'
+      ? await api('/api/settings/claude/token', { method: 'POST', body: { token } })
+      : await api('/api/settings/claude/token', { method: 'DELETE' });
+  } catch (error) { a.claudeError = error.message; }
+  a.busy = false;
+  render();
+  poll();
+}
+
 const workerById = id => (state.data.workers || []).find(w => w.id === id);
 const accountById = id => (state.data.accounts || []).find(a => a.id === id);
 
@@ -529,6 +553,7 @@ async function settingsAction(action, target) {
   if (target.getAttribute('aria-disabled') === 'true') return;
   if (['account-login', 'account-cancel', 'account-logout'].includes(action)) return accountAction(action.slice(8));
   if (action === 'account-refresh') return refreshAccount();
+  if (action === 'claude-token-save' || action === 'claude-token-remove') return claudeTokenAction(action.slice(13));
   if (action === 'worker-probe') {
     ui.probing.add(id);
     ui.errors.delete(id);
@@ -631,7 +656,7 @@ async function settingsSubmit(form) {
     ui.imported = '';
     try {
       await api('/api/workspace/import', { method: 'POST', body });
-      Object.assign(ui, { imported: 'Imported. Sign in to ChatGPT again and re-check your desktops.', importError: '' });
+      Object.assign(ui, { imported: 'Imported. Sign in to your AI providers again and re-check your desktops.', importError: '' });
       state.settingsDirty = false;
       syncDirty();
     } catch (error) { ui.importError = error.message; }
@@ -694,7 +719,7 @@ async function retune(ov, agent) {
   if (!agent || running?.status === 'busy' || running?.waiting) return;
   const build = (state.data.builds || []).find(b => b.id === agent.build_id);
   if (!await confirmDialog({ title: 'Retune this agent?', confirm: 'Retune',
-    body: `ASHAD re-reads build ${build?.name || agent.build_id} and writes new instructions as a new configuration named “${agent.name || agent.id}”. The current one stays as it is. Tuning uses your ChatGPT subscription and takes a few minutes.` })) return;
+    body: `ASHAD re-reads build ${build?.name || agent.build_id} and writes new instructions as a new configuration named “${agent.name || agent.id}”. The current one stays as it is. Tuning uses the selected model's subscription and takes a few minutes.` })) return;
   const op = newOp();  // An explicit retune is a new request with its own ID.
   ov.retunes.set(agent.id, op);
   const pending = tuneAgent(op, { build_id: agent.build_id, model: agent.model, project_id: ov.projectId, name: agent.name || agent.id }, api, ms => { renderView(); return sleep(ms); });

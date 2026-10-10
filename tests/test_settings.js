@@ -212,3 +212,17 @@ test('Claude token buttons are disabled with the blocker reason', async () => {
   const open = (await claudeCard({ status: 'ready' }))['claude-actions'];
   assert.doesNotMatch(open.match(/<button[^>]*data-action="claude-token-save"[^>]*>/)[0], /aria-disabled/);
 });
+
+test('Claude token clicks reach the token action and Enter in the form saves instead of navigating', async () => {
+  const app = fs.readFileSync(path.join(__dirname, '../ashad/static/app.js'), 'utf8');
+  const route = new RegExp(app.match(/else if \(\/(.+?)\/\.test\(action\)\) \{\n    settingsAction/)[1]);
+  const { accountRegions } = await settings();
+  const buttons = accountRegions({ ai: { status: 'ready' }, claude: { status: 'ready' } })['claude-actions'];
+  for (const action of ['claude-token-save', 'claude-token-remove']) {
+    assert.match(buttons, new RegExp(`data-action="${action}"`));
+    assert.match(action, route, `${action} is routed to settingsAction`);
+  }
+  assert.match(app, /matches\('\[data-form="claude-token"\]'\)\) \{\n\s+event\.preventDefault\(\);[^}]*settingsAction\('claude-token-save', event\.target\.querySelector\('\[data-action="claude-token-save"\]'\)\)/);
+  const gate = app.slice(app.indexOf('async function settingsAction('), app.indexOf("return claudeTokenAction(action.slice(13))"));
+  assert.match(gate, /aria-disabled'\) === 'true'\) return;/, 'Enter honours the disabled Save button');
+});

@@ -79,7 +79,8 @@ async function prepare() {
     else {
       const response = await fetch(archive.url);
       if (!response.ok || new URL(response.url).protocol !== 'https:' || !archive.hosts.includes(new URL(response.url).hostname)) throw new Error('Official Python runtime download failed.');
-      await pipeline(Readable.fromWeb(response.body), createWriteStream(zip, { flags: 'wx' }));
+      await pipeline(Readable.fromWeb(response.body), createWriteStream(`${zip}.partial`));
+      await fs.rename(`${zip}.partial`, zip);
     }
   }
   if (await sha256(zip) !== archive.sha256) throw new Error(`Private Python archive SHA256 mismatch. Remove only desktop/runtime/${archive.file} and retry the official download.`);

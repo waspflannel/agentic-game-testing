@@ -18,7 +18,7 @@ def uid(prefix=""):
 
 def redact(value):
     if isinstance(value, dict):
-        return {k: ("[REDACTED]" if k.lower() in {"api_key", "token", "access_token", "refresh_token", "id_token", "client_secret", "password", "authorization", "secret", "encrypted_content"} else redact(v)) for k, v in value.items()}
+        return {k: ("[REDACTED]" if k.lower() in {"api_key", "token", "access_token", "refresh_token", "id_token", "client_secret", "password", "authorization", "secret", "encrypted_content", "oauth_token", "claude_code_oauth_token"} else redact(v)) for k, v in value.items()}
     if isinstance(value, list):
         return [redact(v) for v in value]
     if isinstance(value, str):

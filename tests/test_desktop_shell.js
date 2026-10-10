@@ -229,11 +229,8 @@ test('packaging pins exact tooling/full Python and keeps subprocess resources ou
   }
   // Build-time pip/ensurepip never ship; Electron itself cannot be repurposed as Node or a debug target.
   const python = packageFile.build.extraResources.find(item => item.from === 'runtime/python');
-  for (const excluded of ['!Lib/ensurepip/**', '!Lib/site-packages/pip/**', '!Lib/site-packages/pip-*.dist-info/**']) {
-    assert.ok(python.filter.includes(excluded), excluded);
-  }
-  for (const excluded of ['!lib/python3.13/ensurepip/**', '!lib/python3.13/site-packages/pip/**',
-    '!lib/python3.13/site-packages/pip-*.dist-info/**', '!bin/pip*']) {
+  for (const excluded of ['!Lib/ensurepip/**', '!Lib/site-packages/pip/**', '!Lib/site-packages/pip-*.dist-info/**',
+    '!lib/python3.13/ensurepip/**', '!lib/python3.13/site-packages/pip/**', '!lib/python3.13/site-packages/pip-*.dist-info/**', '!bin/pip*']) {
     assert.ok(python.filter.includes(excluded), excluded);
   }
   assert.equal(packageFile.build.linux.executableName, 'ashad');

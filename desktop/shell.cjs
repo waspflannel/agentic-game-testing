@@ -7,7 +7,7 @@ const PROTOCOL = 'ashad-desktop/1';
 
 // Preserve OS discovery/keyring necessities, not Python hooks, provider credentials,
 // development overrides, proxy injection or ELECTRON_RUN_AS_NODE. On Linux this also keeps the
-// session, keyring (D-Bus, XDG runtime) and display (X11/Wayland) variables the Secret Service needs.
+// session, keyring (Secret Service over D-Bus, XDG runtime) and display (X11/Wayland) variables.
 function childEnvironment(inherited, platform = process.platform) {
   const allowed = new Set(('SYSTEMROOT SYSTEMDRIVE WINDIR COMSPEC PATH PATHEXT TEMP TMP APPDATA LOCALAPPDATA ' +
     'USERPROFILE HOMEDRIVE HOMEPATH USERNAME COMPUTERNAME PROGRAMFILES PROGRAMFILES(X86) PROGRAMW6432 ' +

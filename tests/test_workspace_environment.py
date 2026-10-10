@@ -542,6 +542,8 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
             secrets = self.store.root / "environments" / record["owner"] / "secrets"
             for path in (secrets, secrets / record["worker_id"]):
                 self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
+            for name in ("worker_token", "vnc_password"):
+                self.assertEqual(stat.S_IMODE((secrets / record["worker_id"] / name).stat().st_mode), 0o600)
         for option in self.fake.options:
             self.assertEqual(option["env"]["PATH"], "/usr/bin:/bin")
         public_and_store = json.dumps(result) + json.dumps(self.store.list("workers")) + json.dumps(self.store.list("environment_preparations"))

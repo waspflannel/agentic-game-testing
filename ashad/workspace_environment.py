@@ -332,7 +332,10 @@ async def _provision(runner, docker, env, record, *, root, directory, owner, exi
     token_file, vnc_file = secret_directory / "worker_token", secret_directory / "vnc_password"
     for path, size in ((token_file, 48), (vnc_file, 6)):
         if not path.exists():
-            path.write_text(base64.b64encode(token_bytes(size)).decode("ascii"), encoding="utf-8")
+            # Created owner-only so the secret never depends on the parent directory's mode.
+            descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(descriptor, "w", encoding="utf-8") as secret:
+                secret.write(base64.b64encode(token_bytes(size)).decode("ascii"))
     label = await _run(runner, [docker, "network", "inspect", "--format", '{{index .Labels "ashad.managed"}}', record["network"]], directory, env, check=False)
     if label is None:
         await _run(runner, [docker, "network", "create", "--label", "ashad.managed=true", record["network"]], directory, env)

@@ -1179,7 +1179,7 @@ document.addEventListener('click', async event => {
     onSetupAction(action, target, event);
   } else if (action.startsWith('ov-')) {
     onOverviewAction(action, target);
-  } else if (/^(account|worker|steam|migration)-/.test(action)) {
+  } else if (/^(account|claude|worker|steam|migration)-/.test(action)) {
     settingsAction(action, target);
   } else if (action === 'usage-refresh') {
     loadUsage();
@@ -1329,6 +1329,11 @@ document.addEventListener('submit', async event => {
       Object.assign(state.thread, { instructionOpen: false, instructionText: '' });
       renderView();
     }
+    return;
+  }
+  if (event.target.matches('[data-form="claude-token"]')) {
+    event.preventDefault();  // Enter must not fall through to a GET submit that puts the token in the URL.
+    settingsAction('claude-token-save', event.target.querySelector('[data-action="claude-token-save"]'));  // Same disabled gate as clicking Save.
     return;
   }
   if (event.target.matches('[data-form^="settings-"]')) {

@@ -107,6 +107,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         try:
             if start_services:
                 await ai.validate()
+                await ai.validate(CLAUDE_MODEL)
                 tasks.append(asyncio.create_task(coordinator.loop()))
                 tasks.append(asyncio.create_task(heartbeats()))
             async with game_mcp.server.session_manager.run():

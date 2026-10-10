@@ -6,6 +6,8 @@ import re
 import sys
 from pathlib import Path
 
+import keyring.errors
+
 from .models import CLAUDE_MODEL, CLAUDE_MODELS
 from .prompts import planning_request, selection_request, tuning_request
 
@@ -69,8 +71,11 @@ class ClaudeBackend:
                 out, _ = await proc.communicate()
             match = re.search(r"(\d+)\.(\d+)\.(\d+) \(Claude Code\)", out.decode("utf-8", "replace"))
             if proc.returncode == 0 and match:
-                self.version = tuple(int(part) for part in match.groups())
-                return self.version
+                version = tuple(int(part) for part in match.groups())
+                # Cache only a usable version, so an upgrade after the "update" message is seen without a restart.
+                if version >= MINIMUM_VERSION:
+                    self.version = version
+                return version
         except Exception:
             pass
         finally:
@@ -86,7 +91,12 @@ class ClaudeBackend:
         if model not in CLAUDE_MODELS:
             result.update(status="model_unavailable", message=f"Unsupported Claude model: {model}.")
             return result
-        token = self.credentials.get(TOKEN_REFERENCE)
+        try:
+            # Keyring backends may block (D-Bus, unlock prompts), so the lookup stays off the event loop.
+            token = await asyncio.to_thread(self.credentials.get, TOKEN_REFERENCE)
+        except keyring.errors.KeyringError:
+            result["message"] = "No OS credential store is available, so ASHAD cannot read the Claude token."
+            return result
         if not token:
             result["message"] = "Paste a token from `claude setup-token` in Settings › Account."
             return result
@@ -137,7 +147,7 @@ class ClaudeBackend:
             "--no-session-persistence", "--permission-prompts", "none"]
         try:
             proc = await asyncio.create_subprocess_exec(*argv, cwd=self.home,
-                env=self._environment(self.credentials.get(TOKEN_REFERENCE)),
+                env=self._environment(await asyncio.to_thread(self.credentials.get, TOKEN_REFERENCE)),
                 stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
         except OSError:
             raise ClaudeError("provider_failure", "Claude Code could not complete the request; no action was executed.") from None

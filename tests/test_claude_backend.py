@@ -4,6 +4,7 @@ import sys
 import time
 from pathlib import Path
 
+import keyring.errors
 import pytest
 
 from ashad import claude_backend
@@ -149,6 +150,24 @@ async def test_status_configuration_required_without_token_binary_or_new_version
     old = ClaudeBackend(Store(backend.home.parent / "old"), backend.credentials)
     use_scenario(old, "old-version")
     assert (await old.status())["status"] == "configuration_required"
+
+
+@pytest.mark.asyncio
+async def test_upgraded_cli_is_seen_without_restart(backend):
+    use_scenario(backend, "old-version")
+    assert (await backend.status())["status"] == "configuration_required"
+    backend.binary = [sys.executable, FAKE]  # The user updates Claude Code in place.
+    assert (await backend.status())["status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_unavailable_credential_store_reports_configuration_required(backend, monkeypatch):
+    def no_store(reference):
+        raise keyring.errors.NoKeyringError("no backend")
+    monkeypatch.setattr(backend.credentials, "get", no_store)
+    status = await backend.status()
+    assert status["status"] == "configuration_required"
+    assert "credential store" in status["message"]
 
 
 @pytest.mark.asyncio

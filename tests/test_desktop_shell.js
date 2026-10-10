@@ -40,6 +40,22 @@ test('child environment excludes inherited runtime hooks, API credentials and El
   assert.deepEqual(env, { PATH: 'system path', SystemRoot: 'C:\\Windows', APPDATA: 'user' });
 });
 
+test('linux child environment keeps session, keyring and display variables only', () => {
+  const input = { PATH: '/usr/bin', HOME: '/home/u', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/bus', DISPLAY: ':0',
+    XAUTHORITY: '/home/u/.Xauthority', XDG_RUNTIME_DIR: '/run/user/1000', PYTHONPATH: 'host', HTTP_PROXY: 'proxy',
+    OPENAI_API_KEY: 'secret', ELECTRON_RUN_AS_NODE: '1' };
+  assert.deepEqual(rules.childEnvironment(input, 'linux'), { PATH: '/usr/bin', HOME: '/home/u',
+    DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/bus', DISPLAY: ':0', XAUTHORITY: '/home/u/.Xauthority',
+    XDG_RUNTIME_DIR: '/run/user/1000' });
+  assert.deepEqual(rules.childEnvironment(input, 'win32'), { PATH: '/usr/bin' });
+});
+
+test('python layout is platform specific', () => {
+  assert.deepEqual(rules.pythonLayout('win32'), { executable: 'python.exe', sitePackages: path.join('Lib', 'site-packages') });
+  assert.deepEqual(rules.pythonLayout('linux'), { executable: path.join('bin', 'python3'),
+    sitePackages: path.join('lib', 'python3.13', 'site-packages') });
+});
+
 test('startup trusts exact private announcement and authenticated ready identity, never health', () => {
   const config = rules.launchConfig('fixture');
   assert.equal(rules.announcement(JSON.stringify({ protocol: rules.PROTOCOL, instance_id: config.instance_id,

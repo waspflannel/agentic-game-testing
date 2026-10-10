@@ -6,12 +6,24 @@ const path = require('node:path');
 const PROTOCOL = 'ashad-desktop/1';
 
 // Preserve OS discovery/keyring necessities, not Python hooks, provider credentials,
-// development overrides, proxy injection or ELECTRON_RUN_AS_NODE.
-function childEnvironment(inherited) {
+// development overrides, proxy injection or ELECTRON_RUN_AS_NODE. On Linux this also keeps the
+// session, keyring (D-Bus, XDG runtime) and display (X11/Wayland) variables the Secret Service needs.
+function childEnvironment(inherited, platform = process.platform) {
   const allowed = new Set(('SYSTEMROOT SYSTEMDRIVE WINDIR COMSPEC PATH PATHEXT TEMP TMP APPDATA LOCALAPPDATA ' +
     'USERPROFILE HOMEDRIVE HOMEPATH USERNAME COMPUTERNAME PROGRAMFILES PROGRAMFILES(X86) PROGRAMW6432 ' +
     'PROGRAMDATA ALLUSERSPROFILE OS NUMBER_OF_PROCESSORS PROCESSOR_ARCHITECTURE').split(' '));
+  if (platform !== 'win32') {
+    for (const name of ('HOME USER LOGNAME SHELL LANG LC_ALL LC_CTYPE TMPDIR DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR ' +
+      'XDG_CONFIG_HOME XDG_DATA_HOME XDG_CACHE_HOME XDG_STATE_HOME DISPLAY WAYLAND_DISPLAY XAUTHORITY').split(' ')) allowed.add(name);
+  }
   return Object.fromEntries(Object.entries(inherited).filter(([key]) => allowed.has(key.toUpperCase())));
+}
+
+// Private interpreter and site-packages, relative to the bundled python/ directory.
+function pythonLayout(platform) {
+  return platform === 'win32'
+    ? { executable: 'python.exe', sitePackages: path.join('Lib', 'site-packages') }
+    : { executable: path.join('bin', 'python3'), sitePackages: path.join('lib', 'python3.13', 'site-packages') };
 }
 
 function diagnosticDataRoot(value) {
@@ -130,5 +142,5 @@ async function selectedManifest(selection, kind) {
   return fs.realpath(manifest);
 }
 
-module.exports = { PROTOCOL, childEnvironment, diagnosticDataRoot, launchConfig, announcement, readyIdentity, cleanControllerExit, appUrl, loginUrl,
+module.exports = { PROTOCOL, childEnvironment, pythonLayout, diagnosticDataRoot, launchConfig, announcement, readyIdentity, cleanControllerExit, appUrl, loginUrl,
   viewerUrl, privilegedSender, desktopHeaders, validatedStatus, quitPrompt, confirmDrain, selectedManifest };

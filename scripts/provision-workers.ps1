@@ -47,6 +47,14 @@ if ($LASTEXITCODE -ne 0) {
     & $DockerExecutable network create --label 'ashad.managed=true' $network | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Could not create ASHAD desktop network.' }
 }
+function New-SecretFile($Path, $Length) {
+    if (Test-Path -LiteralPath $Path) { return }
+    $bytes = [byte[]]::new($Length)
+    $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    [IO.File]::WriteAllText($Path, [Convert]::ToBase64String($bytes))
+}
+
 $records = @()
 for ($i = 1; $i -le $Count; $i++) {
     $workerId = "$WorkerPrefix-$i"
@@ -55,18 +63,8 @@ for ($i = 1; $i -le $Count; $i++) {
     New-Item -ItemType Directory -Path $secretDirectory -Force | Out-Null
     $tokenFile = Join-Path $secretDirectory 'worker_token'
     $vncFile = Join-Path $secretDirectory 'vnc_password'
-    if (-not (Test-Path -LiteralPath $tokenFile)) {
-        $tokenBytes = [byte[]]::new(48)
-        $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-        try { $rng.GetBytes($tokenBytes) } finally { $rng.Dispose() }
-        [IO.File]::WriteAllText($tokenFile, [Convert]::ToBase64String($tokenBytes))
-    }
-    if (-not (Test-Path -LiteralPath $vncFile)) {
-        $vncBytes = [byte[]]::new(6)
-        $rng = [Security.Cryptography.RandomNumberGenerator]::Create()
-        try { $rng.GetBytes($vncBytes) } finally { $rng.Dispose() }
-        [IO.File]::WriteAllText($vncFile, [Convert]::ToBase64String($vncBytes))
-    }
+    New-SecretFile $tokenFile 48
+    New-SecretFile $vncFile 6
     $apiPort = $ApiBasePort + $i
     $desktopPort = $DesktopBasePort + $i
     if ($ManagedOwner) {

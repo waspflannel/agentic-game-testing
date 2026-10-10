@@ -107,6 +107,9 @@ class DesktopDouble:
         # This fixture retains its own measured pins; it never echoes requested pins as evidence.
         self.probe = {**copy.deepcopy(self.status), "ready": True, "build": copy.deepcopy(build),
                       "desktop": {"rendered": True, "capture_ready": True, "input_ready": True}}
+    async def evidence_index(self, run_id=None):
+        return {"files": []}
+
     async def request(self, method, path, *, data=None, **kwargs):
         self.calls.append((path, data))
         if path == "/prepare/probe":

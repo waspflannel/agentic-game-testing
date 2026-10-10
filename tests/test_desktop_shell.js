@@ -7,7 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { execFileSync } = require('node:child_process');
 const rules = require('../desktop/shell.cjs');
-const { PYTHON_SHA256, PYTHON_VERSION } = require('../desktop/prepare.cjs');
+const { PYTHON_SHA256, PYTHON_VERSION, LINUX_PYTHON_SHA256 } = require('../desktop/prepare.cjs');
 const origin = 'http://127.0.0.1:32123';
 const idle = () => ({ owners: [], operations: [], draining: false, viewer_urls: [] });
 
@@ -232,6 +232,13 @@ test('packaging pins exact tooling/full Python and keeps subprocess resources ou
   for (const excluded of ['!Lib/ensurepip/**', '!Lib/site-packages/pip/**', '!Lib/site-packages/pip-*.dist-info/**']) {
     assert.ok(python.filter.includes(excluded), excluded);
   }
+  for (const excluded of ['!lib/python3.13/ensurepip/**', '!lib/python3.13/site-packages/pip/**',
+    '!lib/python3.13/site-packages/pip-*.dist-info/**', '!bin/pip*']) {
+    assert.ok(python.filter.includes(excluded), excluded);
+  }
+  assert.equal(packageFile.build.linux.executableName, 'ashad');
+  assert.ok(packageFile.build.linux.target.some(item => item.target === 'deb'));
+  assert.match(LINUX_PYTHON_SHA256, /^[0-9a-f]{64}$/);
   assert.deepEqual(packageFile.build.electronFuses, { runAsNode: false, enableNodeOptionsEnvironmentVariable: false,
     enableNodeCliInspectArguments: false });
 });

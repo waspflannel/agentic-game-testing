@@ -74,3 +74,100 @@ def test_validate_keeps_statuses_separate(tmp_path):
     assert ai.claude_status is status and status["api"] == "claude"
     assert store.get("settings", "ai_status_claude")["api"] == "claude"
     assert store.get("settings", "ai_status", None) is None
+
+
+# ---- App routes, bootstrap, launch validation ----
+import pytest
+from fastapi.testclient import TestClient
+from unittest.mock import AsyncMock
+from ashad.app import create_app
+from ashad.validation import validate_plan
+from test_controller import FakeClaudeBackend, environment  # noqa: F401
+
+HEADERS = {"X-ASHAD-Request": "1"}
+TOKEN = "sk-ant-oat01-" + "z" * 40
+
+
+def claude_app(tmp_path, claude=None, codex=None):
+    claude = claude or FakeClaudeBackend(ready=False)
+    app = create_app(tmp_path, MemoryCredentials(None), start_services=False,
+                     ai_backend=codex or FakeCodexBackend(), claude_backend=claude)
+    return app, claude
+
+
+def test_token_post_stores_and_never_echoes(tmp_path):
+    app, claude = claude_app(tmp_path)
+    with TestClient(app) as client:
+        result = client.post("/api/settings/claude/token", json={"token": f"  {TOKEN}  "}, headers=HEADERS)
+        assert result.status_code == 200 and result.json()["status"] == "ready"
+        assert TOKEN not in result.text
+        assert TOKEN not in client.get("/api/bootstrap").text
+        row = app.state.store.get("settings", "ai_status_claude")
+        assert row and TOKEN not in str(row)
+    assert claude.saved == [TOKEN]
+
+
+@pytest.mark.parametrize("token", ["", "abc", "sk-ant-oat x y"])
+def test_token_post_rejects_bad_tokens(tmp_path, token):
+    app, claude = claude_app(tmp_path)
+    with TestClient(app) as client:
+        result = client.post("/api/settings/claude/token", json={"token": token}, headers=HEADERS)
+        assert result.status_code == 422
+    assert claude.saved == []
+
+
+def test_token_delete_clears(tmp_path):
+    app, claude = claude_app(tmp_path, FakeClaudeBackend(ready=True))
+    with TestClient(app) as client:
+        result = client.delete("/api/settings/claude/token", headers=HEADERS)
+        assert result.status_code == 200
+    assert claude.cleared == 1
+
+
+@pytest.mark.parametrize("method", ["post", "delete"])
+def test_token_routes_blocked_while_run_active(tmp_path, method):
+    app, claude = claude_app(tmp_path)
+    app.state.store.put("runs", {"id": "queued-run", "state": "Queued"})
+    with TestClient(app) as client:
+        kwargs = {"json": {"token": TOKEN}} if method == "post" else {}
+        result = getattr(client, method)("/api/settings/claude/token", headers=HEADERS, **kwargs)
+        assert result.status_code == 422 and "queued" in result.json()["detail"].lower()
+    assert claude.saved == [] and claude.cleared == 0
+
+
+def test_bootstrap_lists_claude_options_and_status(tmp_path):
+    claude = FakeClaudeBackend()
+    claude.status = AsyncMock(side_effect=AssertionError("bootstrap must not call the backend"))
+    app, _ = claude_app(tmp_path, claude)
+    with TestClient(app) as client:
+        data = client.get("/api/bootstrap").json()
+    sonnet = next(o for o in data["model_options"] if o["id"] == "sonnet")
+    assert sonnet["provider"] == "claude"
+    assert "ai_claude" in data
+
+
+def test_launch_validation_checks_selected_provider(environment):
+    store, _, plan, _ = environment
+    ready = lambda api, auth: {"configured": True, "status": "ready", "model": "x", "api": api,
+                               "auth_method": auth, "available_models": list(SUPPORTED_MODELS)}
+    codex_ready = ready("codex", "chatgpt")
+    claude_ready = {**ready("claude", "claude_oauth_token"), "available_models": list(CLAUDE_MODELS)}
+    not_ready = {"configured": False, "status": "configuration_required", "message": "Connect."}
+    for codex, claude, good, bad in ((not_ready, claude_ready, "sonnet", "gpt-6-luna"),
+                                     (codex_ready, not_ready, "gpt-6-luna", "sonnet")):
+        store.put("settings", codex, "ai_status")
+        store.put("settings", claude, "ai_status_claude")
+        assert validate_plan({**plan, "model": good}, store, check_credentials=True)["valid"]
+        assert not validate_plan({**plan, "model": bad}, store, check_credentials=True)["valid"]
+
+
+@pytest.mark.asyncio
+async def test_sonnet_profile_run_records_claude_api(environment):
+    from test_acceptance_edges import ready_run
+    store, coordinator, plan, _ = environment
+    coordinator.ai.claude_backend = FakeClaudeBackend()
+    plan["model"] = "sonnet"
+    run = await ready_run(environment, plan)
+    assert run["api"] == "claude" and run["billing"] == "subscription"
+    assert run["model"] == "sonnet"
+    assert store.get("settings", "ai_status_claude")["status"] == "ready"

@@ -22,7 +22,7 @@ def generate_report(store, run_id):
     subscription_calls = len(usage) - len(metered)
     cost_summary = f"Recorded calls: {len(usage)}; subscription calls: {subscription_calls}."
     if subscription_calls or run.get("billing") == "subscription":
-        cost_summary += " Codex uses ChatGPT subscription limits; no per-request dollar cost is reported."
+        cost_summary += " The AI provider uses subscription limits; no per-request dollar cost is reported."
     if metered:
         cost_summary += (f" Metered API cost: {sum(u['estimated_cost_usd'] for u in metered):.6f} USD."
             if all(u.get("estimated_cost_usd") is not None for u in metered) else " Metered API cost: unknown.")

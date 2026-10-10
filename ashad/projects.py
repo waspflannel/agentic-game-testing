@@ -21,7 +21,7 @@ from .store import redact, uid
 MIGRATION_ID = "projects-v1"
 TERMINAL = {"ended", "completed", "failed", "terminated", "cancelled"}
 # Passive heartbeat/auth-status polling never changes ownership or durable history.
-PASSIVE_SETTINGS = ("coordinator_heartbeat", "ai_status")
+PASSIVE_SETTINGS = ("coordinator_heartbeat", "ai_status", "ai_status_claude")
 
 
 def _identifier(value, label):
@@ -233,7 +233,7 @@ class Projects:
         for table in ("records", "leases", "commands", "events"):
             query, parameters = f"SELECT * FROM {table}", ()
             if table == "records":
-                query, parameters = query + " WHERE NOT (kind='settings' AND id IN (?,?))", PASSIVE_SETTINGS
+                query, parameters = query + f" WHERE NOT (kind='settings' AND id IN ({','.join('?' * len(PASSIVE_SETTINGS))}))", PASSIVE_SETTINGS
             digest.update(table.encode() + b"\n")
             for row in connection.execute(query + " ORDER BY 1,2", parameters):
                 digest.update(json.dumps(tuple(row), ensure_ascii=False).encode() + b"\n")

@@ -2,7 +2,7 @@ from __future__ import annotations
 from pathlib import Path
 import shutil
 from pydantic import ValidationError
-from .models import Plan
+from .models import Plan, PROVIDERS, provider_of
 from .repository import Repository, catalog_ids, sha256_file
 
 
@@ -122,15 +122,21 @@ def validate_plan(raw, store, credentials=None, check_credentials=False):
     if plan.success_criteria.predicate == "observed_goal":
         errors.append("A visual claim alone is not a launchable completion predicate. Select a source-resolved quest, biome, or item quantity.")
     if check_credentials:
-        status = store.get("settings", "ai_status", {})
+        provider = provider_of(plan.model)
+        pricing = PROVIDERS[provider]["pricing"]
+        status = store.get("settings", PROVIDERS[provider]["status_key"], {})
         available = status.get("available_models", [status.get("model")] if status.get("status") == "ready" else [])
-        if not (status.get("api") == "codex" and status.get("auth_method") == "chatgpt" and status.get("configured")
+        if not (status.get("api") == pricing["api"] and status.get("auth_method") == pricing["auth_method"] and status.get("configured")
                 and status.get("status") in {"ready", "model_unavailable"} and plan.model in available):
-            errors.append(f"Connect Codex with ChatGPT and verify access to {plan.model} before Launch. " + status.get("message", "Refresh sign-in status to verify subscription access."))
+            message = status.get("message", "Refresh sign-in status to verify subscription access.")
+            if provider == "claude":
+                errors.append(f"Connect Claude (paste a token from claude setup-token) and verify access to {plan.model} before Launch. " + message)
+            else:
+                errors.append(f"Connect Codex with ChatGPT and verify access to {plan.model} before Launch. " + message)
     if plan.limits.duration_seconds is None:
         warnings.append("Run duration ceiling is unset.")
     if plan.limits.spend_usd is not None:
-        warnings.append("The saved API dollar ceiling does not apply to subscription-backed Codex. ChatGPT account usage limits apply.")
+        warnings.append(f"The saved API dollar ceiling does not apply to subscription-backed {PROVIDERS[provider_of(plan.model)]['label']}. Subscription usage limits apply.")
     free = shutil.disk_usage(store.root).free
     reserve = store.get("settings", "main", {}).get("storage_reserve_bytes", 1024**3)
     if free < reserve + min(plan.limits.storage_bytes, 256 * 1024**2):

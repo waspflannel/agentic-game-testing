@@ -80,6 +80,23 @@ class Store:
             rows = self.db.execute(query + " ORDER BY updated DESC", parameters).fetchall()
         return [json.loads(r[0]) for r in rows]
 
+    def records_for_run(self, kind, run_id):
+        with self.lock:
+            rows = self.db.execute("SELECT data FROM records WHERE kind=? AND json_extract(data, '$.run_id')=? ORDER BY updated DESC",
+                                   (kind, run_id)).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
+    def count(self, kind):
+        with self.lock:
+            return self.db.execute("SELECT COUNT(*) FROM records WHERE kind=?", (kind,)).fetchone()[0]
+
+    def usage_since(self, purpose, timestamp):
+        """(status, timestamp) of usage rows for a purpose at or after a timestamp."""
+        with self.lock:
+            return self.db.execute("SELECT json_extract(data, '$.status'), json_extract(data, '$.timestamp') FROM records "
+                                   "WHERE kind='usage' AND json_extract(data, '$.purpose')=? AND json_extract(data, '$.timestamp') >= ?",
+                                   (purpose, timestamp)).fetchall()
+
     def delete(self, kind, key):
         with self.lock:
             self.db.execute("DELETE FROM records WHERE kind=? AND id=?", (kind, key))

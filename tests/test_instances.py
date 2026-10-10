@@ -112,7 +112,7 @@ def test_public_workflow_and_retired_routes(tmp_path, monkeypatch):
         assert client.post("/api/agents/tune", json={"build_id": "build-1"}).status_code == 403
         result = client.post("/api/agents/tune", json={"build_id": "build-1", "model": "gpt-6-sol"}, headers=headers)
         assert result.status_code == 200
-        tune.assert_awaited_once_with("build-1", "gpt-6-sol")
+        tune.assert_awaited_once_with("build-1", "gpt-6-sol", project_id=None, name=None, request_id=None)
         assert client.post("/api/instances", json={"primary_goal": "Explore"}, headers=headers).status_code == 422
         for path in ("/api/plan", "/api/scenarios", "/api/validate", "/api/launch", "/api/fixtures",
                      "/api/runs/old/rerun", "/api/runs/old/review", "/api/findings/old/review"):

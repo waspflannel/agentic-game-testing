@@ -300,7 +300,7 @@ class Projects:
                     "blockers": blockers, "source_token": source_token, "grouping_hash": grouping_hash,
                     "preview_token": _digest({"source": source_token, "grouping": grouping_hash}),
                     "already_applied": bool(self._marker(grouping_hash)),
-                    "backup_scope": "SQLite metadata and run evidence only; Codex home, registrations, external builds, keyring and Docker volumes are not copied. This is not a complete workspace backup."}
+                    "backup_scope": "SQLite metadata and run evidence only; Codex home, registrations, external builds, keyring, Claude token and Docker volumes are not copied. This is not a complete workspace backup."}
 
     def _verify_database(self, database, source_token):
         _safe_path(database)
@@ -382,7 +382,7 @@ class Projects:
             "build_paths": [{"id": build["id"], **{key: build[key] for key in ("manifest_path", "source_root", "catalog_path", "brief_path") if key in build}} for build in self.store.list("builds")],
             "worker_ids": [record["id"] for record in self.store.list("workers")],
             "account_ids": [record["id"] for record in self.store.list("accounts")],
-            "limitations": ["Codex home, registrations, external builds, keyring and Docker volumes are not copied.",
+            "limitations": ["Codex home, registrations, external builds, keyring, Claude token and Docker volumes are not copied.",
                             "Reauthentication and separately authorized external backups may be required."]}
         _safe_path(manifest)
         with manifest.open("x", encoding="utf-8") as saved:

@@ -24,7 +24,7 @@ TABLES = {"records": ("kind", "id", "data", "updated"),
           "commands": ("scope", "id", "result")}
 LIMITATIONS = [
     "Only controller SQLite and run evidence are copied; this is NOT a complete workspace backup.",
-    "Codex home, worker registrations, external builds, OS keyring and Docker volumes are inventory only.",
+    "Codex home, worker registrations, external builds, OS keyring, Claude token and Docker volumes are inventory only.",
     "The new Codex home requires explicit sign-in; account and desktop readiness are not verified.",
     "Project/build grouping is unchanged; use Projects preview/apply for explicit membership mapping.",
     "Never run old and new controllers against the same worker/account pool concurrently.",

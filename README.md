@@ -42,15 +42,23 @@ Profile tuning and bot decisions require account access to the selected model. M
 
 **Usage & capacity** retains token totals, cost estimates, hardware measurements, session capacity and desktop availability. Equivalent API-price estimates are comparison values, not ChatGPT subscription charges or spending limits. Missing usage remains marked incomplete; historical charges retain their original meaning.
 
+## Connect your Claude subscription
+
+1. Install Claude Code 2.1.280 or later with Anthropic's native installer. ASHAD looks only in the installer's default location (`%USERPROFILE%\.local\bin\claude.exe`, or `~/.local/bin/claude` on Linux).
+2. In a terminal run `claude setup-token`, finish the browser step and copy the printed token.
+3. Use **Settings → Account → Claude**, paste the token and Save. The token goes to the OS credential store, never to ASHAD's database or logs. Remove deletes it.
+4. Pick Claude Sonnet (default), Opus or Haiku in **Projects + → Setup new game agent**. The model is frozen per profile.
+5. Terms: this is personal, local use of your own subscription through the unmodified Claude CLI. Read https://code.claude.com/docs/en/legal-and-compliance. Products built for other people should use API keys; ASHAD has no API-key fallback. Do not share a build containing a token or run it for other people's subscriptions.
+
 ## Project ownership and retained history
 
 Use **Projects + → Setup new game agent** to create a game project, select/register a supported pinned manifest, explicitly inspect/prepare its desktop, tune a named model-specific configuration and review its saved guide. Selection never imports, prepares, tunes or starts automatically. Duplicate names remain independent IDs. Completed tuning retries reconcile the same request rather than silently retuning. Exactly **one occupied instance globally** is allowed, including queued, paused, human-owned and ended/unconfirmed work. Existing higher saved caps remain historical settings, not effective capacity.
 
-Optional **Import existing workspace…** requires an empty owned target, a stopped source controller/watchdog, confirmed idle worker/account pool, a fresh verified SQLite/evidence backup and explicit separate external backups/inventory. It does not copy Codex auth, OS keyring values, registrations, external builds or Docker volumes, and does not infer current readiness. Project grouping is a separate explicit preview/backup/apply operation; unassigned history remains readable. Interrupted imports block editing/admission until operator reconciliation: retain the journal, evidence and backup; do not remove them blindly.
+Optional **Import existing workspace…** requires an empty owned target, a stopped source controller/watchdog, confirmed idle worker/account pool, a fresh verified SQLite/evidence backup and explicit separate external backups/inventory. It does not copy Codex auth, OS keyring values, registrations, external builds or Docker volumes, and does not infer current readiness. Claude tokens are not copied. Project grouping is a separate explicit preview/backup/apply operation; unassigned history remains readable. Interrupted imports block editing/admission until operator reconciliation: retain the journal, evidence and backup; do not remove them blindly.
 
 ## Tune an agent, then run it
 
-1. Complete **Projects +** setup: choose the pinned build, inspect a compatible desktop, select the model and explicitly tune a named profile. Codex uses source/control evidence; tuning performs inference but does not launch a game. Review the saved instructions.
+1. Complete **Projects +** setup: choose the pinned build, inspect a compatible desktop, select the model and explicitly tune a named profile. The selected provider uses source/control evidence; tuning performs inference but does not launch a game. Review the saved instructions.
 2. Open the project's **New instance**, select a saved profile and enter the primary goal. Its build/model are fixed by the profile. Check readiness without inference/gameplay if needed.
 3. Explicitly **Start instance**. ASHAD freshly revalidates authentication, exact supported build pins and actual idle desktop/render/capture/input capabilities, then accepts one host bot in a fresh world. Failed/blocked drafts never auto-launch. Lost replies reconcile the same request; restoring prepared inputs asks first and still requires another Start click.
 4. Follow the live view. Pause, resume, stop, or take over if the bot needs help. Each instance retains its own run ID and evidence.

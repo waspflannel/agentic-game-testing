@@ -3,16 +3,17 @@ import asyncio
 import os
 from pathlib import Path
 import time
-from .store import Store
+from .store import Store, redact
 from .credentials import Credentials
 from .ai import OpenAI
 from .coordinator import Coordinator
+from .models import ACTIVE_STATES
 
 
 async def once(store, coordinator, now=None):
     now = now or time.time()
     for run in store.list("runs"):
-        if run["state"] not in {"Starting", "Running", "Paused", "Investigating", "Stopping"}:
+        if run["state"] not in ACTIVE_STATES:
             continue
         deadline = run.get("investigation_deadline")
         duration = run["plan"]["limits"]["duration_seconds"]
@@ -37,7 +38,7 @@ async def main():
         try:
             await once(store, coordinator)
         except Exception as exc:
-            print(f"ASHAD watchdog: {type(exc).__name__}", flush=True)
+            print(f"ASHAD watchdog: {type(exc).__name__}: {redact(str(exc))[:500]}", flush=True)
         await asyncio.sleep(1)
 
 

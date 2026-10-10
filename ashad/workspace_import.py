@@ -5,7 +5,6 @@ this entire call. Source controller/watchdog locks are acquired here. No worker,
 provider, credential, external build, or Codex-home contents are accessed.
 """
 from contextlib import ExitStack, closing
-import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,7 +14,8 @@ import time
 
 from .process_lock import acquire
 from .projects import (PASSIVE_SETTINGS, _copy_file, _digest, _file_hash, _identifier, _ownership_unresolved,
-                       _safe_path, _unredacted)
+                       _safe_path, _tree_files, _unredacted)
+from .store import ledger_hash
 
 IMPORT_ID = "workspace-import-v1"
 TABLES = {"records": ("kind", "id", "data", "updated"),
@@ -52,28 +52,16 @@ def _semantic_snapshot(snapshot):
 
 def _tree(root, hashed=True):
     """Evidence inventory; hashed=False is a cheap size/mtime change stamp, never stored."""
-    _safe_path(root)
-    if not root.is_dir():
-        raise ValueError("Missing run evidence directory")
-    files, directories = {}, []
-    def unreadable(error):
-        raise error
-    for directory, folders, names in os.walk(root, followlinks=False, onerror=unreadable):
-        for name in folders + names:
-            path = _safe_path(Path(directory) / name)
-            relative = path.relative_to(root).as_posix()
-            if path.is_dir():
-                directories.append(relative)
-            elif path.is_file():
-                info = path.stat()
-                files[relative] = ({"sha256": _file_hash(path), "bytes": info.st_size} if hashed
-                                   else {"bytes": info.st_size, "mtime_ns": info.st_mtime_ns})
-            else:
-                raise ValueError("Only regular evidence files/directories may be imported")
+    directories = []
+    files = {}
+    for relative, path in _tree_files(root, directories).items():
+        info = path.stat()
+        files[relative] = ({"sha256": _file_hash(path), "bytes": info.st_size} if hashed
+                           else {"bytes": info.st_size, "mtime_ns": info.st_mtime_ns})
     return {"files": files, "directories": sorted(directories)}
 
 
-def _idle(snapshot, root):
+def _require_quiescent_source(snapshot, root):
     if snapshot["leases"]:
         raise ValueError("Source has unreconciled leases")
     outstanding = set()
@@ -113,10 +101,8 @@ def _idle(snapshot, root):
         with path.open(encoding="utf-8") as ledger:
             for seq, line in enumerate(ledger, 1):
                 event = json.loads(line)
-                given = event.pop("hash")
-                expected = hashlib.sha256(json.dumps(event, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-                event["hash"] = given
-                if given != expected or event.get("previous_hash") != previous or event.get("seq") != seq or event.get("run_id") != path.parent.name:
+                given = event["hash"]
+                if given != ledger_hash(event) or event.get("previous_hash") != previous or event.get("seq") != seq or event.get("run_id") != path.parent.name:
                     raise ValueError("Source ledger integrity check failed")
                 seen[(path.parent.name, seq)] = event
                 previous = given
@@ -241,7 +227,7 @@ def import_workspace(store, *, source_root, backup_dir, external_inventory,
                         if ".." in path.parts or not any(path.is_relative_to(Path(root)) for root in external["external_build_paths"]):
                             raise ValueError("External backup inventory does not cover every recorded build path")
         try:
-            _idle(snapshot, source)
+            _require_quiescent_source(snapshot, source)
         except (KeyError, TypeError, AttributeError) as exc:
             raise ValueError("Malformed source history; reconcile before importing") from exc
         identity = _digest({"source_root": str(source), "database": _semantic_snapshot(snapshot), "evidence": evidence})

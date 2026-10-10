@@ -27,6 +27,12 @@ def redact(value):
     return value
 
 
+def ledger_hash(event):
+    """Hash of an event excluding its own hash field."""
+    body = {key: value for key, value in event.items() if key != "hash"}
+    return hashlib.sha256(json.dumps(body, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+
+
 class Store:
     def __init__(self, root: str | Path):
         self.root = Path(root).resolve()
@@ -114,7 +120,7 @@ class Store:
             seq = previous[0] + 1 if previous else 1
             prev_hash = json.loads(previous[1])["hash"] if previous else None
             event = redact({"id": uid("evt_"), "version": 1, "run_id": run_id, "seq": seq, "timestamp": time.time(), "monotonic": time.monotonic(), "kind": kind, "payload": payload or {}, "previous_hash": prev_hash, **fields})
-            event["hash"] = hashlib.sha256(json.dumps(event, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+            event["hash"] = ledger_hash(event)
             raw = json.dumps(event, ensure_ascii=False, allow_nan=False)
             # Ledger is authoritative; recovery reconciles a crash between append and DB index.
             with (self.run_dir(run_id) / "ledger.jsonl").open("a", encoding="utf-8", newline="\n") as f:
@@ -134,10 +140,8 @@ class Store:
             for lineno, line in enumerate(f, 1):
                 try:
                     event = json.loads(line)
-                    given = event.pop("hash")
-                    expected = hashlib.sha256(json.dumps(event, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
-                    event["hash"] = given
-                    if given != expected or event["previous_hash"] != prev:
+                    given = event["hash"]
+                    if given != ledger_hash(event) or event["previous_hash"] != prev:
                         raise ValueError("Hash chain mismatch")
                     prev = given
                     self.db.execute("INSERT OR IGNORE INTO events VALUES (?,?,?,?)", (run_id, event["seq"], event["id"], json.dumps(event)))
@@ -206,6 +210,10 @@ class Store:
     def release(self, run_id):
         with self.lock:
             self.db.execute("DELETE FROM leases WHERE run_id=?", (run_id,))
+
+    def forget_command(self, scope, key):
+        with self.lock:
+            self.db.execute("DELETE FROM commands WHERE scope=? AND id=?", (scope, key))
 
     def command(self, scope, key, result=None):
         with self.lock:

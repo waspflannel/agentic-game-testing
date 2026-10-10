@@ -44,7 +44,7 @@ async def desktop_server(tmp_path):
         return {"drained": True}
 
     wrapped = DesktopBoundary(app, port=port, session_key=session, owner_key=owner,
-                              instance_id=instance, shutdown=shutdown)
+                              instance_id=instance, shutdown=shutdown, status=dict)
     server = uvicorn.Server(uvicorn.Config(wrapped, log_level="error", access_log=False,
                                           timeout_graceful_shutdown=.2))
     task = asyncio.create_task(server.serve(sockets=[listener]))
@@ -136,7 +136,7 @@ async def test_open_camera_cannot_wedge_confirmed_server_resource_drain(tmp_path
 
 def test_transport_rejects_weak_or_reused_keys():
     with pytest.raises(ValueError):
-        DesktopBoundary(None, port=1, session_key="short", owner_key="short", instance_id="test", shutdown=None)
+        DesktopBoundary(None, port=1, session_key="short", owner_key="short", instance_id="test", shutdown=None, status=None)
     key = secrets.token_urlsafe(32)
     with pytest.raises(ValueError):
-        DesktopBoundary(None, port=1, session_key=key, owner_key=key, instance_id="test", shutdown=None)
+        DesktopBoundary(None, port=1, session_key=key, owner_key=key, instance_id="test", shutdown=None, status=None)

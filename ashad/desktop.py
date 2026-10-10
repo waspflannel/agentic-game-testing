@@ -40,7 +40,7 @@ class DesktopBoundary:
     The main-only key is separate from renderer requests. A shutdown callback must
     drain admission and confirm all ownership release before returning true.
     """
-    def __init__(self, app, *, port, session_key, owner_key, instance_id, shutdown, status=None):
+    def __init__(self, app, *, port, session_key, owner_key, instance_id, shutdown, status):
         for key in (session_key, owner_key):
             if not strong_key(key):
                 raise ValueError("Desktop keys require at least 256 bits of random material")
@@ -74,7 +74,7 @@ class DesktopBoundary:
             return await self.app(scope, receive, send)
         if scope["path"] == "/_desktop/ready" and scope["method"] == "GET":
             response = JSONResponse({"protocol": PROTOCOL, "instance_id": self.instance_id})
-        elif scope["path"] == "/_desktop/status" and scope["method"] == "GET" and self.status:
+        elif scope["path"] == "/_desktop/status" and scope["method"] == "GET":
             response = JSONResponse(self.status())
         elif scope["path"] == "/_desktop/shutdown" and scope["method"] == "POST":
             raw = b""

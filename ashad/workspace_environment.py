@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import functools
 import hashlib
 import json
 import os
@@ -17,12 +18,12 @@ import re
 from secrets import token_bytes
 import signal
 import socket
-import stat
 import subprocess
 import sys
 import tempfile
 import time
 
+from .projects import _safe_path as _link_safe_path
 from .repository import sha256_file
 from .worker_client import WorkerClient
 
@@ -45,6 +46,10 @@ def _result(checks):
     return {"ready": not failures, "reason": "; ".join(failures) if failures else "Verified by fresh environment probes", "checks": checks}
 
 
+def _check(into, key, ready, reason):
+    into[key] = {"ready": bool(ready), "reason": "verified" if ready else reason}
+
+
 def inspect_environment(build, worker, health, status, *, occupied=False, account=None):
     """Consume a fresh authenticated /prepare/probe result, /status and validated build.
 
@@ -53,14 +58,11 @@ def inspect_environment(build, worker, health, status, *, occupied=False, accoun
     Unknown/missing probes fail. Never use last_probe or account.readiness.
     """
     checks = {}
-
-    def check(key, ready, reason):
-        checks[key] = {"ready": bool(ready), "reason": "verified" if ready else reason}
+    check = functools.partial(_check, checks)
 
     reachable = isinstance(health, dict) and isinstance(status, dict)
     health, status = _object(health), _object(status)
     snapshots = (health, status)
-    measured = (health,)
     check("reachable", reachable, "Authenticated passive probe/status unavailable")
     check("probe", health.get("ready") is True, "Worker passive compatibility probe failed")
     check("enabled", worker.get("enabled", True) is True, "Desktop is disabled")
@@ -70,19 +72,20 @@ def inspect_environment(build, worker, health, status, *, occupied=False, accoun
     pins = [(key, build.get(key)) for key in ("artifact_sha256", "engine_sha256", "manifest_sha256")]
     for key, expected in pins:
         check(key, bool(isinstance(expected, str) and re.fullmatch(r"[a-fA-F0-9]{64}", expected) and
-              all(_object(probe.get("build")).get(key) == expected.lower() for probe in measured)), f"Exact measured {key} is missing or mismatched")
+              _object(health.get("build")).get(key) == expected.lower()), f"Exact measured {key} is missing or mismatched")
     for key, supported in (("structured_version", 1), ("integration_version", 2), ("engine_version", ENGINE)):
-        check(key, type(build.get(key)) is type(supported) and build.get(key) == supported and all(type(_object(probe.get("build")).get(key)) is type(supported) and _object(probe.get("build")).get(key) == supported for probe in measured), f"{key} compatibility is unknown or unsupported")
+        measured = _object(health.get("build")).get(key)
+        same_type = type(build.get(key)) is type(supported) and type(measured) is type(supported)
+        check(key, same_type and build.get(key) == supported and measured == supported, f"{key} compatibility is unknown or unsupported")
     for key in ("source_revision", "command"):
         check(key, bool(build.get(key)) and _object(health.get("build")).get(key) == build.get(key), f"Mounted {key} is missing or mismatched")
     for key in ("rendered", "capture_ready", "input_ready"):
-        check(key, all(_object(probe.get("desktop")).get(key) is True for probe in measured), f"Independent desktop {key} probe is not positive")
+        check(key, _object(health.get("desktop")).get(key) is True, f"Independent desktop {key} probe is not positive")
     check("idle", not occupied and all(_idle(probe) for probe in snapshots), "Desktop is busy, in human setup, or teardown/idle state is unknown")
     check("infrastructure", all("infrastructure_error" in probe and not probe["infrastructure_error"] for probe in snapshots), "Worker infrastructure state is unknown or unhealthy")
 
     steam_checks = {}
-    def steam_check(key, ready, reason):
-        steam_checks[key] = {"ready": bool(ready), "reason": "verified" if ready else reason}
+    steam_check = functools.partial(_check, steam_checks)
     app_id = build.get("steam_app_id")
     steam_check("app_id", type(app_id) is int and app_id > 0 and app_id != 480, "Build requires a real licensed Steam App ID (never 480)")
     steam_check("account", bool(account and account.get("worker_id") == worker.get("id") and account.get("steam_id") and account.get("app_id") == app_id), "No matching desktop/account/build App ID")
@@ -120,17 +123,7 @@ async def inspect_fresh_environment(build, worker, credentials, *, occupied=Fals
 
 
 def _safe_path(path):
-    path = Path(path)
-    if not path.is_absolute() or ".." in path.parts:
-        raise PreparationError("An absolute non-traversing path is required")
-    for ancestor in (*reversed(path.parents), path):
-        try:
-            info = ancestor.lstat()
-        except FileNotFoundError:
-            continue
-        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT or (stat.S_ISREG(info.st_mode) and info.st_nlink > 1):
-            raise PreparationError("Linked resource/credential paths are not allowed")
-    return path.resolve()
+    return _link_safe_path(path, PreparationError, regular_only=False)
 
 
 def validate_build(build):
@@ -195,12 +188,13 @@ def _image(resources):
 
 
 def _tools():
+    # Ambient DOCKER_HOST/CONTEXT/CONFIG must not redirect owned resources to another engine.
+    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("DOCKER_")}
     if sys.platform == "linux":
         # Fixed install locations only: the inherited PATH must not choose which docker runs.
         docker = next((path.resolve() for path in (Path("/usr/bin/docker"), Path("/usr/local/bin/docker")) if path.is_file()), None)
         if docker is None:
             raise PreparationError("Docker Engine CLI is required at /usr/bin/docker or /usr/local/bin/docker")
-        env = {key: value for key, value in os.environ.items() if not key.upper().startswith("DOCKER_")}
         env["PATH"] = "/usr/bin:/bin"
         # No PowerShell on Linux: prepare_environment provisions in-process.
         return None, docker, env
@@ -214,8 +208,6 @@ def _tools():
     if os.name != "nt" or not powershell.is_file() or not docker.is_file():
         raise PreparationError("Windows PowerShell 5.1 and official Docker Desktop CLI are required")
     # Native Windows tools only. No dependency on global Python/Node or shell lookup.
-    # Ambient DOCKER_HOST/CONTEXT/CONFIG must not redirect owned resources to another engine.
-    env = {key: value for key, value in os.environ.items() if not key.upper().startswith("DOCKER_")}
     env["PATH"] = os.pathsep.join(map(str, (system / "System32", system, powershell.parent, docker.parent)))
     return powershell, docker, env
 
@@ -363,6 +355,30 @@ async def _provision(runner, docker, env, record, *, root, directory, owner, exi
             "token_file": str(token_file), "vnc_password_file": str(vnc_file)}
 
 
+async def _verify_existing_container(runner, client_factory, record, *, root, directory, env, docker, owner):
+    """Adopt only a container this request owns: labels, image and mounts match, and it is provably idle."""
+    inspected = json.loads(await _run(runner, [docker, "container", "inspect", record["container"]], directory, env))[0]
+    labels = inspected["Config"].get("Labels") or {}
+    mounts = {item["Destination"]: item for item in inspected.get("Mounts", [])}
+    if labels.get("ashad.managed") != "true" or labels.get("ashad.environment-owner") != owner or inspected["Config"]["Image"] != record["image"] or not all(
+            destination in mounts and mounts[destination].get("Name") == "ashad-" + record["worker_id"] + suffix for destination, suffix in (("/data", "-data"), ("/home/player", "-home"))) or not all(
+            destination in mounts and Path(mounts[destination].get("Source", "")).resolve() == source and mounts[destination].get("RW") is False for destination, source in (("/game", root), ("/run/secrets", directory / "secrets" / record["worker_id"]))):
+        raise PreparationError("Existing container ownership, image or mounts do not match this request")
+    if not inspected["State"].get("Running"):
+        recovery = _safe_path(directory / "recovery-state.json")
+        await _run(runner, [docker, "cp", record["container"] + ":/data/worker-state.json", recovery], directory, env)
+        state = json.loads(recovery.read_text(encoding="utf-8-sig"))
+        if state.get("worker_id") != record["worker_id"] or state.get("contract_version") != CONTRACT or state.get("lifecycle") != "unbound" or state.get("binding") is not None or state.get("game_pid") or state.get("human_control") is not False or state.get("desktop_session") or state.get("desktop_pids") != [] or state.get("held_keys") != [] or state.get("held_buttons") != []:
+            raise PreparationError("Stopped worker idle/unbound state is not proven; reconcile manually")
+    else:
+        token_path = _safe_path(directory / "secrets" / record["worker_id"] / "worker_token")
+        token = token_path.read_text(encoding="utf-8-sig").strip()
+        async with client_factory(record["url"], token) as client:
+            health, status = await client.health(), await client.status()
+        if any(probe.get("worker_id") != record["worker_id"] or probe.get("contract_version") != CONTRACT or not _idle(probe) for probe in (health, status)):
+            raise PreparationError("Existing worker is busy or its idle state is unknown")
+
+
 async def prepare_environment(store, credentials, *, project_id, build, request_id,
                               confirmed=False, target_drained=False, resource_root=None,
                               runner=_execute, client_factory=WorkerClient):
@@ -455,26 +471,7 @@ async def prepare_environment(store, credentials, *, project_id, build, request_
                 raise PreparationError("Container name collision; unrelated resources cannot be adopted")
             # The existing container publishes the ports of the latest attempt that created it.
             record.update({key: prior[key] for key in ("api_port", "desktop_port", "url", "desktop_url")})
-            inspected = json.loads(await _run(runner, [docker, "container", "inspect", record["container"]], directory, env))[0]
-            labels = inspected["Config"].get("Labels") or {}
-            mounts = {item["Destination"]: item for item in inspected.get("Mounts", [])}
-            if labels.get("ashad.managed") != "true" or labels.get("ashad.environment-owner") != owner or inspected["Config"]["Image"] != record["image"] or not all(
-                    destination in mounts and mounts[destination].get("Name") == "ashad-" + record["worker_id"] + suffix for destination, suffix in (("/data", "-data"), ("/home/player", "-home"))) or not all(
-                    destination in mounts and Path(mounts[destination].get("Source", "")).resolve() == source and mounts[destination].get("RW") is False for destination, source in (("/game", root), ("/run/secrets", directory / "secrets" / record["worker_id"]))):
-                raise PreparationError("Existing container ownership, image or mounts do not match this request")
-            if not inspected["State"].get("Running"):
-                recovery = _safe_path(directory / "recovery-state.json")
-                await _run(runner, [docker, "cp", record["container"] + ":/data/worker-state.json", recovery], directory, env)
-                state = json.loads(recovery.read_text(encoding="utf-8-sig"))
-                if state.get("worker_id") != record["worker_id"] or state.get("contract_version") != CONTRACT or state.get("lifecycle") != "unbound" or state.get("binding") is not None or state.get("game_pid") or state.get("human_control") is not False or state.get("desktop_session") or state.get("desktop_pids") != [] or state.get("held_keys") != [] or state.get("held_buttons") != []:
-                    raise PreparationError("Stopped worker idle/unbound state is not proven; reconcile manually")
-            else:
-                token_path = _safe_path(directory / "secrets" / record["worker_id"] / "worker_token")
-                token = token_path.read_text(encoding="utf-8-sig").strip()
-                async with client_factory(record["url"], token) as client:
-                    health, status = await client.health(), await client.status()
-                if any(probe.get("worker_id") != record["worker_id"] or probe.get("contract_version") != CONTRACT or not _idle(probe) for probe in (health, status)):
-                    raise PreparationError("Existing worker is busy or its idle state is unknown")
+            await _verify_existing_container(runner, client_factory, record, root=root, directory=directory, env=env, docker=docker, owner=owner)
         if powershell is None:
             entry = await _provision(runner, docker, env, record, root=root, directory=directory, owner=owner, existing=bool(names))
         else:

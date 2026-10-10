@@ -197,7 +197,7 @@ async def test_http_tuning_cancellation_returns_conflict_and_releases_operation(
 
     app.state.ai.backend.tune = provider
 
-    async def tune(*args):
+    async def tune(*args, **kwargs):
         return await app.state.ai._request("fixture", None, "tuning", None, "gpt-6-luna", 7)
 
     app.state.profiles.tune = tune

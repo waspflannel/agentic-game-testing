@@ -10,7 +10,7 @@ from openai_codex.types import ReasoningEffort
 from openai_codex.generated.v2_all import ThreadUnsubscribeResponse
 
 from .models import MODEL, CODEX_MODELS
-from .prompts import TUNING_MANUAL_LIMIT, TUNING_PROMPT_VERSION, planning_request, selection_request, tuning_request
+from .prompts import planning_request, selection_request, tuning_request
 from .store import redact
 
 
@@ -124,8 +124,6 @@ class CodexBackend:
             completed = await handle.wait()
             if not completed.success:
                 self.login_error = "ChatGPT sign-in did not complete. Start sign-in again."
-        except asyncio.CancelledError:
-            raise
         except Exception as exc:
             self.login_error = provider_error(exc).message
 

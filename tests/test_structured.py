@@ -133,7 +133,7 @@ async def test_decisions_structured_has_no_image_or_desktop_tool(tmp_path):
         return {"status": "waiting"}
     await ai.player_turn({"play_mode": "structured", "observation": {"entities": []},
                          "player": {"id": "p", "context_policy": "instructions"}},
-                         None, dispatch, lambda: True, "run")
+                         dispatch, lambda: True, "run")
     assert "input_image" not in json.dumps(sent)
     assert all(question["type"] == "choice" for _, questions in sent for question in questions)
     assert calls == ["wait_for_change"]
@@ -220,6 +220,7 @@ async def test_mcp_requires_bound_auth_and_exposes_real_protocol(tmp_path):
                 json={"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "perform_action", "arguments": {"verb": "input", "parameters": {"name": "inventory"}, "reason": "test"}}})
             assert response.json()["result"]["isError"] is True
             assert not any(op["operation"] == "perform_action" for op in coordinator.ops)
+            assert sum(op["operation"] == "observe" for op in coordinator.ops) == 1, "A rejected mutating call must not observe"
     live = store.require("runs", "run")
     live["players"]["p"]["generation"] += 1
     store.put("runs", live)

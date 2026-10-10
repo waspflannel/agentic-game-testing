@@ -153,6 +153,16 @@ async def test_status_configuration_required_without_token_binary_or_new_version
 
 
 @pytest.mark.asyncio
+async def test_status_distinguishes_unstartable_cli_from_old_cli(backend):
+    backend.save_token(TOKEN)
+    backend.binary = [str(backend.home.parent / "no-such-claude")]
+    result = await backend.status()
+    assert result["status"] == "configuration_required" and "did not respond" in result["message"]
+    use_scenario(backend, "old-version")
+    assert "or later is required" in (await backend.status())["message"]
+
+
+@pytest.mark.asyncio
 async def test_upgraded_cli_is_seen_without_restart(backend):
     use_scenario(backend, "old-version")
     assert (await backend.status())["status"] == "configuration_required"

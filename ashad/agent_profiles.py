@@ -1,13 +1,12 @@
 """Reusable source-grounded controls manuals, pinned to one game build."""
 import asyncio
-import contextlib
 import hashlib
 import json
 from pathlib import Path
 import re
 import time
 
-from .prompts import TUNING_MANUAL_LIMIT, TUNING_PROMPT_VERSION
+from .prompts import SOURCE_NOTES_LIMIT, TUNING_MANUAL_LIMIT, TUNING_MINIMUM_BYTES, TUNING_PROMPT_VERSION
 from .models import MODEL, SUPPORTED_MODELS
 from .repository import Repository, sha256_file
 from .projects import Projects, _identifier, _name
@@ -89,14 +88,6 @@ class AgentProfiles:
         self.lock = asyncio.Lock()
         self.progress = None  # The running tuning's stage and batch, for GET /api/agents/tuning/<id>.
 
-    @contextlib.asynccontextmanager
-    async def _tracking(self):
-        self.progress = {"stage": "reading_source", "batch": 0, "batch_count": 0, "started_at": time.time()}
-        try:
-            yield self.progress
-        finally:
-            self.progress = None
-
     async def tune(self, build_id, model=MODEL, *, request_id=None, name=None, project_id=None):
         if request_id is not None:
             _identifier(request_id, "Tuning request ID")
@@ -112,58 +103,71 @@ class AgentProfiles:
             return self.store.require("agents", previous["agent_id"])
         if self.lock.locked():
             raise ValueError("An agent is already being tuned. Wait for it to finish before tuning another.")
-        async with self.lock, self._tracking() as progress:
-            assigned_project = Projects(self.store).project_for_build(build_id, project_id)
-            build = self.store.require("builds", build_id)
-            evidence, inventory_hash = await asyncio.to_thread(source_evidence, build)
-            batches, batch, used = [], [], 0
-            for source in evidence["sources"]:
-                size = len(json.dumps(source, ensure_ascii=False).encode("utf-8"))
-                if used + size > SOURCE_BUDGET and batch:
-                    batches.append(batch)
-                    batch, used = [], 0
-                batch.append(source)
-                used += size
-            batches.append(batch)
-            if len(batches) > 12:
-                raise ValueError("Relevant source exceeds 12 bounded tuning batches. Narrow the build source before tuning; no partial agent was saved.")
-            evidence["coverage"]["source_batches"] = len(batches)
-            progress.update(stage="instructions" if len(batches) == 1 else "source_notes", batch_count=len(batches) if len(batches) > 1 else 0)
-            if len(batches) == 1:
-                instructions = await self.ai.tune_agent(evidence, model=model)
-            else:
-                notes = []
-                for index, batch in enumerate(batches):
-                    progress["batch"] = index + 1
-                    batch_evidence = {"build_id": build_id, "source_revision": build["source_revision"],
-                        "batch": index + 1, "batch_count": len(batches), "sources": batch}
-                    notes_key = hashlib.sha256(json.dumps({"evidence": batch_evidence, "model": model,
-                        "prompt_version": TUNING_PROMPT_VERSION}, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
-                    saved = self.store.get("tuning_notes", notes_key, {})
-                    note = saved.get("instructions")
-                    if not isinstance(note, str) or len(note.strip().encode("utf-8")) < 200 or len(note.encode("utf-8")) > 8000:
-                        note = await self.ai.tune_agent(batch_evidence, model=model, stage="source_notes")
-                        self.store.put("tuning_notes", {"id": notes_key, "build_id": build_id, "model": model,
-                            "prompt_version": TUNING_PROMPT_VERSION, "instructions": note})
-                    notes.append(note)
-                progress["stage"] = "instructions"
-                instructions = await self.ai.tune_agent({"build_id": build_id, "source_revision": build["source_revision"],
-                    "source_notes": notes, "coverage": evidence["coverage"]}, model=model)
-            profile = {"id": uid("agent_"), "name": name or f"{build.get('name', build_id)} agent",
-                "project_id": assigned_project, "build_id": build_id, "source_revision": build["source_revision"], "model": model,
-                "instructions": instructions, "instructions_sha256": hashlib.sha256(instructions.encode("utf-8")).hexdigest(),
-                "source_files": list({source["path"]: {k: source[k] for k in ("path", "sha256", "total_lines")}
-                    for source in evidence["sources"]}.values()),
-                "source_inventory_sha256": inventory_hash, "source_coverage": evidence["coverage"],
-                "limitations": ["AI-written controls knowledge from bounded source analysis; gameplay has not been verified.",
-                    "Tuning prepares a reusable prompt, not model weights. Only currently advertised actions can execute."],
-                "created_at": time.time(), "status": "ready"}
-            self._validate(profile)
-            with self.store.transaction():
-                self.store.put("agents", profile)
-                if request_id:
-                    self.store.command("tuning", request_id, {"request": payload, "agent_id": profile["id"]})
-            return profile
+        async with self.lock:
+            self.progress = progress = {"stage": "reading_source", "batch": 0, "batch_count": 0, "started_at": time.time()}
+            try:
+                assigned_project = Projects(self.store).project_for_build(build_id, project_id)
+                build = self.store.require("builds", build_id)
+                evidence, inventory_hash = await asyncio.to_thread(source_evidence, build)
+                batches = self._batches(evidence["sources"])
+                evidence["coverage"]["source_batches"] = len(batches)
+                progress.update(stage="instructions" if len(batches) == 1 else "source_notes", batch_count=len(batches) if len(batches) > 1 else 0)
+                if len(batches) == 1:
+                    instructions = await self.ai.tune_agent(evidence, model=model)
+                else:
+                    notes = await self._source_notes(build, batches, model, progress)
+                    progress["stage"] = "instructions"
+                    instructions = await self.ai.tune_agent({"build_id": build_id, "source_revision": build["source_revision"],
+                        "source_notes": notes, "coverage": evidence["coverage"]}, model=model)
+                profile = {"id": uid("agent_"), "name": name or f"{build.get('name', build_id)} agent",
+                    "project_id": assigned_project, "build_id": build_id, "source_revision": build["source_revision"], "model": model,
+                    "instructions": instructions, "instructions_sha256": hashlib.sha256(instructions.encode("utf-8")).hexdigest(),
+                    "source_files": list({source["path"]: {k: source[k] for k in ("path", "sha256", "total_lines")}
+                        for source in evidence["sources"]}.values()),
+                    "source_inventory_sha256": inventory_hash, "source_coverage": evidence["coverage"],
+                    "limitations": ["AI-written controls knowledge from bounded source analysis; gameplay has not been verified.",
+                        "Tuning prepares a reusable prompt, not model weights. Only currently advertised actions can execute."],
+                    "created_at": time.time(), "status": "ready"}
+                self._validate(profile)
+                with self.store.transaction():
+                    self.store.put("agents", profile)
+                    if request_id:
+                        self.store.command("tuning", request_id, {"request": payload, "agent_id": profile["id"]})
+                return profile
+            finally:
+                self.progress = None
+
+    @staticmethod
+    def _batches(sources):
+        batches, batch, used = [], [], 0
+        for source in sources:
+            size = len(json.dumps(source, ensure_ascii=False).encode("utf-8"))
+            if used + size > SOURCE_BUDGET and batch:
+                batches.append(batch)
+                batch, used = [], 0
+            batch.append(source)
+            used += size
+        batches.append(batch)
+        if len(batches) > 12:
+            raise ValueError("Relevant source exceeds 12 bounded tuning batches. Narrow the build source before tuning; no partial agent was saved.")
+        return batches
+
+    async def _source_notes(self, build, batches, model, progress):
+        notes = []
+        for index, batch in enumerate(batches):
+            progress["batch"] = index + 1
+            batch_evidence = {"build_id": build["id"], "source_revision": build["source_revision"],
+                "batch": index + 1, "batch_count": len(batches), "sources": batch}
+            notes_key = hashlib.sha256(json.dumps({"evidence": batch_evidence, "model": model,
+                "prompt_version": TUNING_PROMPT_VERSION}, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+            saved = self.store.get("tuning_notes", notes_key, {})
+            note = saved.get("instructions")
+            if not isinstance(note, str) or len(note.strip().encode("utf-8")) < TUNING_MINIMUM_BYTES or len(note.encode("utf-8")) > SOURCE_NOTES_LIMIT:
+                note = await self.ai.tune_agent(batch_evidence, model=model, stage="source_notes")
+                self.store.put("tuning_notes", {"id": notes_key, "build_id": build["id"], "model": model,
+                    "prompt_version": TUNING_PROMPT_VERSION, "instructions": note})
+            notes.append(note)
+        return notes
 
     def validated(self, agent_id):
         profile = self.store.require("agents", agent_id)
@@ -175,7 +179,7 @@ class AgentProfiles:
         if profile.get("status") != "ready" or profile.get("source_revision") != build.get("source_revision"):
             raise ValueError("Agent knowledge no longer matches this build. Tune a new agent before launching.")
         instructions = profile.get("instructions", "")
-        if not isinstance(instructions, str) or not 200 <= len(instructions.encode("utf-8")) <= TUNING_MANUAL_LIMIT or hashlib.sha256(instructions.encode("utf-8")).hexdigest() != profile.get("instructions_sha256"):
+        if not isinstance(instructions, str) or not TUNING_MINIMUM_BYTES <= len(instructions.encode("utf-8")) <= TUNING_MANUAL_LIMIT or hashlib.sha256(instructions.encode("utf-8")).hexdigest() != profile.get("instructions_sha256"):
             raise ValueError("Agent controls manual is invalid or changed. Tune a new agent before launching.")
         repo = Repository(build)
         if not repo.hashes or sha256_file(repo.root.parent / "source-hashes.json") != profile.get("source_inventory_sha256"):

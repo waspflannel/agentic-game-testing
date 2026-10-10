@@ -48,7 +48,7 @@ async def test_full_manual_survives_dense_target_and_action_selections(tmp_path)
         return {"status": "running"}
 
     try:
-        result = await ai.player_turn(value, None, dispatch, lambda: True, "manual-context")
+        result = await ai.player_turn(value, dispatch, lambda: True, "manual-context")
         assert result["status"] == "dispatched" and len(backend.calls) == 2
         assert len(dispatched) == 1
         assert dispatched[0][1]["target_id"] == "511"

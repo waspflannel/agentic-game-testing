@@ -13,6 +13,7 @@ from .prompts import planning_request, selection_request, tuning_request
 
 
 MINIMUM_VERSION = (2, 1, 280)
+PROBE_FAILED = object()  # _cli_version could not run the CLI at all, as opposed to an old or unparseable version.
 TOKEN_REFERENCE = "claude:oauth-token"
 REQUEST_TIMEOUT_SECONDS = 120
 TUNING_TIMEOUT_SECONDS = 300
@@ -76,8 +77,8 @@ class ClaudeBackend:
                 if version >= MINIMUM_VERSION:
                     self.version = version
                 return version
-        except Exception:
-            pass
+        except (OSError, TimeoutError):
+            return PROBE_FAILED
         finally:
             if proc is not None:
                 if proc.returncode is None:
@@ -105,6 +106,9 @@ class ClaudeBackend:
             result["message"] = "Install Claude Code with Anthropic's native installer (2.1.280 or later); ASHAD looks only in ~/.local/bin."
             return result
         version = await self._cli_version(prefix)
+        if version is PROBE_FAILED:
+            result["message"] = "Claude Code did not respond to --version. Check that the installed CLI starts."
+            return result
         if version is None or version < MINIMUM_VERSION:
             result["message"] = "Claude Code 2.1.280 or later is required. Update it with Anthropic's installer."
             return result

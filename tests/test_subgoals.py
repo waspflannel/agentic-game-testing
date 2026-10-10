@@ -304,7 +304,7 @@ class PlannerCoordinator(CoordinatorDouble):
                 "completion": context["current_goal"]["completion"], "evidence": ref,
                 "reason": "Use the advertised ordinary controls.", "subgoals": children}
 
-    async def player_turn(self, context, repo, dispatch, current, run_id):
+    async def player_turn(self, context, dispatch, current, run_id):
         self.action_contexts.append(copy.deepcopy(context))
         await dispatch("perform_action", {"verb": "interact", "target_id": "oven", "target_version": 1, "parameters": {}, "reason": "fixture action"})
 

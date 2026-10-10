@@ -2,6 +2,8 @@
 
 TUNING_PROMPT_VERSION = 2
 TUNING_MANUAL_LIMIT = 32000
+SOURCE_NOTES_LIMIT = 8000
+TUNING_MINIMUM_BYTES = 200
 
 
 def selection_request(input, questions):
@@ -64,14 +66,14 @@ def tuning_request(evidence, stage, repair):
         raise ValueError("Unknown tuning stage")
     task = (
         "This is one batch of a larger source review. Write concise controls notes ONLY for the supplied source batch. "
-        "Aim for 5000 UTF-8 bytes (about 700 words); hard maximum 8000 bytes, minimum 200. "
+        f"Aim for 5000 UTF-8 bytes (about 700 words); hard maximum {SOURCE_NOTES_LIMIT} bytes, minimum {TUNING_MINIMUM_BYTES}. "
         "Preserve exact input/action names, their requirements, context-sensitive "
         "effects, input guards, UI closing/advancement behavior, and file/line citations. Do not invent missing "
         "connections. The notes will be combined with other batches into a manual. "
     ) if stage == "source_notes" else (
         "Write a practical reusable game-controls manual for an AI player from the supplied pinned source or cited source notes. "
         "Combine every batch, retaining action names, context-sensitive behavior and source citations. "
-        f"Aim for 11000 UTF-8 bytes (about 1500 words); hard maximum {TUNING_MANUAL_LIMIT} bytes, minimum 200. "
+        f"Aim for 11000 UTF-8 bytes (about 1500 words); hard maximum {TUNING_MANUAL_LIMIT} bytes, minimum {TUNING_MINIMUM_BYTES}. "
     )
     if repair:
         task += ("The supplied draft exceeded the hard byte limit. Compress it once into the target size above. "

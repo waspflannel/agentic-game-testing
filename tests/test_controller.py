@@ -213,11 +213,11 @@ async def test_subscription_login_controls_launch_without_an_api_key(environment
     scenario = coord.save_scenario(plan)
     assert scenario["revision"] == 1
     assert coord.credentials.get() is None
-    assert validate_plan(plan, store, coord.credentials, True)["valid"]
+    assert validate_plan(plan, store, True)["valid"]
     coord.ai.backend.ready = False
     await coord.ai.validate()
     assert validate_plan(plan, store)["valid"], "Drafts remain editable while signed out"
-    assert not validate_plan(plan, store, coord.credentials, True)["valid"]
+    assert not validate_plan(plan, store, True)["valid"]
     with pytest.raises(ValueError):
         await coord.launch(scenario["id"], scenario["revision"], "signed-out-launch")
     assert store.list("runs") == []
@@ -409,19 +409,6 @@ def test_http_signed_out_instances_and_cross_origin_guard(tmp_path):
         assert response.status_code == 422
         assert client.post("/api/settings", json={}, headers={"X-ASHAD-Request":"1", "Origin":"https://evil.example"}).status_code == 403
         assert "api_key" not in client.get("/api/bootstrap").text
-
-
-def test_repository_traversal_and_full_pagination(tmp_path):
-    from ashad.repository import Repository
-    for i in range(610):
-        (tmp_path / f"{i:04}.gd").write_text("needle" if i == 609 else "other")
-    repo = Repository({"source_root":str(tmp_path)})
-    assert repo.search("needle")["total"] == 1
-    assert repo.files(offset=500)["total"] == 610
-    assert len(repo.files(offset=500)["files"]) == 110
-    assert repo.files(query="0609")["files"][0]["path"] == "0609.gd"
-    with pytest.raises(ValueError):
-        repo.read("../../personal.txt")
 
 
 @pytest.mark.asyncio

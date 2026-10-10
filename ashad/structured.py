@@ -1,13 +1,13 @@
 """Shared structured-play handlers for Decisions, dashboard inspection and MCP."""
 from __future__ import annotations
 
-import asyncio
 import copy
 import hashlib
 import json
 import time
 
 from .ai import ProviderError
+from .models import MODEL, PROVIDERS, provider_of
 from .repository import Repository
 from .store import uid
 from . import subgoals
@@ -58,6 +58,19 @@ class StructuredPlayers:
         self.pending = {}
         self.generations = {}
         self.control_owners = {}
+
+    def _forget_turn(self, key):
+        self.waits.pop(key, None)
+        self.last_decisions.pop(key, None)
+
+    def claim_control(self, key, owner):
+        if key in self.control_owners:
+            raise ValueError("Player already has an external control lease")
+        self.control_owners[key] = owner
+
+    def release_control(self, key, owner):
+        if self.control_owners.get(key) == owner:
+            del self.control_owners[key]
 
     def binding(self, run_id, player_id):
         run = self.store.require("runs", run_id)
@@ -162,6 +175,11 @@ class StructuredPlayers:
             return {"status": "waiting", "until": self.waits[key][0]}
         if name != "perform_action":
             return {"error": "Unsupported structured tool"}
+        return await self._perform_action(run_id, player_id, args, observation, generation, owner)
+
+    async def _perform_action(self, run_id, player_id, args, observation, generation, owner):
+        run, ps = self.binding(run_id, player_id)
+        key = (run_id, player_id)
         if key in self.pending:
             previous = await self.call_game(run_id, player_id, "get_action_status", {"action_id": self.pending[key]})
             if previous.get("status", "unknown") in {"unknown", "running", "accepted"}:
@@ -237,8 +255,7 @@ class StructuredPlayers:
             self.store.event(run_id, "subgoals_verified", {"player_id": player_id, "goal_ids": completed,
                              "evidence": subgoals.observation_ref(observation), "full_observation": observation})
         if completed or previous_active != plan.get("active_goal_id"):
-            self.waits.pop((run_id, player_id), None)
-            self.last_decisions.pop((run_id, player_id), None)
+            self._forget_turn((run_id, player_id))
         if plan["status"] == "blocked":
             self.status(run_id, player_id, "planner_blocked", plan["reason"], generation)
             await self.coordinator.investigate(run_id, "planner_blocked", plan["reason"], [player_id])
@@ -280,8 +297,7 @@ class StructuredPlayers:
         if verified:
             self.store.event(run_id, "subgoals_verified", {"player_id": player_id, "goal_ids": verified,
                              "evidence": subgoals.observation_ref(fresh), "full_observation": fresh})
-        self.waits.pop((run_id, player_id), None)
-        self.last_decisions.pop((run_id, player_id), None)
+        self._forget_turn((run_id, player_id))
         self.status(run_id, player_id, "ready", "Plan updated; checking fresh state before the next action.", generation)
         return False  # Never act on the pre-planning snapshot after a potentially slow model call.
 
@@ -296,9 +312,32 @@ class StructuredPlayers:
         goal["actionable"] = False
         plan["reason"] = reason
         self.store.put("runs", run)
-        self.waits.pop((run_id, player_id), None)
-        self.last_decisions.pop((run_id, player_id), None)
+        self._forget_turn((run_id, player_id))
         return True
+
+    async def _reconcile_pending(self, run_id, player_id, ps, generation):
+        """Settle the last action's outcome; True when this turn must end."""
+        key = (run_id, player_id)
+        result = await self.call_game(run_id, player_id, "get_action_status", {"action_id": self.pending[key]})
+        if result.get("status") in {"running", "accepted"}:
+            deadline = result.get("expires_at") or (ps.get("pending_action") or {}).get("expires_at")
+            if deadline and time.time() > deadline + 5:
+                reason = "The game action is still running after its execution deadline. Inspect the action before retrying."
+                self.status(run_id, player_id, "error", reason, generation, last_error=reason, error_at=time.time(), action_id=self.pending[key])
+                await self.coordinator.investigate(run_id, "unknown_execution", reason, [player_id])
+                return True
+            self.status(run_id, player_id, "waiting_action", "Waiting for the game to acknowledge the action outcome.", generation, action_id=self.pending[key], wait_until=deadline)
+            return True
+        self.store.event(run_id, "structured_action_outcome", {"player_id": player_id, "result": result})
+        if result.get("status", "unknown") == "unknown":
+            self.status(run_id, player_id, "error", "The last action outcome is unknown; input is held for review.", generation, action_id=self.pending[key])
+            await self.coordinator.investigate(run_id, "unknown_execution", "Structured action acknowledgement could not be reconciled; fresh review required", [player_id])
+            return True
+        self.clear_pending(run_id, player_id, generation)
+        self.last_decisions.pop(key, None)
+        if result.get("status") in {"failed", "rejected", "expired", "cancelled"}:
+            self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
+        return False
 
     async def turn(self, run_id, player_id):
         key = (run_id, player_id)
@@ -308,8 +347,7 @@ class StructuredPlayers:
             if ps.get("pending_action"):
                 self.clear_pending(run_id, player_id, generation)  # Held/rebound input cannot still be pending.
             self.pending.pop(key, None)
-            self.waits.pop(key, None)
-            self.last_decisions.pop(key, None)
+            self._forget_turn(key)
             self.generations[key] = generation
         def current():
             live = self.store.require("runs", run_id)
@@ -324,26 +362,8 @@ class StructuredPlayers:
             if key not in self.pending and key not in self.waits and key not in self.last_decisions:
                 self.status(run_id, player_id, "observing", "Reading fresh game state.", generation)
             observation = await self.observe(run_id, player_id)
-            if key in self.pending:
-                result = await self.call_game(run_id, player_id, "get_action_status", {"action_id": self.pending[key]})
-                if result.get("status") in {"running", "accepted"}:
-                    deadline = result.get("expires_at") or (ps.get("pending_action") or {}).get("expires_at")
-                    if deadline and time.time() > deadline + 5:
-                        reason = "The game action is still running after its execution deadline. Inspect the action before retrying."
-                        self.status(run_id, player_id, "error", reason, generation, last_error=reason, error_at=time.time(), action_id=self.pending[key])
-                        await self.coordinator.investigate(run_id, "unknown_execution", reason, [player_id])
-                        return
-                    self.status(run_id, player_id, "waiting_action", "Waiting for the game to acknowledge the action outcome.", generation, action_id=self.pending[key], wait_until=deadline)
-                    return
-                self.store.event(run_id, "structured_action_outcome", {"player_id": player_id, "result": result})
-                if result.get("status", "unknown") == "unknown":
-                    self.status(run_id, player_id, "error", "The last action outcome is unknown; input is held for review.", generation, action_id=self.pending[key])
-                    await self.coordinator.investigate(run_id, "unknown_execution", "Structured action acknowledgement could not be reconciled; fresh review required", [player_id])
-                    return
-                self.clear_pending(run_id, player_id, generation)
-                self.last_decisions.pop(key, None)
-                if result.get("status") in {"failed", "rejected", "expired", "cancelled"}:
-                    self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
+            if key in self.pending and await self._reconcile_pending(run_id, player_id, ps, generation):
+                return
             if not current() or not await self.advance_plan(run_id, player_id, observation, generation, current):
                 return
             signature = meaningful_signature(observation)
@@ -362,7 +382,8 @@ class StructuredPlayers:
             self.store.event(run_id, "structured_decision_context", {"player_id": player_id, "context": context,
                 "full_observation": observation, "source_revision": run["build"].get("source_revision")})
             self.last_decisions[key] = (signature, time.time(), generation)
-            self.status(run_id, player_id, "thinking", "Waiting for Codex to choose the next action.", generation)
+            label = PROVIDERS[provider_of(run.get("model") or run["plan"].get("model", MODEL))]["label"]
+            self.status(run_id, player_id, "thinking", f"Waiting for {label} to choose the next action.", generation)
             decision_started_at = time.time()
             async def dispatch(name, args):
                 nonlocal observation
@@ -375,7 +396,7 @@ class StructuredPlayers:
                     result = prompt_observation(result)
                 self.store.event(run_id, "structured_tool_result", {"player_id": player_id, "tool": name, "result": result})
                 return result
-            result = await self.coordinator.ai.player_turn(context, Repository(run["build"]), dispatch, current, run_id)
+            result = await self.coordinator.ai.player_turn(context, dispatch, current, run_id)
             self.store.event(run_id, "agent_turn_completed", {"player_id": player_id, "duration_seconds": round(time.time() - decision_started_at, 3), "result": result})
             if current():
                 latest = self.store.require("runs", run_id)
@@ -386,8 +407,6 @@ class StructuredPlayers:
                 phase = status.get("phase")
                 if phase in {"thinking", "tool"}:
                     self.status(run_id, player_id, "ready", "Decision finished; checking the next observation.", generation, completed_at=time.time())
-        except asyncio.CancelledError:
-            raise
         except ProviderError as exc:
             if current():
                 if exc.status == "decision_needs_instructions" and self.request_replan(run_id, player_id, generation,

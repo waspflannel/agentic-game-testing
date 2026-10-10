@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import time
 
-from .codex_backend import TUNING_MANUAL_LIMIT, TUNING_PROMPT_VERSION
+from .prompts import TUNING_MANUAL_LIMIT, TUNING_PROMPT_VERSION
 from .models import MODEL, SUPPORTED_MODELS
 from .repository import Repository, sha256_file
 from .projects import Projects, _identifier, _name

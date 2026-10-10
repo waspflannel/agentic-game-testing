@@ -2,15 +2,18 @@
   "name": "ashad-desktop",
   "version": "0.1.0",
   "private": true,
-  "description": "Secure Windows shell for the ASHAD controller",
+  "description": "Secure desktop shell for the ASHAD controller",
   "author": "ASHAD",
+  "homepage": "https://github.com/waspflannel/agentic-game-testing",
   "main": "main.cjs",
   "scripts": {
     "prepare:runtime": "node prepare.cjs",
     "start": "electron .",
     "test": "node --test ../tests/test_desktop_shell.js",
     "build:dir": "npm run prepare:runtime && electron-builder --win --x64 --dir",
-    "build:nsis": "npm run prepare:runtime && electron-builder --win nsis --x64"
+    "build:nsis": "npm run prepare:runtime && electron-builder --win nsis --x64",
+    "build:linux": "npm run prepare:runtime && electron-builder --linux dir --x64",
+    "build:deb": "npm run prepare:runtime && electron-builder --linux deb --x64"
   },
   "devDependencies": {
     "electron": "44.6.0",
@@ -31,10 +34,13 @@
     "files": ["main.cjs", "preload.cjs", "shell.cjs", "status.html", "package.json"],
     "extraResources": [
       { "from": "runtime/python", "to": "python", "filter": ["**/*", "!**/__pycache__/**", "!**/*.pyc",
-        "!Lib/ensurepip/**", "!Lib/site-packages/pip/**", "!Lib/site-packages/pip-*.dist-info/**", "!Scripts/pip*"] },
+        "!Lib/ensurepip/**", "!Lib/site-packages/pip/**", "!Lib/site-packages/pip-*.dist-info/**", "!Scripts/pip*",
+        "!lib/python3.13/ensurepip/**", "!lib/python3.13/site-packages/pip/**",
+        "!lib/python3.13/site-packages/pip-*.dist-info/**", "!bin/pip*"] },
       { "from": "python-requirements.lock", "to": "python-requirements.lock" }
     ],
     "win": { "target": [{ "target": "nsis", "arch": ["x64"] }], "signAndEditExecutable": false },
+    "linux": { "target": [{ "target": "deb", "arch": ["x64"] }], "executableName": "ashad", "category": "Development", "maintainer": "ASHAD" },
     "nsis": {
       "oneClick": false,
       "perMachine": false,

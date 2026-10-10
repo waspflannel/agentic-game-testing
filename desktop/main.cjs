@@ -65,7 +65,7 @@ function ownerRequest(route, body, timeout = 5000) {
 
 function launchController() {
   const resources = app.isPackaged ? process.resourcesPath : path.join(__dirname, 'runtime');
-  const python = path.join(resources, 'python', 'python.exe');
+  const python = path.join(resources, 'python', rules.pythonLayout(process.platform).executable);
   if (!fs.existsSync(python)) throw new Error('Private Python runtime is missing. Rebuild with npm run prepare:runtime, or reinstall the complete ASHAD package. Global Python is not used.');
   const dataRoot = path.join(app.getPath('userData'), 'controller');
   fs.mkdirSync(dataRoot, { recursive: true });

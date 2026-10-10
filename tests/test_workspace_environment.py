@@ -1,17 +1,22 @@
 """Fixture orchestration only: no real keyring, Docker, provisioning, or game."""
 import asyncio
+import base64
 from copy import deepcopy
+import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import subprocess
+import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
 from ashad.repository import sha256_file
 from ashad.store import Store
-from ashad.workspace_environment import CONTRACT, IMAGE, inspect_environment, inspect_fresh_environment, prepare_environment
+from ashad.workspace_environment import CONTRACT, IMAGE, _safe_path, inspect_environment, inspect_fresh_environment, prepare_environment
 
 
 class MemoryCredentials:
@@ -83,6 +88,7 @@ class FakeDocker:
         self.image_available = True
         self.builds = []
         self.fail_build = False
+        self.networks, self.volumes, self.started = {}, {}, []
 
     def client(self, url, token):
         return FakeWorker(self, url, token)
@@ -139,6 +145,38 @@ class FakeDocker:
                 result.returncode = 1
             else:
                 Path(argv[-1]).write_text(json.dumps(self.recovery))
+        elif argv[1:3] == ["network", "inspect"]:
+            if argv[-1] in self.networks:
+                result.stdout = self.networks[argv[-1]]
+            else:
+                result.returncode = 1
+        elif argv[1:3] == ["network", "create"]:
+            self.networks[argv[-1]] = "true"
+        elif argv[1:3] == ["volume", "inspect"]:
+            if argv[-1] in self.volumes:
+                result.stdout = self.volumes[argv[-1]]
+            else:
+                result.returncode = 1
+        elif argv[1:3] == ["volume", "create"]:
+            self.volumes[argv[-1]] = next(value.split("=", 1)[1] for value in argv if value.startswith("ashad.environment-owner="))
+        elif argv[1] == "run":
+            name = argv[argv.index("--name") + 1]
+            worker_id = name.removeprefix("ashad-")
+            self.snapshot["worker_id"] = worker_id
+            self.names.add(name)
+            binds = {}
+            for value in argv:
+                if value.startswith("type=bind,"):
+                    fields = dict(item.split("=", 1) for item in value.split(",") if "=" in item)
+                    binds[fields["target"]] = fields["source"]
+            self.existing = {"Config": {"Image": argv[-1], "Labels": {"ashad.managed": "true", "ashad.environment-owner": next(value.split("=", 1)[1] for value in argv if value.startswith("ashad.environment-owner="))}},
+                             "State": {"Running": True}, "Mounts": [
+                                 {"Destination": "/game", "Source": binds["/game"], "RW": False},
+                                 {"Destination": "/run/secrets", "Source": binds["/run/secrets"], "RW": False},
+                                 {"Destination": "/data", "Name": "ashad-" + worker_id + "-data"},
+                                 {"Destination": "/home/player", "Name": "ashad-" + worker_id + "-home"}]}
+        elif argv[1] == "start":
+            self.started.append(argv[2])
         else:
             raise AssertionError("Unexpected fake subprocess operation")
         return result
@@ -176,6 +214,15 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         self.tools.stop()
         self.store.db.close()
         self.temporary.cleanup()
+
+    def use_linux_tools(self):
+        self.tools.stop()
+        self.tools = patch("ashad.workspace_environment._tools", return_value=(None, Path("/usr/bin/docker"), {"PATH": "/usr/bin:/bin"}))
+        self.tools.start()
+        self.fake.secret = base64.b64encode(b"\x01" * 48).decode()
+        tokens = patch("ashad.workspace_environment.token_bytes", side_effect=lambda size: b"\x01" * size)
+        tokens.start()
+        self.addCleanup(tokens.stop)
 
     async def prepare(self, **changes):
         kwargs = dict(project_id="project-1", build=self.build, request_id="request-1", confirmed=True,
@@ -478,6 +525,77 @@ class EnvironmentTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(external.read_text(), "never-read-this")
         self.assertNotIn("never-read-this", json.dumps(self.store.list("environment_preparations")))
 
+    async def test_linux_provisions_in_process_without_powershell(self):
+        self.use_linux_tools()
+        result = await self.prepare()
+        self.assertTrue(result["environment"]["ready"])
+        self.assertFalse(any("-File" in argv for argv in self.fake.argv))
+        record = self.store.require("environment_preparations", "request-1")
+        steps = [argv for argv in self.fake.argv if argv[1:3] in (["network", "inspect"], ["network", "create"], ["volume", "inspect"], ["volume", "create"]) or argv[1] == "run"]
+        self.assertEqual([argv[1:3] for argv in steps[:-1]], [["network", "inspect"], ["network", "create"], ["volume", "inspect"], ["volume", "create"], ["volume", "inspect"], ["volume", "create"]])
+        run = steps[-1]
+        self.assertEqual(run[1], "run")
+        self.assertEqual(run[run.index("--pull") + 1], "never")
+        self.assertIn(f"127.0.0.1:{record['api_port']}:8080", run)
+        self.assertTrue(any(value.endswith("target=/run/secrets,readonly") for value in run))
+        if os.name != "nt":
+            secrets = self.store.root / "environments" / record["owner"] / "secrets"
+            for path in (secrets, secrets / record["worker_id"]):
+                self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o700)
+            for name in ("worker_token", "vnc_password"):
+                self.assertEqual(stat.S_IMODE((secrets / record["worker_id"] / name).stat().st_mode), 0o600)
+        for option in self.fake.options:
+            self.assertEqual(option["env"]["PATH"], "/usr/bin:/bin")
+        public_and_store = json.dumps(result) + json.dumps(self.store.list("workers")) + json.dumps(self.store.list("environment_preparations"))
+        self.assertNotIn(self.fake.secret, public_and_store)
+        self.assertNotIn("token_file", public_and_store)
+
+    async def test_linux_refuses_unrelated_network_or_volume(self):
+        self.use_linux_tools()
+        network = "ashad-workspace-" + hashlib.sha256(str(_safe_path(self.store.root)).encode()).hexdigest()[:16]
+        self.fake.networks[network] = "<no value>"
+        with self.assertRaisesRegex(ValueError, "Network collision"):
+            await self.prepare()
+        self.assertFalse(any(argv[1] == "run" for argv in self.fake.argv))
+        self.fake = FakeDocker(self.build)
+        self.use_linux_tools()
+        self.fake.networks[network] = "true"
+        record = self.store.require("environment_preparations", "request-1")
+        for suffix in ("-data", "-home"):
+            self.fake.volumes["ashad-" + record["worker_id"] + suffix] = "other"
+        with self.assertRaisesRegex(ValueError, "Persistent volume collision"):
+            await self.prepare()
+        self.assertFalse(any(argv[1] == "run" for argv in self.fake.argv))
+
+    async def test_linux_reprepare_starts_existing_container(self):
+        self.use_linux_tools()
+        await self.prepare()
+        self.fake.snapshot["desktop"]["rendered"] = False
+        creates = sum(argv[1:3] in (["network", "create"], ["volume", "create"]) for argv in self.fake.argv)
+        await self.prepare(request_id="request-2")
+        self.assertEqual(sum(argv[1] == "run" for argv in self.fake.argv), 1)
+        record = self.store.require("environment_preparations", "request-1")
+        self.assertEqual(self.fake.started, [record["container"]])
+        self.assertEqual(sum(argv[1:3] in (["network", "create"], ["volume", "create"]) for argv in self.fake.argv), creates)
+
+    @unittest.skipUnless(sys.platform == "linux", "Linux tool locations")
+    async def test_linux_tools_use_fixed_docker_and_path(self):
+        self.tools.stop()
+        try:
+            from ashad.workspace_environment import PreparationError, _tools
+            with patch.dict("os.environ", {"PATH": "/global/python:/global/node", "DOCKER_HOST": "tcp://elsewhere:2375"}):
+                with patch("pathlib.Path.is_file", return_value=True):
+                    powershell, docker, env = _tools()
+                self.assertIsNone(powershell)
+                self.assertEqual(docker, Path("/usr/bin/docker").resolve())
+                self.assertEqual(env["PATH"], "/usr/bin:/bin")
+                self.assertNotIn("DOCKER_HOST", env)
+                with patch("pathlib.Path.is_file", return_value=False), self.assertRaisesRegex(PreparationError, "Docker Engine CLI"):
+                    _tools()
+        finally:
+            self.tools.start()
+
+    @unittest.skipUnless(os.name == "nt", "Windows tool locations")
     async def test_native_tools_and_path_are_not_taken_from_renderer_or_global_runtime(self):
         self.tools.stop()
         try:
@@ -553,6 +671,27 @@ class CommandTimeoutTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 if handle:
                     ctypes.windll.kernel32.CloseHandle(handle)
+
+    @unittest.skipUnless(sys.platform == "linux", "process groups are Linux-only")
+    async def test_timeout_kills_process_group_on_linux(self):
+        from ashad.workspace_environment import _execute, _run
+        with tempfile.TemporaryDirectory() as directory:
+            spawn = ("import subprocess, sys, time; child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']);"
+                     "open('grandchild.pid', 'w').write(str(child.pid)); time.sleep(60)")
+            started = time.monotonic()
+            with self.assertRaises(subprocess.TimeoutExpired):
+                await _run(_execute, [sys.executable, "-c", spawn], directory, dict(os.environ), timeout=3)
+            self.assertLess(time.monotonic() - started, 20)
+            pid = int(Path(directory, "grandchild.pid").read_text())
+            def dead():
+                try:
+                    return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z"
+                except FileNotFoundError:
+                    return True
+            deadline = time.monotonic() + 5
+            while not dead() and time.monotonic() < deadline:
+                await asyncio.sleep(0.1)
+            self.assertTrue(dead())
 
 
 class ProvisionScriptTests(unittest.TestCase):

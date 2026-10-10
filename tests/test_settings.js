@@ -8,6 +8,9 @@ const { pathToFileURL } = require('node:url');
 const url = file => pathToFileURL(path.join(__dirname, '../ashad/static', file)).href;
 const settings = () => import(url('views/settings.js'));
 const usage = () => import(url('views/usage.js'));
+// The renderer always has navigator; Node 20 doesn't, so tests choose the platform explicitly.
+const useAgent = userAgent => Object.defineProperty(globalThis, 'navigator', { value: { userAgent }, configurable: true });
+useAgent('Mozilla/5.0 (X11; Linux x86_64)');
 
 const NOW = 2_000_000_000;
 const data = (extra = {}) => ({
@@ -161,4 +164,15 @@ test('settings and usage markup escape every server string', async () => {
     .flatMap(Object.values).join('') + s.desktopsSkeleton(d, evil) + s.steamSkeleton(d) + s.maintenanceSkeleton(d, s.suggestGroups(d))
     + Object.values(u.usageRegions({ rows: [{ timestamp: NOW, model: evil, purpose: evil, run_id: evil, status: evil }] }, { ...u.newUsageUi(), range: 'all' }, new Map([[evil, evil]]), NOW)).join('');
   assert.doesNotMatch(html, /<img/);
+});
+
+test('import placeholder shows a path for the running platform', async () => {
+  const s = await settings();
+  try {
+    useAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
+    assert.match(s.maintenanceSkeleton(data(), ''), /placeholder="C:\\Users\\you\\ASHAD-old\\data"/);
+  } finally {
+    useAgent('Mozilla/5.0 (X11; Linux x86_64)');
+  }
+  assert.match(s.maintenanceSkeleton(data(), ''), /placeholder="\/home\/you\/ASHAD-old\/data"/);
 });

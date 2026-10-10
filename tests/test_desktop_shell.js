@@ -7,7 +7,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 const { execFileSync } = require('node:child_process');
 const rules = require('../desktop/shell.cjs');
-const { PYTHON_SHA256, PYTHON_VERSION } = require('../desktop/prepare.cjs');
+const { PYTHON_SHA256, PYTHON_VERSION, LINUX_PYTHON_SHA256 } = require('../desktop/prepare.cjs');
 const origin = 'http://127.0.0.1:32123';
 const idle = () => ({ owners: [], operations: [], draining: false, viewer_urls: [] });
 
@@ -38,6 +38,22 @@ test('child environment excludes inherited runtime hooks, API credentials and El
     OPENAI_API_KEY: 'secret', ANTHROPIC_API_KEY: 'secret', CUSTOM_API_TOKEN: 'secret',
     ELECTRON_RUN_AS_NODE: '1', NODE_OPTIONS: '--require bad', HTTP_PROXY: 'proxy' });
   assert.deepEqual(env, { PATH: 'system path', SystemRoot: 'C:\\Windows', APPDATA: 'user' });
+});
+
+test('linux child environment keeps session, keyring and display variables only', () => {
+  const input = { PATH: '/usr/bin', HOME: '/home/u', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/bus', DISPLAY: ':0',
+    XAUTHORITY: '/home/u/.Xauthority', XDG_RUNTIME_DIR: '/run/user/1000', PYTHONPATH: 'host', HTTP_PROXY: 'proxy',
+    OPENAI_API_KEY: 'secret', ELECTRON_RUN_AS_NODE: '1' };
+  assert.deepEqual(rules.childEnvironment(input, 'linux'), { PATH: '/usr/bin', HOME: '/home/u',
+    DBUS_SESSION_BUS_ADDRESS: 'unix:path=/run/bus', DISPLAY: ':0', XAUTHORITY: '/home/u/.Xauthority',
+    XDG_RUNTIME_DIR: '/run/user/1000' });
+  assert.deepEqual(rules.childEnvironment(input, 'win32'), { PATH: '/usr/bin' });
+});
+
+test('python layout is platform specific', () => {
+  assert.deepEqual(rules.pythonLayout('win32'), { executable: 'python.exe', sitePackages: path.join('Lib', 'site-packages') });
+  assert.deepEqual(rules.pythonLayout('linux'), { executable: path.join('bin', 'python3'),
+    sitePackages: path.join('lib', 'python3.13', 'site-packages') });
 });
 
 test('startup trusts exact private announcement and authenticated ready identity, never health', () => {
@@ -200,9 +216,12 @@ test('packaging pins exact tooling/full Python and keeps subprocess resources ou
   assert.equal(PYTHON_VERSION, '3.13.16');
   assert.equal(PYTHON_SHA256, 'bbf675bb5e763c1efbb09a3a461b259d81598a63c30c4b0d7ea11b9f063df159');
   const pins = (await fs.readFile(path.join(__dirname, '../desktop/python-requirements.lock'), 'utf8')).trim().split(/\r?\n/);
-  assert.equal(pins.length, 43);
-  assert.ok(pins.every(line => /^[A-Za-z0-9_.-]+==[0-9.]+( --hash=sha256:[0-9a-f]{64})+$/.test(line)), 'every pin is hash-locked');
-  const names = pins.map(line => line.split('==')[0].toLowerCase());
+  assert.equal(pins.length, 45);
+  assert.ok(pins.every(line => /^[A-Za-z0-9_.-]+==[0-9.]+(; sys_platform == "(win32|linux)")? ( ?--hash=sha256:[0-9a-f]{64})+$/.test(line)), 'every pin is hash-locked');
+  const pin = name => pins.find(line => line.startsWith(`${name}==`));
+  for (const name of ['pywin32', 'pywin32-ctypes']) assert.ok(pin(name).includes('sys_platform == "win32"'), name);
+  for (const name of ['SecretStorage', 'jeepney']) assert.ok(pin(name).includes('sys_platform == "linux"'), name);
+  const names = pins.map(line => line.split(/==|;/)[0].toLowerCase());
   for (const devOnly of ['pytest', 'pytest-asyncio', 'pluggy', 'iniconfig', 'pygments', 'colorama', 'pip']) assert.ok(!names.includes(devOnly), devOnly);
   const prepare = await fs.readFile(path.join(__dirname, '../desktop/prepare.cjs'), 'utf8');
   for (const flag of ["'--isolated'", "'--index-url', 'https://pypi.org/simple'", "'--require-hashes'", "'--no-deps'", "'--only-binary=:all:'"]) {
@@ -210,9 +229,13 @@ test('packaging pins exact tooling/full Python and keeps subprocess resources ou
   }
   // Build-time pip/ensurepip never ship; Electron itself cannot be repurposed as Node or a debug target.
   const python = packageFile.build.extraResources.find(item => item.from === 'runtime/python');
-  for (const excluded of ['!Lib/ensurepip/**', '!Lib/site-packages/pip/**', '!Lib/site-packages/pip-*.dist-info/**']) {
+  for (const excluded of ['!Lib/ensurepip/**', '!Lib/site-packages/pip/**', '!Lib/site-packages/pip-*.dist-info/**',
+    '!lib/python3.13/ensurepip/**', '!lib/python3.13/site-packages/pip/**', '!lib/python3.13/site-packages/pip-*.dist-info/**', '!bin/pip*']) {
     assert.ok(python.filter.includes(excluded), excluded);
   }
+  assert.equal(packageFile.build.linux.executableName, 'ashad');
+  assert.ok(packageFile.build.linux.target.some(item => item.target === 'deb'));
+  assert.match(LINUX_PYTHON_SHA256, /^[0-9a-f]{64}$/);
   assert.deepEqual(packageFile.build.electronFuses, { runAsNode: false, enableNodeOptionsEnvironmentVariable: false,
     enableNodeCliInspectArguments: false });
 });

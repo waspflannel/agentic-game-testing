@@ -1,6 +1,7 @@
 """Real loopback transport proof; fixture data, no AI, worker, or keyring access."""
 import asyncio
 from contextlib import asynccontextmanager
+import os
 import secrets
 import socket
 
@@ -105,7 +106,13 @@ async def test_owned_readiness_assets_camera_and_confirmed_shutdown(tmp_path):
         assert (await client.post("/_desktop/shutdown", headers=admin)).json() == {"drained": True}
     # Lifespan closed the real SQLite handle; no controller process was killed.
     with socket.socket() as released:
-        released.bind(("127.0.0.1", port))
+        if os.name == "nt":
+            released.bind(("127.0.0.1", port))
+        else:
+            # Linux keeps the port in TIME_WAIT after the server closes its connections, so
+            # rebinding fails; a refused connection still proves the listener is gone.
+            with pytest.raises(ConnectionRefusedError):
+                released.connect(("127.0.0.1", port))
 
 
 @pytest.mark.asyncio

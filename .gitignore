@@ -31,6 +31,8 @@
 /scripts/*
 !/scripts/setup.ps1
 !/scripts/test.ps1
+!/scripts/setup.sh
+!/scripts/test.sh
 !/scripts/provision-workers.ps1
 !/scripts/test-dashboard-polling.js
 !/scripts/probe-desktop-runtime.py

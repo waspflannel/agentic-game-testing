@@ -6,10 +6,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 MODEL = "gpt-6-luna"
-CODEX_MODELS = (MODEL, "gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra")
-CLAUDE_MODELS = ("sonnet", "opus", "haiku")
 CLAUDE_MODEL = "sonnet"
-SUPPORTED_MODELS = CODEX_MODELS + CLAUDE_MODELS
 PROVIDERS = {
     "codex": {"label": "Codex", "status_key": "ai_status", "pricing": {
         "api": "codex", "billing": "subscription", "auth_method": "chatgpt",
@@ -27,6 +24,9 @@ MODEL_OPTIONS = (
     {"id": "opus", "label": "Claude Opus", "provider": "claude"},
     {"id": "haiku", "label": "Claude Haiku", "provider": "claude"},
 )
+CODEX_MODELS = tuple(m["id"] for m in MODEL_OPTIONS if m["provider"] == "codex")
+CLAUDE_MODELS = tuple(m["id"] for m in MODEL_OPTIONS if m["provider"] == "claude")
+SUPPORTED_MODELS = CODEX_MODELS + CLAUDE_MODELS
 
 
 def provider_of(model):

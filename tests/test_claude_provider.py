@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from ashad.ai import OpenAI
 from ashad.app import create_app
 from ashad.claude_backend import ClaudeBackend
-from ashad.models import CLAUDE_MODELS, CODEX_MODELS, MODEL_OPTIONS, SUPPORTED_MODELS, Plan, provider_of
+from ashad.models import CLAUDE_MODELS, CODEX_MODELS, SUPPORTED_MODELS, Plan, provider_of
 from ashad.store import Store, redact
 from ashad.validation import validate_plan
 from test_controller import FakeClaudeBackend, FakeCodexBackend, MemoryCredentials, environment  # noqa: F401
@@ -22,10 +22,6 @@ def test_provider_of_routes_claude_aliases_and_defaults_to_codex():
     assert set(CLAUDE_MODELS) == {"sonnet", "opus", "haiku"}
     for model in CODEX_MODELS:
         assert provider_of(model) == "codex"
-
-
-def test_model_options_cover_supported_models_in_order():
-    assert [option["id"] for option in MODEL_OPTIONS] == list(SUPPORTED_MODELS)
 
 
 def test_plan_accepts_claude_alias():

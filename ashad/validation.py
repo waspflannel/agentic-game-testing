@@ -6,7 +6,7 @@ from .models import Plan, PROVIDERS, provider_of
 from .repository import Repository, catalog_ids, sha256_file
 
 
-def validate_plan(raw, store, credentials=None, check_credentials=False):
+def validate_plan(raw, store, check_credentials=False):
     errors, warnings = [], []
     try:
         plan = Plan.model_validate(raw)
@@ -23,7 +23,13 @@ def validate_plan(raw, store, credentials=None, check_credentials=False):
             catalog = repo.catalog(build)
             ids = {g["id"] for g in catalog.get("goals", []) if g.get("available_in_build", True)}
             if ids:
-                targets = ({p.goal_id for p in plan.players} | (set() if plan.success_criteria.predicate == "item_quantity" else {plan.success_criteria.target}) | set(plan.success_criteria.side_goals) | {str(e.value) for e in plan.events if e.trigger == "milestone"}) if plan.success_criteria.predicate != "manual" else set()
+                targets = set()
+                if plan.success_criteria.predicate != "manual":
+                    targets |= {p.goal_id for p in plan.players}
+                    if plan.success_criteria.predicate != "item_quantity":
+                        targets.add(plan.success_criteria.target)
+                    targets |= set(plan.success_criteria.side_goals)
+                    targets |= {str(e.value) for e in plan.events if e.trigger == "milestone"}
                 for target in targets:
                     if target not in ids:
                         errors.append(f"Unknown mechanic or objective in selected build: {target}")

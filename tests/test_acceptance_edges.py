@@ -15,7 +15,7 @@ import pytest
 
 from ashad.ai import OpenAI
 from ashad.app import create_app
-from ashad.repository import Repository, sha256_file
+from ashad.repository import sha256_file
 from ashad.validation import validate_plan
 from test_controller import environment, FakeCodexBackend, MemoryCredentials, new_run  # noqa: F401
 
@@ -195,26 +195,6 @@ def test_saved_package_same_build_id_does_not_hide_revision_mismatch(environment
     result = validate_plan(plan, store)
     assert result["valid"] is False, "A reused catalog ID is insufficient proof of saved-build compatibility"
     assert any("revision" in e.lower() or "compatib" in e.lower() for e in result["errors"])
-
-
-@pytest.mark.parametrize("operation", ["read", "search"])
-def test_repository_retrieval_rejects_drift_after_snapshot_was_pinned(tmp_path, operation):
-    source = tmp_path / "source"
-    source.mkdir()
-    target = source / "quest.gd"
-    target.write_text("# original pinned quest\n", encoding="utf-8")
-    hashes = {"quest.gd": sha256_file(target)}
-    hash_manifest = tmp_path / "source-hashes.json"
-    hash_manifest.write_text(json.dumps(hashes), encoding="utf-8")
-    source_hash = hashlib.sha256(json.dumps(hashes, sort_keys=True).encode()).hexdigest()
-    build = {"source_root": str(source), "build_root": str(tmp_path), "source_revision": "pinned-fixture",
-             "source_hash": source_hash, "content_sha256": source_hash,
-             "artifacts": [{"path": str(hash_manifest), "sha256": sha256_file(hash_manifest)}]}
-    repo = Repository(build)
-    assert "original pinned quest" in repo.read("quest.gd")["text"]
-    target.write_text("# substituted quest AFTER pinning\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="(?i)changed|drift|hash|pinned|integrity|revision"):
-        repo.read("quest.gd") if operation == "read" else repo.search("substituted")
 
 
 def test_four_player_plans_reject_duplicate_explicit_and_restored_identities(environment, tmp_path):

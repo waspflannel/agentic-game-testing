@@ -197,7 +197,7 @@ async def test_completed_decision_timestamp_preserves_action_or_wait_status(envi
     run = await ready_run(environment)
     game_context_worker(monkeypatch, desktops["worker-1"], run)
 
-    async def decision(context, repo, dispatch, *unused):
+    async def decision(context, dispatch, *unused):
         return await dispatch(tool, args)
 
     coord.ai.player_turn = decision

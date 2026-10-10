@@ -9,12 +9,13 @@ import time
 
 from pydantic import ValidationError
 
-from .codex_backend import CodexBackend, CodexError, TUNING_MANUAL_LIMIT
-
+from .codex_backend import CodexBackend, CodexError
 from .claude_backend import ClaudeBackend, ClaudeError
 from .credentials import Credentials
 from .models import CLAUDE_MODEL, MODEL, PROVIDERS, SUPPORTED_MODELS, provider_of
+from .prompts import SOURCE_NOTES_LIMIT, TUNING_MANUAL_LIMIT, TUNING_MINIMUM_BYTES
 from .store import uid
+from .subgoals import PlanningDecision
 
 
 SUBSCRIPTION_PRICING = PROVIDERS["codex"]["pricing"]
@@ -143,15 +144,20 @@ class OpenAI:
     def _backend(self, model):
         return self.claude_backend if provider_of(model) == "claude" else self.backend
 
+    @staticmethod
+    def _checked_model(model):
+        label = PROVIDERS[provider_of(model)]["label"]
+        if model not in SUPPORTED_MODELS:
+            raise ProviderError("model_unavailable", f"Unsupported {label} model: {model}.")
+        return label
+
     async def decisions(self, input, questions, purpose="player", run_id=None, model=None):
         """Select fixed options through managed Codex; never use an API-key fallback."""
         if run_id:
             run = self.store.require("runs", run_id)
             model = run.get("model") or run.get("plan", {}).get("model", MODEL)
         model = model or MODEL
-        label = PROVIDERS[provider_of(model)]["label"]
-        if model not in SUPPORTED_MODELS:
-            raise ProviderError("model_unavailable", f"Unsupported {label} model: {model}.")
+        label = self._checked_model(model)
         if not isinstance(input, str) or not isinstance(questions, list) or not questions:
             raise ValueError(f"{label} selection requires text evidence and at least one question")
         names = []
@@ -173,13 +179,9 @@ class OpenAI:
 
     async def plan_subgoals(self, context, run_id):
         """Propose a validated hierarchy update, never an executable game action."""
-        from .subgoals import PlanningDecision
-
         run = self.store.require("runs", run_id) if run_id else {}
         model = run.get("model") or run.get("plan", {}).get("model", MODEL)
-        label = PROVIDERS[provider_of(model)]["label"]
-        if model not in SUPPORTED_MODELS:
-            raise ProviderError("model_unavailable", f"Unsupported {label} model: {model}.")
+        label = self._checked_model(model)
         if not isinstance(context, dict):
             raise ValueError(f"{label} planning requires a context object")
         input = json.dumps(context, ensure_ascii=False)
@@ -190,9 +192,7 @@ class OpenAI:
         return await self._request(input, None, "planning", run_id, model, input_bytes, planning_schema=schema)
 
     async def tune_agent(self, evidence, model=MODEL, *, stage="manual"):
-        label = PROVIDERS[provider_of(model)]["label"]
-        if model not in SUPPORTED_MODELS:
-            raise ProviderError("model_unavailable", f"Unsupported {label} model: {model}.")
+        self._checked_model(model)
         if stage not in {"manual", "source_notes"}:
             raise ValueError("Unknown tuning stage")
         for attempt in range(2):
@@ -221,41 +221,23 @@ class OpenAI:
             diagnostic["question_names"] = ["subgoals"]
         elif not questions:
             diagnostic.update(tuning_stage=tuning_stage, tuning_repair=tuning_repair)
+        if questions:
+            call = lambda: backend.select(input, questions, model=model)
+            parse = lambda data: self._answers(data, questions, label)
+        elif planning_schema is not None:
+            call = lambda: backend.plan(input, planning_schema, model=model)
+            parse = lambda data: self._plan(data, label)
+        else:
+            call = lambda: backend.tune(input, model=model, stage=tuning_stage, repair=tuning_repair)
+            parse = lambda data: self._tuning_instructions(data, label, tuning_stage, tuning_repair, diagnostic)
         data = None
         try:
             if run_id:
                 self.store.event(run_id, "provider_request_started", diagnostic)
-            if questions:
-                data = await backend.select(input, questions, model=model)
-            elif planning_schema is not None:
-                data = await backend.plan(input, planning_schema, model=model)
-            else:
-                data = await backend.tune(input, model=model, stage=tuning_stage, repair=tuning_repair)
+            data = await call()
             if isinstance(data, dict):
                 diagnostic.update(thread_id=data.get("thread_id"), turn_id=data.get("turn_id"))
-            if questions:
-                result = self._answers(data, questions, label)
-            elif planning_schema is not None:
-                from .subgoals import PlanningDecision
-                try:
-                    result = PlanningDecision.model_validate(data.get("answers") if isinstance(data, dict) else None).model_dump()
-                except ValidationError as exc:
-                    raise ProviderError("invalid_plan", f"{label} returned invalid subgoal planning JSON; no action was executed.") from exc
-            else:
-                answers = data.get("answers") if isinstance(data, dict) else None
-                result = answers.get("instructions") if isinstance(answers, dict) else None
-                limit = 8000 if tuning_stage == "source_notes" else TUNING_MANUAL_LIMIT
-                kind = "source notes" if tuning_stage == "source_notes" else "controls manual"
-                size = len(result.strip().encode("utf-8")) if isinstance(result, str) else None
-                diagnostic.update(output_bytes=size, output_limit_bytes=limit)
-                if not isinstance(result, str) or set(answers) != {"instructions"}:
-                    raise ProviderError("invalid_tuning", f"{label} returned invalid {kind} JSON: expected one instructions string; no agent was saved.")
-                result = result.strip()
-                if size < 200:
-                    raise ProviderError("invalid_tuning", f"{label} returned incomplete {kind} ({size} UTF-8 bytes; minimum 200); no agent was saved.")
-                if size > limit:
-                    retry = " after one compression retry" if tuning_repair else ""
-                    raise ProviderError("invalid_tuning", f"{label} {kind} exceeded the {limit}-byte limit ({size} UTF-8 bytes){retry}; no agent was saved.", draft=result)
+            result = parse(data)
             diagnostic["status"] = "completed"
             return result
         except asyncio.CancelledError:
@@ -280,6 +262,31 @@ class OpenAI:
             self.store.put("provider_requests", diagnostic)
             if run_id:
                 self.store.event(run_id, "provider_request_finished", diagnostic)
+
+    @staticmethod
+    def _plan(data, label):
+        try:
+            return PlanningDecision.model_validate(data.get("answers") if isinstance(data, dict) else None).model_dump()
+        except ValidationError as exc:
+            raise ProviderError("invalid_plan", f"{label} returned invalid subgoal planning JSON; no action was executed.") from exc
+
+    @staticmethod
+    def _tuning_instructions(data, label, stage, repair, diagnostic):
+        answers = data.get("answers") if isinstance(data, dict) else None
+        result = answers.get("instructions") if isinstance(answers, dict) else None
+        limit = SOURCE_NOTES_LIMIT if stage == "source_notes" else TUNING_MANUAL_LIMIT
+        kind = "source notes" if stage == "source_notes" else "controls manual"
+        size = len(result.strip().encode("utf-8")) if isinstance(result, str) else None
+        diagnostic.update(output_bytes=size, output_limit_bytes=limit)
+        if not isinstance(result, str) or set(answers) != {"instructions"}:
+            raise ProviderError("invalid_tuning", f"{label} returned invalid {kind} JSON: expected one instructions string; no agent was saved.")
+        result = result.strip()
+        if size < TUNING_MINIMUM_BYTES:
+            raise ProviderError("invalid_tuning", f"{label} returned incomplete {kind} ({size} UTF-8 bytes; minimum {TUNING_MINIMUM_BYTES}); no agent was saved.")
+        if size > limit:
+            retry = " after one compression retry" if repair else ""
+            raise ProviderError("invalid_tuning", f"{label} {kind} exceeded the {limit}-byte limit ({size} UTF-8 bytes){retry}; no agent was saved.", draft=result)
+        return result
 
     @staticmethod
     def _answers(data, questions, label):
@@ -328,7 +335,7 @@ class OpenAI:
         await self.claude_backend.close()
 
 
-    async def player_turn(self, context, repo, dispatch, can_continue, run_id, effort=None):
+    async def player_turn(self, context, dispatch, can_continue, run_id):
         if not can_continue():
             return
         context = copy.deepcopy(context)
@@ -389,7 +396,7 @@ class OpenAI:
                     "target": group["description"], "action": action, "candidate_count": len(candidates), "target_count": len(groups)}
         self.store.event(run_id, "decision_selected", decision)
         if action["tool"] == "needs_instructions":
-            raise ProviderError("decision_needs_instructions", "The Codex agent found no suitable supported action for the current observation. Inspect the latest decision context and give an updated goal, take manual control, or stop the run.")
-        result = await dispatch(action["tool"], {**action["args"], "reason": "Codex selected: " + action["description"]})
+            raise ProviderError("decision_needs_instructions", "The model found no suitable supported action for the current observation. Inspect the latest decision context and give an updated goal, take manual control, or stop the run.")
+        result = await dispatch(action["tool"], {**action["args"], "reason": "Model selected: " + action["description"]})
         return {"status": "dispatched", **decision, "result": result}
 

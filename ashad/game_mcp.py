@@ -20,10 +20,10 @@ class GameMCP:
             session = self.resolve(ctx.request_context.request.headers.get("authorization", ""))
             run_id, player_id = session["run_id"], session["player_id"]
             service = coordinator.structured
-            observation = await service.observe(run_id, player_id)
             mutating = name in {"perform_action", "cancel_action", "wait_for_change"}
             if mutating and not session["control"]:
                 raise ValueError("This MCP session is observation-only")
+            observation = await service.observe(run_id, player_id)
             result = observation
             if name != "observe":
                 result = await service.dispatch(
@@ -90,22 +90,19 @@ class GameMCP:
             ps = run.get("players", {}).get(session["player_id"], {})
             if time.time() >= session["expires_at"] or run.get("state") not in {"Starting", "Running", "Paused", "Investigating"} or ps.get("generation") != session["generation"]:
                 key = (session["run_id"], session["player_id"])
-                if self.coordinator.structured.control_owners.get(key) == session["owner"]:
-                    self.coordinator.structured.control_owners.pop(key, None)
+                self.coordinator.structured.release_control(key, session["owner"])
                 self.sessions.pop(token, None)
 
     def issue(self, run_id, player_id, control=False):
         self.cleanup()
         _, ps = self.coordinator.structured.binding(run_id, player_id)
         key = (run_id, player_id)
-        if control and key in self.coordinator.structured.control_owners:
-            raise ValueError("Player already has an external control lease")
-        token = secrets.token_urlsafe(32)
         owner = secrets.token_hex(12)
+        if control:
+            self.coordinator.structured.claim_control(key, owner)
+        token = secrets.token_urlsafe(32)
         self.sessions[token] = {"run_id": run_id, "player_id": player_id, "control": bool(control),
             "generation": ps["generation"], "owner": owner, "expires_at": time.time() + 60}
-        if control:
-            self.coordinator.structured.control_owners[key] = owner
         return {"token": token, "expires_in_seconds": 60, "control": bool(control), "path": "/mcp/"}
 
     def resolve(self, authorization):

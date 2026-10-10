@@ -10,7 +10,8 @@ import pytest
 from ashad.agent_profiles import AgentProfiles, source_evidence
 import ashad.agent_profiles as profiles_module
 from ashad.ai import OpenAI, ProviderError
-from ashad.codex_backend import ApprovalMode, Sandbox, CodexBackend, CodexError, TUNING_MANUAL_LIMIT
+from ashad.codex_backend import ApprovalMode, Sandbox, CodexBackend, CodexError
+from ashad.prompts import SOURCE_NOTES_LIMIT, TUNING_MANUAL_LIMIT
 from ashad.models import MODEL
 from ashad.store import Store
 from test_codex_backend import Client
@@ -138,7 +139,7 @@ async def test_invalid_manual_is_not_saved_and_usage_is_retained(setup, value):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("stage,limit", [("source_notes", 8000), ("manual", TUNING_MANUAL_LIMIT)])
+@pytest.mark.parametrize("stage,limit", [("source_notes", SOURCE_NOTES_LIMIT), ("manual", TUNING_MANUAL_LIMIT)])
 async def test_oversized_utf8_tuning_is_compressed_once_and_both_requests_are_metered(setup, stage, limit):
     store, _, backend, profiles = setup
     draft = "é" * (limit // 2 + 1)
@@ -192,7 +193,7 @@ async def test_instance_manual_reaches_every_action_selection(setup):
     store.put("runs", {"id": "run-1", "model": MODEL})
     state = context()
     state["game_controls"] = MANUAL
-    await profiles.ai.player_turn(state, None, AsyncMock(return_value={"status": "running"}), lambda: True, "run-1")
+    await profiles.ai.player_turn(state, AsyncMock(return_value={"status": "running"}), lambda: True, "run-1")
     assert len(backend.calls) == 2
     assert all(json.loads(call["input"].split("\nSelected target:")[0])["game_controls"] == MANUAL for call in backend.calls)
 

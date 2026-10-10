@@ -279,10 +279,10 @@ class WorkerContractTests(unittest.IsolatedAsyncioTestCase):
                 await client.request("POST", "/action", data={})
             health = await client.health()
             self.assertEqual(health["worker_id"], "worker-A")
-            client.set_binding("run-A", "player-A", "epoch-A")
-            self.assertEqual((await client.pause())["lifecycle"], "paused")
-            await client.resume()
-            observation = await client.observation(fresh=True)
+            bound = {"run_id": "run-A", "player_id": "player-A", "epoch": "epoch-A", "command_id": None}
+            self.assertEqual((await client.request("POST", "/pause", data=bound))["lifecycle"], "paused")
+            await client.request("POST", "/resume", data=bound)
+            observation = await client.request("GET", "/observation", params={"fresh": "true"})
             self.assertTrue(await client.screenshot(observation["id"]))
             with self.assertRaises(WorkerError):
                 await client.evidence("../../private/steam-password")
@@ -293,9 +293,12 @@ class WorkerContractTests(unittest.IsolatedAsyncioTestCase):
         self.worker.game_bridge.request = AsyncMock(side_effect=ConnectionRefusedError("listener not ready"))
         async with WorkerClient("http://test", "startup-test-token-" + "x" * 24,
                                 transport=httpx.ASGITransport(app=app)) as client:
-            client.set_binding("run-A", "player-A", "epoch-A")
+            async def beat(**values):
+                return await client.request("POST", "/heartbeat", data={
+                    "run_id": "run-A", "player_id": "player-A", "epoch": "epoch-A",
+                    "investigation_deadline": None, "run_deadline": None, **values})
             deadline = time.time() + 100
-            heartbeat = await client.heartbeat(investigation_deadline=deadline)
+            heartbeat = await beat(investigation_deadline=deadline)
             self.assertEqual(heartbeat["game_bridge"], "starting")
             self.worker.game_bridge.request.assert_awaited_once()
             persisted = json.loads((self.worker.root / "worker-state.json").read_text())
@@ -304,18 +307,18 @@ class WorkerContractTests(unittest.IsolatedAsyncioTestCase):
                 await client.request("POST", "/game", data={**self.command().model_dump(), "operation": "observe"})
             self.assertEqual(starting.exception.code, "game_bridge_starting")
             self.worker.game_bridge.request = AsyncMock(return_value={"ok": True})
-            self.assertEqual((await client.heartbeat())["game_bridge"], "ready")
+            self.assertEqual((await beat())["game_bridge"], "ready")
             self.assertEqual(self.worker.lifecycle, "running")
             self.worker.game_bridge.request = AsyncMock(side_effect=ValueError("incompatible response"))
             with self.assertRaises(WorkerError) as protocol:
-                await client.heartbeat()
+                await beat()
             self.assertEqual(protocol.exception.code, "game_bridge_unavailable")
             self.assertIn("POST /heartbeat (HTTP 503)", str(protocol.exception))
             self.assertIn("incompatible response", str(protocol.exception))
             self.worker.launched_monotonic -= 16
             self.worker.game_bridge.request = AsyncMock(side_effect=ConnectionRefusedError("listener absent"))
             with self.assertRaises(WorkerError) as expired:
-                await client.heartbeat()
+                await beat()
             self.assertEqual(expired.exception.code, "game_bridge_unavailable")
 
     async def test_worker_errors_identify_operation_without_retrying_or_exposing_token(self):

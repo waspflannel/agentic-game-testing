@@ -252,7 +252,7 @@ class Coordinator:
             status = await self.ai.validate(Plan.model_validate(scenario["plan"]).model)
             if status.get("status") != "ready" or status.get("configured") is not True:
                 raise ValueError(status.get("message") or "Verify AI sign-in and this model before starting an instance")
-            checked = validate_plan(scenario["plan"], self.store, self.credentials, check_credentials=True)
+            checked = validate_plan(scenario["plan"], self.store, check_credentials=True)
             if not checked["valid"]:
                 raise ValueError("; ".join(checked["errors"]))
             plan = checked["plan"]

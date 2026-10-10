@@ -143,7 +143,7 @@ async def test_invalid_provider_answers_never_dispatch(tmp_path, damage):
     async def dispatch(name, args):
         calls.append((name, args))
     with pytest.raises(ProviderError) as failed:
-        await ai.player_turn(context(), None, dispatch, lambda: True, None)
+        await ai.player_turn(context(), dispatch, lambda: True, None)
     assert failed.value.status == "invalid_decision" and not calls
     assert store.list("usage")[0]["status"] == "invalid_decision"
     store.close()
@@ -162,7 +162,7 @@ async def test_selected_action_and_subscription_usage_are_saved_without_confiden
     async def dispatch(name, args):
         calls.append((name, args))
         return {"status": "running"}
-    result = await ai.player_turn(context(), None, dispatch, lambda: True, "run-1")
+    result = await ai.player_turn(context(), dispatch, lambda: True, "run-1")
     assert result["status"] == "dispatched" and len(calls) == 1
     assert calls[0][0] == "perform_action"
     assert calls[0][1]["target_id"] == "play" and calls[0][1]["target_version"] == 4
@@ -190,7 +190,7 @@ async def test_generation_change_during_selection_prevents_action(tmp_path):
     calls = []
     async def dispatch(name, args):
         calls.append(name)
-    await ai.player_turn(context(), None, dispatch, lambda: current[0], "run-1")
+    await ai.player_turn(context(), dispatch, lambda: current[0], "run-1")
     assert not calls and store.events("run-1")[-1]["kind"] == "decision_cancelled"
     store.close()
 
@@ -271,7 +271,7 @@ async def test_dense_observation_keeps_all_targets_and_full_selected_context(tmp
             return {"entities": entities[offset:offset+80], "next_offset": offset+80 if offset+80 < len(entities) else None}
         actions.append(args)
         return {"status": "running"}
-    await ai.player_turn(value, None, dispatch, lambda: True, "run-1")
+    await ai.player_turn(value, dispatch, lambda: True, "run-1")
     assert len(actions) == 1 and actions[0]["target_id"] == "511" and len(backend.calls) == 2
     store.close()
 
@@ -287,7 +287,7 @@ async def test_gameplay_and_usage_keep_frozen_run_model(tmp_path):
     await ai.validate("gpt-6-luna")
     async def dispatch(name, args):
         return {"status": "running"}
-    await ai.player_turn(context(), None, dispatch, lambda: True, run["id"])
+    await ai.player_turn(context(), dispatch, lambda: True, run["id"])
     assert backend.calls and all(call["model"] == "gpt-6-sol" for call in backend.calls)
     assert {item["purpose"] for item in store.list("usage")} == {"player"}
     assert all(item["model"] == item["requested_model"] == "gpt-6-sol" for item in store.list("usage"))
@@ -459,7 +459,7 @@ async def test_active_leaf_and_ancestors_reach_both_action_selection_stages(tmp_
     evidence["subgoal_plan"] = {"root_id": "root", "active_goal_id": "play-goal"}
     ai = OpenAI(store, backend=backend)
     dispatch = AsyncMock(return_value={"status": "running"})
-    await ai.player_turn(evidence, None, dispatch, lambda: True, "run-plan")
+    await ai.player_turn(evidence, dispatch, lambda: True, "run-plan")
     assert len(backend.calls) == 2
     for call in backend.calls:
         supplied = json.loads(call["input"].split("\nSelected target:")[0])

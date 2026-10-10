@@ -151,13 +151,73 @@ test('thread markup escapes goals and pause reasons and keeps Stop right-most', 
   const evil = '<img src=x onerror=alert(1)>';
   const r = run('Investigating', { plan: { ...run('x').plan, primary_goal: evil }, pause: { reason: evil, recovery: evil } });
   const status = instanceState(r);
-  const regions = threadRegions(r, { status, data: { agents: [{ id: 'a', name: evil }] }, ui: { inspectorOpen: true }, pending: new Set(), error: evil, cameraStatus: 'offline', player: 'p1' });
+  const regions = threadRegions(r, { status, data: { agents: [{ id: 'a', name: evil }] }, ui: {}, pending: new Set(), error: evil, cameraStatus: 'offline', player: 'p1', tab: 'bot' });
   const html = Object.values(regions).join('');
   assert.doesNotMatch(html, /<img/);
   assert.match(regions.banner, /&lt;img/);
   const buttons = regions.controls.match(/data-ctl="[\w-]+"/g);
   assert.equal(buttons.at(-1), 'data-ctl="stop"');
-  const ended = threadRegions(run('Ended'), { status: instanceState(run('Ended')), data: {}, ui: {}, pending: new Set(), cameraStatus: 'offline', player: 'p1' });
+  const ended = threadRegions(run('Ended'), { status: instanceState(run('Ended')), data: {}, ui: {}, pending: new Set(), cameraStatus: 'offline', player: 'p1', tab: 'bot' });
   assert.match(ended.overlay, /Instance ended · camera offline/);
   assert.doesNotMatch(Object.values(ended).join(''), /\/live/);
+});
+
+test('an active run opens on Bot view and an ended one on Actions', async () => {
+  const { defaultTab } = await load();
+  for (const state of ['Running', 'Queued', 'Paused']) assert.equal(defaultTab(run(state)), 'bot');
+  assert.equal(defaultTab(run('Ended')), 'actions');
+});
+
+test('arrow keys wrap through the tabs; Home and End jump to the ends', async () => {
+  const { nextTab } = await load();
+  assert.equal(nextTab('bot', 'ArrowRight'), 'goals');
+  assert.equal(nextTab('actions', 'ArrowRight'), 'bot');
+  assert.equal(nextTab('bot', 'ArrowLeft'), 'actions');
+  assert.equal(nextTab('world', 'Home'), 'bot');
+  assert.equal(nextTab('goals', 'End'), 'actions');
+  assert.equal(nextTab('bot', 'a'), null);
+  assert.equal(nextTab('bot', '1'), null);
+});
+
+test('the tab bar marks exactly one selected tab', async () => {
+  const { tabsHTML } = await load();
+  const html = tabsHTML('goals');
+  const count = re => (html.match(re) || []).length;
+  assert.equal(count(/role="tablist"/g), 1);
+  assert.equal(count(/role="tab"/g), 4);
+  assert.equal(count(/aria-selected="true"/g), 1);
+  assert.match(html, /id="tab-goals"[^>]*aria-selected="true" tabindex="0"/);
+  assert.equal(count(/tabindex="-1"/g), 3);
+  for (const id of ['bot', 'goals', 'world', 'actions']) assert.match(html, new RegExp(`aria-controls="panel-${id}"`));
+  assert.doesNotMatch(html, /aria-live/);
+});
+
+test('controls and the instruction form sit outside every panel; camera and timeline sit in their own panels', async () => {
+  const { threadSkeleton } = await load();
+  const s = threadSkeleton();
+  const ids = ['bot', 'goals', 'world', 'actions'];
+  assert.equal((s.match(/role="tabpanel"/g) || []).length, 4);
+  const starts = ids.map(id => s.indexOf(`id="panel-${id}"`));
+  const slice = id => { const i = ids.indexOf(id); return s.slice(starts[i], starts[i + 1] ?? s.length); };
+  for (const id of ids) {
+    assert.match(s, new RegExp(`id="panel-${id}" aria-labelledby="tab-${id}"[^>]*\\bhidden>`));
+  }
+  assert.match(slice('bot'), /data-camera/);
+  assert.match(slice('actions'), /data-timeline/);
+  assert.match(slice('actions'), /data-region="usage"/);
+  assert.match(slice('goals'), /data-region="goals"/);
+  assert.match(slice('world'), /data-region="world"/);
+  const firstPanel = s.indexOf('role="tabpanel"');
+  for (const region of ['controls', 'tabs', 'instruction']) {
+    const at = s.indexOf(`data-region="${region}"`);
+    assert.ok(at > -1 && at < firstPanel, region);
+  }
+});
+
+test('the header has no inspector toggle', async () => {
+  const { instanceState, threadRegions } = await load();
+  const r = run('Running');
+  const regions = threadRegions(r, { status: instanceState(r), data: {}, ui: {}, pending: new Set(), cameraStatus: 'offline', player: 'p1', tab: 'bot' });
+  assert.doesNotMatch(regions.head, /toggle-?inspector|Ctrl\+I/i);
+  assert.match(regions.tabs, /role="tablist"/);
 });

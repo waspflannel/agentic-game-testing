@@ -1,10 +1,26 @@
-// Instance thread: header, camera and control bar (spec §8.5 A–C, §9). Markup and state are pure; app.js owns I/O.
+// Instance thread: header, tabs, camera and control bar (spec §8.5 A–C, §9). Markup and state are pure; app.js owns I/O.
 import { esc, icon, newId, runGoal, humanize } from '../core.js';
 
 const enc = encodeURIComponent;
 const LIVE_STATES = new Set(['Starting', 'Running', 'Paused', 'Investigating', 'Stopping']);  // /live serves only these.
 export const isActiveRun = run => run?.state === 'Queued' || LIVE_STATES.has(run?.state);
 export const playerIds = run => Object.keys(run?.players || {});
+
+// The four views of one instance. Status and controls stay outside them.
+export const THREAD_TABS = [['bot', 'Bot view', 'monitor'], ['goals', 'Goals', 'list-checks'], ['world', 'World state', 'eye'], ['actions', 'Actions', 'send']];
+// An ended run has no camera, so it opens on its record.
+export const defaultTab = run => (isActiveRun(run) ? 'bot' : 'actions');
+
+// Arrow keys move through the tab bar and wrap; Home and End jump to the ends. Any other key returns null.
+export function nextTab(current, key) {
+  const ids = THREAD_TABS.map(([id]) => id);
+  const at = ids.indexOf(current);
+  if (key === 'ArrowRight') return ids[(at + 1) % ids.length];
+  if (key === 'ArrowLeft') return ids[(at - 1 + ids.length) % ids.length];
+  if (key === 'Home') return ids[0];
+  if (key === 'End') return ids.at(-1);
+  return null;
+}
 
 // One player in v1; recalculation needs that player launched and nobody else holding control.
 function canRecalculate(run) {
@@ -118,17 +134,27 @@ export async function runCommand(commands, key, send) {
 }
 
 // ── Markup ──────────────────────────────────────────────────────────────────
+const panel = (id, body) => `<section class="thread-panel" role="tabpanel" id="panel-${id}" aria-labelledby="tab-${id}" tabindex="0" hidden>${body}</section>`;
+// Mounted once per run. The panels' <details> and cards are never re-created, so their open state survives polls and tab switches.
 export const threadSkeleton = () => `<div class="thread">`
   + `<div class="thread-head" data-region="head"></div>`
   + `<div class="thread-body">`
   + `<div data-region="banner"></div>`
-  + `<div data-region="players"></div>`
-  + `<div class="camera"><div class="camera-media" data-camera></div><div class="camera-overlay" data-region="overlay"></div></div>`
-  + `<div class="control-wrap" data-region="controls"></div>`
+  + `<div class="thread-sticky"><div class="control-wrap" data-region="controls"></div><div data-region="tabs"></div></div>`
   + `<div data-region="instruction"></div>`
-  + `<section class="activity" aria-labelledby="activity-heading"><div class="activity-head"><h2 id="activity-heading" class="section-title">Activity</h2><div class="tl-tools" data-region="tl-tools"></div></div>`
-  + `<div class="tl-top" data-region="tl-top"></div><div class="tl-pill-wrap" data-region="tl-pill"></div><ol class="timeline" data-timeline></ol><div class="tl-foot" data-region="tl-foot"></div></section>`
+  + panel('bot', `<div data-region="players"></div><div class="camera"><div class="camera-media" data-camera></div><div class="camera-overlay" data-region="overlay"></div></div>`)
+  + panel('goals', `<div class="insp-body" data-region="goals"></div>`)
+  + panel('world', `<div class="insp-body" data-region="world"></div>`)
+  + panel('actions', `<details class="insp-section"><summary class="insp-head">${icon('chevron-right', 'icon chevron')}Model usage</summary><div class="insp-body" data-region="usage"></div></details>`
+    + `<section class="activity" aria-labelledby="activity-heading"><div class="activity-head"><h2 id="activity-heading" class="section-title">Activity</h2><div class="tl-tools" data-region="tl-tools"></div></div>`
+    + `<div class="tl-top" data-region="tl-top"></div><div class="tl-pill-wrap" data-region="tl-pill"></div><ol class="timeline" data-timeline></ol><div class="tl-foot" data-region="tl-foot"></div></section>`)
   + `</div></div>`;
+
+// Standard ARIA tabs: only the selected tab is in the Tab order.
+export const tabsHTML = active => `<div class="thread-tabs" role="tablist" aria-label="Instance views">`
+  + THREAD_TABS.map(([id, label, iconName]) => `<button type="button" class="thread-tab" role="tab" id="tab-${id}" aria-controls="panel-${id}" aria-selected="${id === active}" tabindex="${id === active ? 0 : -1}"`
+    + ` data-action="thread-tab" data-tab="${id}" data-key="tab-${id}">${icon(iconName)}${label}</button>`).join('')
+  + `</div>`;
 
 const ACTIONS = {
   pause: { label: 'Pause', icon: 'pause', cls: 'btn-secondary' },
@@ -142,7 +168,7 @@ const ACTIONS = {
 };
 
 export function threadRegions(run, ctx) {
-  const { status, owner, data, ui, pending, error, cameraStatus, player } = ctx;
+  const { status, owner, data, ui, pending, error, cameraStatus, player, tab } = ctx;
   const goal = runGoal(run);
   const agent = (data?.agents || []).find(a => a.id === run.agent_id) || run.agent_profile;
   const model = (data?.model_options || []).find(m => m.id === run.model)?.label || run.model;
@@ -154,8 +180,7 @@ export function threadRegions(run, ctx) {
     + `<span class="badge badge-${status.badge.tone}"><span class="dot dot-${status.badge.tone}" aria-hidden="true"></span>${esc(status.badge.label)}</span>`
     + `<div class="thread-meta">${chips}</div>`
     + (chips ? `<button type="button" class="icon-btn meta-more" popovertarget="meta-pop" data-key="t-meta" aria-label="Instance details" title="Instance details">${icon('ellipsis')}</button>`
-      + `<div id="meta-pop" class="popover menu meta-pop" popover>${chips}</div>` : '')
-    + `<button type="button" class="icon-btn" data-action="toggle-inspector" data-key="t-inspector" aria-controls="inspector" aria-expanded="${ui.inspectorOpen}" aria-label="Toggle inspector" title="Toggle inspector (Ctrl+I)">${icon('panel-right')}</button>`;
+      + `<div id="meta-pop" class="popover menu meta-pop" popover>${chips}</div>` : '');
 
   const banner = status.banner
     ? `<div class="thread-banner">${icon('alert')}<div><strong>Needs review.</strong> ${esc(run.pause?.reason || 'The monitor paused the bot. The reason was not recorded.')}`
@@ -168,7 +193,7 @@ export function threadRegions(run, ctx) {
       + ids.map(id => `<option value="${esc(id)}"${id === player ? ' selected' : ''}>${esc((run.plan?.players || []).find(p => p.id === id)?.name || id)}</option>`).join('') + `</select></label>`
     : '';
 
-  return { head, banner, players, overlay: overlayHTML(run, status, cameraStatus), controls: controlsHTML(status, pending, error), instruction: instructionHTML(ui, pending) };
+  return { head, banner, players, overlay: overlayHTML(run, status, cameraStatus), controls: controlsHTML(status, pending, error), tabs: tabsHTML(tab), instruction: instructionHTML(ui, pending) };
 }
 
 function overlayHTML(run, status, cameraStatus) {

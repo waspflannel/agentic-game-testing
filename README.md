@@ -102,7 +102,7 @@ Supplying a goal still does **not** create a reliable automatic whole-game succe
 
 ## Observe and recover
 
-The instance workspace puts the **Bot computer** first, with bounded evidence-based **Agent activity** below and a collapsible **Instance inspector** for usage, current goals and retained observed world state. Load older activity replaces a bounded page; returning to latest does not discard the ledger. Observation age/coverage and decision-time context are explicit; monitor-only diagnostics are not model knowledge. Polling preserves current-page reading position, focus and disclosures.
+The instance workspace has four tabs: **Bot view** (the live bot computer), **Goals**, **World state** (retained observed world state) and **Actions** (bounded evidence-based agent activity and model usage). Status, run controls and the resume form stay visible on every tab, and the camera stream runs only while Bot view is open. Load older activity replaces a bounded page; returning to latest does not discard the ledger. Observation age/coverage and decision-time context are explicit; monitor-only diagnostics are not model knowledge. Polling preserves current-page reading position, focus and disclosures.
 
 The live camera is for the human operator. Routine model decisions use the filtered JSON observation, profile instructions, objective and recent action outcomes. The executor sends bounded normal game controls; it does not directly grant inventory, complete quests or modify saves. Input delivery is not proof that an intended gameplay effect occurred.
 

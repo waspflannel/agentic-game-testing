@@ -1,8 +1,8 @@
 import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, createDrawer, patchHTML, dirtyBridge, runGoal, ago } from './core.js';
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
 import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
-import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions } from './views/instance.js';
-import { inspectorSkeleton, inspectorRegions, mergeEvents, latestObservation } from './views/inspector.js';
+import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions, defaultTab, nextTab } from './views/instance.js';
+import { panelRegions, mergeEvents, latestObservation } from './views/inspector.js';
 import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discardSetup, tuneAgent, setupSkeleton, setupRegions, prepareDialogText, prepareDesktop, registerBuild, elapsed } from './views/setup.js';
 import { settingsSkeleton, accountSkeleton, accountRegions, accountBlocker, settleLogin, desktopsSkeleton, desktopsRegions, workerPayload, steamSkeleton, steamRegions, steamErrors,
   limitsSkeleton, limitsRegions, limitsPayload, maintenanceSkeleton, maintenanceRegions, importPayload, importReviewHTML, suggestGroups, parseGroups, previewValid, isAbsolutePath, SECTIONS } from './views/settings.js';
@@ -22,7 +22,7 @@ const state = {
   route: parseRoute(location.hash),
   failures: 0,
   polling: false,
-  ui: { expanded: new Map(), showAll: new Set(), lastProject: null, inspectorOpen: true, goalOpen: new Set() },
+  ui: { expanded: new Map(), showAll: new Set(), lastProject: null, goalOpen: new Set() },
   drafts: new Map(),   // projectId -> composer draft
   readiness: null,     // { key, loading, result, error } for the open composer; probed on view open only
   isCurrent: () => true,
@@ -30,7 +30,7 @@ const state = {
   runMissing: false,
   commands: new Map(),       // `${runId}:${action}` -> { id, pending, error }
   camera: null,
-  thread: {},                // per-open-thread UI: player, instruction draft, last status key, timeline, inspector view
+  thread: {},                // per-open-thread UI: player, instruction draft, last status key, timeline, selected tab and per-tab scroll, world view
   setups: new Map(),         // project ID ('' before step 1) -> setup state; long operations survive leaving the page
   settingsDirty: false,
   account: { checking: false, busy: false, error: '', login: null },  // login: { auth_url, login_id } only while sign-in is pending
@@ -137,7 +137,6 @@ function renderView() {
   const title = windowTitle(route, state.data);
   $('#window-title').textContent = title;
   document.title = title ? `${title} · ASHAD` : 'ASHAD';
-  $('#inspector').hidden = !inspectorShown();
   if (!state.data) return;
   const view = $('#view');
   if (route.name === 'instance' && threadRun()) return renderThread(view);
@@ -798,50 +797,68 @@ function renderThread(view) {
     for (const [k, c] of mine()) if (!c.pending) state.commands.delete(k);
     t.statusKey = status.key;
   }
+  t.tab ??= defaultTab(run);  // Chosen once per thread, so the tab never moves when the run ends.
   const ids = playerIds(run);
   const player = ids.includes(t.player) ? t.player : ids[0];
-  state.camera.sync(cameraTarget(run, player, document.hidden));
+  state.camera.sync(cameraTarget(run, player, document.hidden || t.tab !== 'bot'));  // The MJPEG stream runs only while Bot view is shown.
   const pending = new Set(mine().filter(([, c]) => c.pending).map(([k]) => k.slice(run.id.length + 1)));
   const error = mine().find(([, c]) => c.error)?.[1].error;
-  patchRegions(view, threadRegions(run, { status, owner, data: state.data, ui: { ...t, inspectorOpen: inspectorShown() }, pending, error, cameraStatus: state.camera.status, player }));
+  patchRegions(view, threadRegions(run, { status, owner, data: state.data, ui: t, pending, error, cameraStatus: state.camera.status, player, tab: t.tab }));
+  for (const panel of view.querySelectorAll('.thread-panel')) panel.hidden = panel.id !== `panel-${t.tab}`;
   const reason = view.querySelector('#resume-reason');
   if (reason && reason.value !== t.instructionText) reason.value = t.instructionText;
   renderTimeline(view, run);
-  renderInspector(run);
+  renderPanels(view, run);
 }
 
-// ── Inspector (C6) ──────────────────────────────────────────────────────────
+// Switching tabs never touches the route, so no new epoch, poll or scroll reset. Each tab gets its own scroll position back.
+function setTab(tab) {
+  const t = state.thread;
+  const view = $('#view');
+  if (t.tab === tab) return;
+  t.scroll[t.tab] = view.scrollTop;
+  if (t.tab === 'actions') t.anchor = latestInView() ? null : readingAnchor();  // A hidden list cannot hold its place, so remember the card being read.
+  t.tab = tab;
+  renderView();
+  view.scrollTop = t.scroll[tab] ?? 0;
+  if (tab === 'actions' && t.anchor?.li.isConnected) view.scrollTop += t.anchor.li.getBoundingClientRect().top - t.anchor.top;
+  if (tab === 'actions' && t.tl.unseen && latestInView()) { t.tl.unseen = 0; renderView(); }
+}
+
+// ── Goals, World state and Model usage panels (C6) ──────────────────────────
 // Built only from the run and its retained events; it never asks the game for fresh state.
-function renderInspector(run) {
-  const aside = $('#inspector');
-  if (aside.hidden || !run) return;
-  if (!aside.dataset.mount) { aside.dataset.mount = '1'; aside.innerHTML = inspectorSkeleton(); }
+function renderPanels(view, run) {
   const t = state.thread;
   const events = mergeEvents(run.events, t.tl.events);
   t.lastObs = latestObservation(events, t.lastObs);
   const selectedSeq = t.tl.selected ? Number(t.tl.selected.replace('m', '')) : null;
   const selectedEvent = events.find(e => e.seq === selectedSeq) || null;
-  patchRegions(aside, inspectorRegions(run, { latest: t.lastObs, selectedEvent, events, view: t.worldView, now: Date.now() / 1000, goalOpen: state.ui.goalOpen }));
+  patchRegions(view, panelRegions(run, { latest: t.lastObs, selectedEvent, events, view: t.worldView, now: Date.now() / 1000, goalOpen: state.ui.goalOpen }));
 }
 
 // ── Activity timeline (C5) ──────────────────────────────────────────────────
-// Newest first. "At the latest" means the top of the list is in view below the sticky header and control bar.
+// Newest first. "At the latest" means Actions is shown and the top of the list is in view below the sticky header, controls and tabs.
 const AUTO_SCROLL_PX = 80;
 const latestInView = () => {
+  if (state.thread.tab !== 'actions') return false;  // A hidden list has no position; new events wait behind the "N new" pill.
   const list = timelineList();
-  const covered = $('#view .control-wrap')?.getBoundingClientRect().bottom ?? $('#view').getBoundingClientRect().top;
+  const covered = $('#view .thread-sticky')?.getBoundingClientRect().bottom ?? $('#view').getBoundingClientRect().top;
   return !list || list.getBoundingClientRect().top >= covered - AUTO_SCROLL_PX;
 };
 const scrollToLatest = () => $('#view .activity')?.scrollIntoView({ block: 'start' });
 
 // New cards go in above; a reader further down keeps exactly what they were looking at.
+// The first card below the sticky block and where it sits now.
+function readingAnchor() {
+  const covered = $('#view .thread-sticky')?.getBoundingClientRect().bottom ?? $('#view').getBoundingClientRect().top;
+  const li = [...(timelineList()?.children || [])].find(card => card.getBoundingClientRect().bottom > covered);
+  return li ? { li, top: li.getBoundingClientRect().top } : null;
+}
+
 function keepReadingPosition(render) {
-  const view = $('#view');
-  const covered = $('#view .control-wrap')?.getBoundingClientRect().bottom ?? view.getBoundingClientRect().top;
-  const anchor = [...(timelineList()?.children || [])].find(li => li.getBoundingClientRect().bottom > covered);
-  const before = anchor?.getBoundingClientRect().top;
+  const anchor = readingAnchor();
   render();
-  if (anchor?.isConnected) view.scrollTop += anchor.getBoundingClientRect().top - before;
+  if (anchor?.li.isConnected) $('#view').scrollTop += anchor.li.getBoundingClientRect().top - anchor.top;
 }
 const timelineList = () => $('#view [data-timeline]');
 
@@ -915,6 +932,7 @@ function selectCard(key) {
 
 // Scrolls to a card by seq, widening the filter or loading the page around it when it is not shown.
 async function jumpTo(seq) {
+  if (state.thread.tab !== 'actions') setTab('actions');  // Goal links jump here from other tabs.
   const tl = state.thread.tl;
   if (!findCard(seq) && tl.filter !== 'all') { tl.filter = 'all'; renderView(); }
   if (!findCard(seq)) {
@@ -1051,20 +1069,10 @@ async function showEvidence(run) {
   } catch (error) { toast(`Evidence unavailable: ${error.message}`, 'error'); }
 }
 
-// §12: the inspector is a right drawer below 1280px and the sidebar a left drawer below 960px.
-const wideInspector = matchMedia('(min-width: 1280px)');
+// §12: the sidebar is a left drawer below 960px.
 const wideSidebar = matchMedia('(min-width: 960px)');
 const sidebarDrawer = createDrawer($('#drawer-left'), $('#sidebar'), pane => { $('.layout').prepend(pane); syncNavToggle(); });
-const inspectorDrawer = createDrawer($('#drawer-right'), $('#inspector'), pane => { $('.layout').append(pane); renderView(); });
-const inspectorShown = () => state.route.name === 'instance' && (inspectorDrawer.open || (wideInspector.matches && state.ui.inspectorOpen));
 const syncNavToggle = () => $('#nav-toggle').setAttribute('aria-expanded', String(wideSidebar.matches ? !document.body.classList.contains('nav-collapsed') : sidebarDrawer.open));
-
-function toggleInspector() {
-  if (wideInspector.matches) state.ui.inspectorOpen = !state.ui.inspectorOpen;
-  else if (inspectorDrawer.open) inspectorDrawer.close();
-  else if (state.route.name === 'instance') inspectorDrawer.show(() => $('#view [data-key="t-inspector"]'));
-  renderView();
-}
 
 // ── Routing ─────────────────────────────────────────────────────────────────
 function rememberProject(route) {
@@ -1091,8 +1099,7 @@ async function onRoute() {
     return;
   }
   acceptedHash = location.hash;
-  sidebarDrawer.close();  // Drawers close on navigation and hand focus back to their toggle.
-  inspectorDrawer.close();
+  sidebarDrawer.close();  // The drawer closes on navigation and hands focus back to its toggle.
   const previous = state.route;
   if (previous.name === 'setup' && state.setups.get(setupKey(previous))?.agent) state.setups.delete(setupKey(previous));  // A finished setup starts fresh next time.
   if (route.name === 'setup' && (previous.name !== 'setup' || setupKey(previous) !== setupKey(route))) {
@@ -1104,7 +1111,7 @@ async function onRoute() {
   if (composerProject(route, state.data)) state.readiness = null;  // Readiness probes on view open, never on the poll.
   if (route.name === 'composer' && route.query.agent) draftFor(route.id).agentId = route.query.agent;
   if (route.name === 'instance' && state.thread.runId !== route.id) {
-    state.thread = { runId: route.id, player: null, instructionOpen: false, instructionText: '', statusKey: null, tl: createTimeline(), worldView: 'latest', lastObs: null };
+    state.thread = { runId: route.id, player: null, instructionOpen: false, instructionText: '', statusKey: null, tl: createTimeline(), worldView: 'latest', lastObs: null, tab: null, scroll: {} };
     state.runSlot.set(null);  // Also drops a late GET for the previous thread.
     state.runMissing = false;
   }
@@ -1185,8 +1192,8 @@ document.addEventListener('click', async event => {
   } else if (action === 'ctl') {
     target.closest('[popover]')?.hidePopover();
     if (target.getAttribute('aria-disabled') !== 'true') onControl(target.dataset.ctl);
-  } else if (action === 'toggle-inspector') {
-    toggleInspector();
+  } else if (action === 'thread-tab') {
+    setTab(target.dataset.tab);
   } else if (action === 'instruction-cancel') {
     Object.assign(state.thread, { instructionOpen: false, instructionText: '' });
     renderView();
@@ -1223,13 +1230,16 @@ document.addEventListener('keydown', event => {
     toggleSidebar();
   }
   // Plain Enter inserts a newline; launching is costly and stays explicit.
-  if (event.ctrlKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === 'i') {
-    event.preventDefault();
-    toggleInspector();
-  }
   if (event.ctrlKey && event.key === 'Enter' && event.target.id === 'composer-goal') {
     event.preventDefault();
     event.target.form.requestSubmit();
+  }
+  if (event.target.getAttribute?.('role') === 'tab' && !event.ctrlKey && !event.altKey && !event.metaKey) {
+    const tab = nextTab(state.thread.tab, event.key);
+    if (!tab) return;
+    event.preventDefault();
+    setTab(tab);
+    $(`#tab-${tab}`)?.focus();  // Selection follows focus.
   }
 });
 
@@ -1340,8 +1350,8 @@ document.addEventListener('submit', async event => {
 $('#nav-toggle').addEventListener('click', toggleSidebar);
 // A click on a drawer's backdrop (the dialog itself, outside the pane) closes it.
 for (const drawer of document.querySelectorAll('.drawer')) drawer.addEventListener('click', event => { if (event.target === drawer) drawer.close(); });
-// Crossing a breakpoint closes any drawer; the pane returns to the layout.
-for (const query of [wideInspector, wideSidebar]) query.addEventListener('change', () => { sidebarDrawer.close(); inspectorDrawer.close(); syncNavToggle(); renderView(); });
+// Crossing the breakpoint closes the drawer; the sidebar returns to the layout.
+wideSidebar.addEventListener('change', () => { sidebarDrawer.close(); syncNavToggle(); renderView(); });
 // <details> toggle does not bubble, so listen in the capture phase.
 document.addEventListener('toggle', event => {
   const el = event.target;
@@ -1358,7 +1368,8 @@ setInterval(() => {
   for (const t of document.querySelectorAll('#view time[data-elapsed]')) t.textContent = elapsed(Date.now() / 1000 - Number(t.dataset.elapsed));
   if (state.route.name !== 'instance') return;
   updateTimes(timelineList());
-  renderInspector(threadRun());
+  const run = threadRun();
+  if (run && $('#view').dataset.mount === `thread:${run.id}`) renderPanels($('#view'), run);
 }, 1000);
 window.addEventListener('hashchange', onRoute);
 // Hidden: the camera stops at once. Visible again: data refreshes and the camera reconnects.

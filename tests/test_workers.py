@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import time
 import unittest
+import unittest.mock
 from unittest.mock import AsyncMock
 import zipfile
 
@@ -15,7 +16,7 @@ from fastapi import HTTPException
 
 from ashad.worker_client import WorkerClient, WorkerError
 from worker.app import create_app
-from worker.models import Binding, BoundCommand, FixtureImport, Heartbeat, Pin, Stop
+from worker.models import Binding, BoundCommand, FixtureImport, Heartbeat, Launch, Pin, Stop
 from worker.runtime import Runtime, atomic_json
 
 
@@ -204,6 +205,41 @@ class WorkerContractTests(unittest.IsolatedAsyncioTestCase):
             self.worker.import_fixture(FixtureImport(**self.command().model_dump(), manifest=manifest, archive_base64="",
                 identity_mapping={"steam-account": "identity-A"}))
         self.assertIn("validated converted", caught.exception.detail)
+
+    async def test_bad_run_id_and_identity_mapping_are_client_errors(self):
+        for call in (lambda: self.worker.evidence_path("x", "../x"), lambda: self.worker.evidence_index("../x"),
+                     lambda: self.worker.export_fixture({"source_run_id": "../x"})):
+            with self.assertRaises(HTTPException) as caught:
+                call()
+            self.assertEqual(caught.exception.status_code, 422)
+        self.worker.game = None
+        manifest = dict(world_id="w", build_revision="abc", save_version="1", starting_milestones=[], identity_mapping=["x"])
+        with self.assertRaises(HTTPException) as caught:
+            self.worker.export_fixture({**manifest, "source_run_id": "run-A"})
+        self.assertEqual(caught.exception.status_code, 422)
+        self.worker.lifecycle = "bound"
+        with self.assertRaises(HTTPException) as caught:
+            self.worker.import_fixture(FixtureImport(**self.command().model_dump(), manifest={**manifest, "transport": "enet"}, archive_base64=""))
+        self.assertEqual(caught.exception.status_code, 422)
+
+    def test_heartbeat_rejects_unparseable_deadline_before_side_effects(self):
+        with self.assertRaises(ValueError):
+            Heartbeat(**self.command().model_dump(), run_deadline="not-a-time")
+
+    async def test_launch_rejects_pack_outside_executable_roots(self):
+        self.worker.game = None
+        self.worker.lifecycle = "bound"
+        game = Path(self.tmp.name) / "game"
+        game.mkdir()
+        engine = game / "engine"
+        engine.write_text("x")
+        pack = Path(self.tmp.name) / "outside.pck"
+        pack.write_text("x")
+        with unittest.mock.patch.dict("os.environ", {"ASHAD_EXECUTABLE_ROOTS": str(game)}):
+            with self.assertRaises(HTTPException) as caught:
+                await self.worker.launch(Launch(**self.command().model_dump(), command=[str(engine), "--main-pack", str(pack)]))
+        self.assertEqual(caught.exception.status_code, 422)
+        self.assertIn("outside", caught.exception.detail)
 
     async def test_pin_preserves_segments_and_marks_missing_post_window(self):
         rolling = self.worker.run_dir / "rolling"

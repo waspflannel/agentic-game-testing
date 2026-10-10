@@ -34,7 +34,6 @@
 !/scripts/setup.sh
 !/scripts/test.sh
 !/scripts/provision-workers.ps1
-!/scripts/test-dashboard-polling.js
 !/scripts/probe-desktop-runtime.py
 /tests/test_game_integration.py
 

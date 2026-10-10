@@ -92,7 +92,7 @@ export function desktopsSkeleton(data, editId) {
     + field('w-name', 'Name', `<input id="w-name" class="input" name="name" maxlength="200" value="${val('name')}" autocomplete="off">`)
     + field('w-url', 'Service URL', `<input id="w-url" class="input mono" name="url" required value="${val('url')}" placeholder="http://192.168.1.20:8101" autocomplete="off" spellcheck="false">`, 'The worker\'s private HTTP(S) address, without credentials.')
     + field('w-token', 'Service token', `<input id="w-token" class="input mono" name="token" type="password" autocomplete="new-password" spellcheck="false" placeholder="${w ? 'Stored. Leave blank to keep' : 'Required for a new desktop'}">`,
-      w ? 'Write-only. A moved URL needs the token again; a stored token is never sent to a different address.' : 'Write-only: stored in the OS credential store and never shown again.')
+      w ? 'Write-only. A moved URL needs the token again; a stored token is never sent to a different address.' : 'Write-only: stored in the system credential store and never shown again.')
     + field('w-desktop', 'Desktop viewer URL (optional)', `<input id="w-desktop" class="input mono" name="desktop_url" value="${val('desktop_url')}" autocomplete="off" spellcheck="false">`)
     + field('w-host', 'Host address (optional)', `<input id="w-host" class="input mono" name="host_address" value="${val('host_address')}" autocomplete="off" spellcheck="false">`)
     + `<label class="check"><input type="checkbox" name="enabled"${w?.enabled === false ? '' : ' checked'}> Enabled</label>`
@@ -267,11 +267,12 @@ export function parseGroups(text) {
 export const previewValid = (migration, text) => Boolean(migration.preview && migration.preview.signature === parseGroups(text).signature);
 
 export function maintenanceSkeleton(data, groupsText) {
+  const oldDataPlaceholder = navigator.userAgent.includes('Windows') ? 'C:\\Users\\you\\ASHAD-old\\data' : '/home/you/ASHAD-old/data';
   const check = (name, label) => `<label class="check"><input type="checkbox" name="${name}"> ${esc(label)}</label>`;
   return head('Maintenance', 'Guarded, one-time operations. Each asks for absolute paths, explicit confirmations and a review first.')
     + `<form class="card settings-card settings-form" data-form="settings-import" novalidate><h2 class="card-title">Import an older workspace</h2>`
     + `<p class="hint">Copies run history from a previous ASHAD data folder into this one. Imported sign-in is never trusted; you sign in again afterwards.</p>`
-    + field('i-source', 'Old data folder (absolute)', `<input id="i-source" class="input mono" name="source_root" autocomplete="off" spellcheck="false" placeholder="C:\\Users\\you\\ASHAD-old\\data">`)
+    + field('i-source', 'Old data folder (absolute)', `<input id="i-source" class="input mono" name="source_root" autocomplete="off" spellcheck="false" placeholder="${oldDataPlaceholder}">`)
     + field('i-backup', 'New backup folder (absolute, empty)', `<input id="i-backup" class="input mono" name="backup_dir" autocomplete="off" spellcheck="false">`)
     + field('i-builds', 'External build paths (one per line)', `<textarea id="i-builds" class="textarea mono" name="external_build_paths" rows="2" spellcheck="false"></textarea>`, 'Must cover every build path the old workspace recorded.')
     + field('i-workers', 'Worker registration paths (one per line, optional)', `<textarea id="i-workers" class="textarea mono" name="worker_registration_paths" rows="2" spellcheck="false"></textarea>`)

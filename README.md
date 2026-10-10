@@ -8,7 +8,7 @@ Tuning saves each completed source batch, so retrying a failed setup reuses matc
 
 ## Repository scope
 
-ASHAD is a Windows desktop app (Electron). There is no browser version: the window talks only to its own private controller, which rejects any client without the per-launch key Electron injects.
+ASHAD is a desktop app (Electron) for Windows x64 and Linux x64. There is no browser version: the window talks only to its own private controller, which rejects any client without the per-launch key Electron injects.
 
 This repository contains the desktop shell, the controller and its UI, worker services, supporting Python utilities, and tests/documentation. Agronauts game source, assets, builds, Godot AI-layer edits, and game-patching tools are not included. Local credentials, runtime data, and validation history also stay out of Git.
 
@@ -33,6 +33,27 @@ Chromium's sandbox needs ordinary user read access to the app's files. If `ASHAD
 Quit lists owning instances and in-flight work. **Cancel** leaves them unchanged; **Stop/cancel and quit** waits for confirmed teardown and clean controller exit. Failed teardown keeps the app open for reconciliation. If the controller has already exited, Quit asks for confirmation rather than trapping the window; the watchdog keeps its authority. Closing a human viewer never hands control back automatically.
 
 Data from an older checkout-based controller (`.data\controller`) is not loaded automatically; bring it in explicitly with **Import existing workspace…**. Desktop preparation, build registration and Steam account setup live in the app.
+
+## Build and run (Linux x64)
+
+Build with Node.js 22.12+ and npm (no system Python is required at runtime):
+
+```sh
+npm --prefix desktop ci
+npm --prefix desktop run build:linux
+./desktop/output/linux-unpacked/ashad
+# Optional Debian package:
+npm --prefix desktop run build:deb
+sudo apt install ./desktop/output/<file>.deb
+```
+
+Prerequisites: Git (only tracked sources are packaged), `tar`, Docker Engine with `/usr/bin/docker` or `/usr/local/bin/docker` (snap Docker is not supported) and your user in the `docker` group, and a running Secret Service provider (gnome-keyring or KWallet) in the desktop session. Without a Secret Service provider, credential storage and Codex sign-in fail, by design. Data lives in `~/.config/ASHAD/controller`.
+
+For `linux-unpacked` on Ubuntu 24.04, give Chromium's sandbox helper its setuid bit, or install the `.deb` instead. Never run with `--no-sandbox`.
+
+```sh
+sudo chown root:root desktop/output/linux-unpacked/chrome-sandbox && sudo chmod 4755 desktop/output/linux-unpacked/chrome-sandbox
+```
 
 ## Connect your ChatGPT subscription
 
@@ -63,7 +84,7 @@ Optional **Import existing workspace…** requires an empty owned target, a stop
 3. Explicitly **Start instance**. ASHAD freshly revalidates authentication, exact supported build pins and actual idle desktop/render/capture/input capabilities, then accepts one host bot in a fresh world. Failed/blocked drafts never auto-launch. Lost replies reconcile the same request; restoring prepared inputs asks first and still requires another Start click.
 4. Follow the live view. Pause, resume, stop, or take over if the bot needs help. Each instance retains its own run ID and evidence.
 
-**Desktop prerequisites:** Docker Desktop's Linux engine and separately supplied supported game files are required. Confirmed preparation may build a content-addressed bundled worker image and create one owner-labelled desktop, persistent volumes and local service/desktop credential references; it never starts gameplay or recreates/adopts unrelated containers. Changed/legacy artifacts lacking exact supported pins require a new registration. Each Prepare request reconciles one desktop per project and build. Provisioning completion alone is not readiness.
+**Desktop prerequisites:** Docker Desktop's Linux engine (Windows) or Docker Engine (Linux), and separately supplied supported game files are required. Confirmed preparation may build a content-addressed bundled worker image and create one owner-labelled desktop, persistent volumes and local service/desktop credential references; it never starts gameplay or recreates/adopts unrelated containers. Changed/legacy artifacts lacking exact supported pins require a new registration. Each Prepare request reconciles one desktop per project and build. Provisioning completion alone is not readiness.
 
 **Steam limitation:** Steam is unavailable until fresh actual matching identity, real App ID and licence are proven. The current idle passive worker cannot supply that proof without application initialization, so copied account readiness or an old verification never enables it. ASHAD never substitutes App ID 480, ENet or offline transport. Supported owned Steam-start/integration work and live acceptance remain separate gates; ENet is an explicit user choice.
 
@@ -97,14 +118,18 @@ The supported workflow is agent tuning and fresh, one-bot instances. Old scenari
 
 [Future work](docs/future-work.md) records deferred features and the prerequisites for restoring them.
 
-Controller data lives in `%APPDATA%\ASHAD\controller`; worker volumes contain game and Steam state. Back up both when preserving local history. Keep Steam profiles and credentials out of shared evidence exports.
+Controller data lives in `%APPDATA%\ASHAD\controller` (Windows) or `~/.config/ASHAD/controller` (Linux); worker volumes contain game and Steam state. Back up both when preserving local history. Keep Steam profiles and credentials out of shared evidence exports.
 
 ## Verify changes
 
-Development checks need Node.js and a Python environment; run `.\scripts\setup.ps1` once to create `.venv`.
+Development checks need Node.js and a Python environment; run `.\scripts\setup.ps1` (Windows) or `./scripts/setup.sh` (Linux) once to create `.venv`.
 
 ```powershell
 .\scripts\test.ps1
+```
+
+```sh
+./scripts/test.sh
 ```
 
 Mocked tests do not establish live account access, Steam gameplay, UI acceptance or autonomous campaign completion. Game-adapter checks and historical validation records are maintained separately and are not included here.

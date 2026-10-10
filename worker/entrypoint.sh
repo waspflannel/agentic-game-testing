@@ -4,6 +4,13 @@ set -eu
 if [ "$(id -u)" = "0" ]; then
     mkdir -p /data /home/player /run/player
     chown player:player /data /home/player /run/player
+    # Native Linux Docker enforces the host's 0700 secrets folder, so only root reads the bind mount.
+    # Copy into this container's private /dev/shm tmpfs, readable only by player.
+    install -d -o player -g player -m 0700 /dev/shm/ashad-secrets
+    install -o player -g player -m 0400 /run/secrets/worker_token /dev/shm/ashad-secrets/worker_token
+    install -o player -g player -m 0400 /run/secrets/vnc_password /dev/shm/ashad-secrets/vnc_password
+    export ASHAD_WORKER_TOKEN_FILE=/dev/shm/ashad-secrets/worker_token
+    export ASHAD_VNC_PASSWORD_FILE=/dev/shm/ashad-secrets/vnc_password
     # Named volumes retain Steam authentication; run files live separately under /data/runs.
     exec gosu player "$0" "$@"
 fi

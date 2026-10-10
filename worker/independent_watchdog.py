@@ -27,6 +27,15 @@ def revoke_desktop(state: dict) -> None:
             pass
 
 
+def kill_run_game(pid: int, run_id: str) -> bool:
+    """SIGKILL the game group only if the PID still belongs to this run, never a reused PID."""
+    environ = Path(f"/proc/{pid}/environ").read_bytes().split(b"\x00")
+    if f"ASHAD_RUN_ID={run_id}".encode() not in environ:
+        return False
+    os.killpg(pid, signal.SIGKILL)
+    return True
+
+
 def main():
     root = Path(os.environ.get("ASHAD_WORKER_DATA", "/data"))
     state_path = root / "worker-state.json"
@@ -46,10 +55,7 @@ def main():
                 revoke_desktop(state)
             if deadline_expired and state.get("game_pid"):
                 pid = int(state["game_pid"])
-                environ = Path(f"/proc/{pid}/environ").read_bytes().split(b"\x00")
-                expected = f"ASHAD_RUN_ID={state['binding']['run_id']}".encode()
-                if expected in environ:
-                    os.killpg(pid, signal.SIGKILL)
+                if kill_run_game(pid, state["binding"]["run_id"]):
                     for key in state.get("held_keys", []) + ["Control_L", "Shift_L", "Alt_L"]:
                         subprocess.run(["xdotool", "keyup", key], timeout=2, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                     for button in set(state.get("held_buttons", []) + [1, 2, 3]):
@@ -59,7 +65,7 @@ def main():
                         stream.write(json.dumps(event) + "\n")
                         stream.flush()
                         os.fsync(stream.fileno())
-        except (OSError, ValueError, KeyError, subprocess.TimeoutExpired):
+        except Exception:  # One bad read must not end deadline enforcement.
             pass
         time.sleep(0.5)
 

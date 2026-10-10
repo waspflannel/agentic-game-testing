@@ -817,9 +817,11 @@ function setTab(tab) {
   const view = $('#view');
   if (t.tab === tab) return;
   t.scroll[t.tab] = view.scrollTop;
+  if (t.tab === 'actions') t.anchor = latestInView() ? null : readingAnchor();  // A hidden list cannot hold its place, so remember the card being read.
   t.tab = tab;
   renderView();
   view.scrollTop = t.scroll[tab] ?? 0;
+  if (tab === 'actions' && t.anchor?.li.isConnected) view.scrollTop += t.anchor.li.getBoundingClientRect().top - t.anchor.top;
   if (tab === 'actions' && t.tl.unseen && latestInView()) { t.tl.unseen = 0; renderView(); }
 }
 
@@ -846,13 +848,17 @@ const latestInView = () => {
 const scrollToLatest = () => $('#view .activity')?.scrollIntoView({ block: 'start' });
 
 // New cards go in above; a reader further down keeps exactly what they were looking at.
+// The first card below the sticky block and where it sits now.
+function readingAnchor() {
+  const covered = $('#view .thread-sticky')?.getBoundingClientRect().bottom ?? $('#view').getBoundingClientRect().top;
+  const li = [...(timelineList()?.children || [])].find(card => card.getBoundingClientRect().bottom > covered);
+  return li ? { li, top: li.getBoundingClientRect().top } : null;
+}
+
 function keepReadingPosition(render) {
-  const view = $('#view');
-  const covered = $('#view .thread-sticky')?.getBoundingClientRect().bottom ?? view.getBoundingClientRect().top;
-  const anchor = [...(timelineList()?.children || [])].find(li => li.getBoundingClientRect().bottom > covered);
-  const before = anchor?.getBoundingClientRect().top;
+  const anchor = readingAnchor();
   render();
-  if (anchor?.isConnected) view.scrollTop += anchor.getBoundingClientRect().top - before;
+  if (anchor?.li.isConnected) $('#view').scrollTop += anchor.li.getBoundingClientRect().top - anchor.top;
 }
 const timelineList = () => $('#view [data-timeline]');
 

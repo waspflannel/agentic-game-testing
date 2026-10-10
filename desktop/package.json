@@ -4,6 +4,7 @@
   "private": true,
   "description": "Secure desktop shell for the ASHAD controller",
   "author": "ASHAD",
+  "homepage": "https://github.com/waspflannel/agentic-game-testing",
   "main": "main.cjs",
   "scripts": {
     "prepare:runtime": "node prepare.cjs",

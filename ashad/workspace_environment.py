@@ -7,14 +7,19 @@ worker binding, game launch, teardown, inference or Steam verification is done.
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextlib
 import hashlib
 import json
 import os
 from pathlib import Path, PurePosixPath
 import re
+from secrets import token_bytes
+import signal
 import socket
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -190,6 +195,15 @@ def _image(resources):
 
 
 def _tools():
+    if sys.platform == "linux":
+        # Fixed install locations only: the inherited PATH must not choose which docker runs.
+        docker = next((path.resolve() for path in (Path("/usr/bin/docker"), Path("/usr/local/bin/docker")) if path.is_file()), None)
+        if docker is None:
+            raise PreparationError("Docker Engine CLI is required at /usr/bin/docker or /usr/local/bin/docker")
+        env = {key: value for key, value in os.environ.items() if not key.upper().startswith("DOCKER_")}
+        env["PATH"] = "/usr/bin:/bin"
+        # No PowerShell on Linux: prepare_environment provisions in-process.
+        return None, docker, env
     system = Path(os.environ.get("SystemRoot", r"C:\Windows"))
     program = Path(os.environ.get("ProgramFiles", r"C:\Program Files"))
     if not system.is_absolute() or not program.is_absolute():
@@ -207,9 +221,10 @@ def _tools():
 
 
 def _execute(argv, *, cwd, env, shell=False, timeout):
-    """No inherited pipes: Docker grandchildren cannot block a timed-out read; the whole tree is killed."""
+    """No inherited pipes: Docker grandchildren cannot block a timed-out read; the whole tree (Windows) or process group (Linux) is killed."""
     with tempfile.TemporaryFile(dir=cwd) as output:
-        process = subprocess.Popen(argv, cwd=cwd, env=env, shell=shell, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.DEVNULL)
+        process = subprocess.Popen(argv, cwd=cwd, env=env, shell=shell, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.DEVNULL,
+                                   start_new_session=os.name != "nt")
         try:
             process.wait(timeout)
         except BaseException:
@@ -217,6 +232,10 @@ def _execute(argv, *, cwd, env, shell=False, timeout):
                 taskkill = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/taskkill.exe"
                 subprocess.run([str(taskkill), "/T", "/F", "/PID", str(process.pid)], stdin=subprocess.DEVNULL,
                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=False)
+            else:
+                # The child leads its own session, so its process group holds every descendant that didn't detach.
+                with contextlib.suppress(ProcessLookupError):
+                    os.killpg(process.pid, signal.SIGKILL)
             process.kill()
             process.wait()
             raise
@@ -224,16 +243,19 @@ def _execute(argv, *, cwd, env, shell=False, timeout):
         return subprocess.CompletedProcess(argv, process.returncode, output.read().decode("utf-8", "replace"), "")
 
 
-async def _run(runner, argv, root, env, *, timeout=120):
+async def _run(runner, argv, root, env, *, timeout=120, check=True):
     def call():
         result = runner(list(map(str, argv)), cwd=str(root), env=env, shell=False, timeout=timeout)
+        if result.returncode and not check:
+            return None
         if result.returncode:
             # Script/CLI stderr can contain generated credentials. Never expose it.
             reason = "Docker preparation command failed; reconcile this request's retained resources"
             if len(argv) > 1 and str(argv[1]) == "build":
                 reason = "Building the confirmed bundled worker image failed; check Docker connectivity and image-build prerequisites, then retry this request"
             elif list(map(str, argv[1:3])) == ["info", "--format"]:
-                reason = "Docker Desktop is unreachable; start Docker in Linux-container mode before retrying"
+                reason = ("Docker Desktop is unreachable; start Docker in Linux-container mode before retrying" if os.name == "nt"
+                          else "Docker Engine is unreachable; start the Docker service and add this user to the docker group before retrying")
             raise PreparationError(reason)
         return result.stdout.strip()
     task = asyncio.create_task(asyncio.to_thread(call))
@@ -293,6 +315,49 @@ async def _await_startup(worker, credentials, client_factory):
         except Exception:
             pass
         await asyncio.sleep(0.5)
+
+
+async def _provision(runner, docker, env, record, *, root, directory, owner, existing):
+    """Linux in-process equivalent of provision-workers.ps1's request-owned path (-Count 1 -SkipBuild -ManagedOwner).
+
+    prepare_environment has already verified an existing container's ownership, mounts and idle state.
+    """
+    worker_id, container = record["worker_id"], record["container"]
+    secrets_root = directory / "secrets"
+    secret_directory = secrets_root / worker_id
+    secret_directory.mkdir(parents=True, exist_ok=True)
+    # Only this user may read generated service credentials.
+    secrets_root.chmod(0o700)
+    secret_directory.chmod(0o700)
+    token_file, vnc_file = secret_directory / "worker_token", secret_directory / "vnc_password"
+    for path, size in ((token_file, 48), (vnc_file, 6)):
+        if not path.exists():
+            path.write_text(base64.b64encode(token_bytes(size)).decode("ascii"), encoding="utf-8")
+    label = await _run(runner, [docker, "network", "inspect", "--format", '{{index .Labels "ashad.managed"}}', record["network"]], directory, env, check=False)
+    if label is None:
+        await _run(runner, [docker, "network", "create", "--label", "ashad.managed=true", record["network"]], directory, env)
+    elif label != "true":
+        raise PreparationError("Network collision; refusing an unrelated network")
+    for volume in (f"ashad-{worker_id}-data", f"ashad-{worker_id}-home"):
+        volume_owner = await _run(runner, [docker, "volume", "inspect", "--format", '{{index .Labels "ashad.environment-owner"}}', volume], directory, env, check=False)
+        if volume_owner is None:
+            await _run(runner, [docker, "volume", "create", "--label", "ashad.managed=true", "--label", "ashad.environment-owner=" + owner, volume], directory, env)
+        elif volume_owner != owner:
+            raise PreparationError("Persistent volume collision; refusing unrelated data")
+    if existing:
+        await _run(runner, [docker, "start", container], directory, env)
+    else:
+        await _run(runner, [docker, "run", "--pull", "never", "--label", "ashad.environment-owner=" + owner, "--detach", "--name", container,
+                            "--label", "ashad.managed=true", "--network", record["network"], "--network-alias", container,
+                            "--restart", "unless-stopped", "--init", "--shm-size", "1g", "--cpus", "3", "--memory", "4g",
+                            "--publish", f"127.0.0.1:{record['api_port']}:8080", "--publish", f"127.0.0.1:{record['desktop_port']}:6080",
+                            "--env", "ASHAD_WORKER_ID=" + worker_id, "--env", "ASHAD_EXECUTABLE_ROOTS=/game:/opt/runtime",
+                            "--mount", f"type=bind,source={root},target=/game,readonly",
+                            "--mount", f"type=bind,source={secret_directory},target=/run/secrets,readonly",
+                            "--mount", f"type=volume,source=ashad-{worker_id}-data,target=/data",
+                            "--mount", f"type=volume,source=ashad-{worker_id}-home,target=/home/player", record["image"]], directory, env)
+    return {"id": worker_id, "container": container, "url": record["url"], "desktop_url": record["desktop_url"],
+            "token_file": str(token_file), "vnc_password_file": str(vnc_file)}
 
 
 async def prepare_environment(store, credentials, *, project_id, build, request_id,
@@ -407,17 +472,21 @@ async def prepare_environment(store, credentials, *, project_id, build, request_
                     health, status = await client.health(), await client.status()
                 if any(probe.get("worker_id") != record["worker_id"] or probe.get("contract_version") != CONTRACT or not _idle(probe) for probe in (health, status)):
                     raise PreparationError("Existing worker is busy or its idle state is unknown")
-        registration = _safe_path(directory / "workers.json")
-        argv = [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
-                "-Count", "1", "-BuildPath", root, "-Image", image, "-SkipBuild", "-WorkerPrefix", record["prefix"],
-                "-ApiBasePort", str(record["api_port"] - 1), "-DesktopBasePort", str(record["desktop_port"] - 1),
-                "-SecretsRoot", directory / "secrets", "-RegistrationFile", registration,
-                "-DockerExecutable", docker, "-NetworkName", record["network"], "-ManagedOwner", owner]
-        await _run(runner, argv, directory, env, timeout=300)
-        entries = json.loads(registration.read_text(encoding="utf-8-sig"))
-        if not isinstance(entries, list) or len(entries) != 1:
-            raise PreparationError("Provisioning registration must contain exactly this one desktop")
-        worker = await _import_worker(store, credentials, entries[0], record, directory)
+        if powershell is None:
+            entry = await _provision(runner, docker, env, record, root=root, directory=directory, owner=owner, existing=bool(names))
+        else:
+            registration = _safe_path(directory / "workers.json")
+            argv = [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script,
+                    "-Count", "1", "-BuildPath", root, "-Image", image, "-SkipBuild", "-WorkerPrefix", record["prefix"],
+                    "-ApiBasePort", str(record["api_port"] - 1), "-DesktopBasePort", str(record["desktop_port"] - 1),
+                    "-SecretsRoot", directory / "secrets", "-RegistrationFile", registration,
+                    "-DockerExecutable", docker, "-NetworkName", record["network"], "-ManagedOwner", owner]
+            await _run(runner, argv, directory, env, timeout=300)
+            entries = json.loads(registration.read_text(encoding="utf-8-sig"))
+            if not isinstance(entries, list) or len(entries) != 1:
+                raise PreparationError("Provisioning registration must contain exactly this one desktop")
+            entry = entries[0]
+        worker = await _import_worker(store, credentials, entry, record, directory)
         await _await_startup(worker, credentials, client_factory)
         environment = await inspect_fresh_environment(build, worker, credentials, client_factory=client_factory)
         result = {"request_id": request_id, "project_id": project_id, "build_id": build["id"],

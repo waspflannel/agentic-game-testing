@@ -6,7 +6,31 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 MODEL = "gpt-6-luna"
-SUPPORTED_MODELS = (MODEL, "gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra")
+CODEX_MODELS = (MODEL, "gpt-6-sol", "gpt-6.1-sol", "gpt-6-astra")
+CLAUDE_MODELS = ("sonnet", "opus", "haiku")
+CLAUDE_MODEL = "sonnet"
+SUPPORTED_MODELS = CODEX_MODELS + CLAUDE_MODELS
+PROVIDERS = {
+    "codex": {"label": "Codex", "status_key": "ai_status", "pricing": {
+        "api": "codex", "billing": "subscription", "auth_method": "chatgpt",
+        "limitations": "Codex uses the signed-in ChatGPT subscription limits; per-request dollar cost is unavailable."}},
+    "claude": {"label": "Claude", "status_key": "ai_status_claude", "pricing": {
+        "api": "claude", "billing": "subscription", "auth_method": "claude_oauth_token",
+        "limitations": "Claude Code uses your Claude subscription limits; per-request dollar cost is unavailable."}},
+}
+MODEL_OPTIONS = (
+    {"id": "gpt-6-luna", "label": "GPT-6 Luna", "provider": "codex"},
+    {"id": "gpt-6-sol", "label": "GPT-6 Sol", "provider": "codex"},
+    {"id": "gpt-6.1-sol", "label": "GPT-6.1 Sol", "provider": "codex"},
+    {"id": "gpt-6-astra", "label": "GPT-6 Astra", "provider": "codex"},
+    {"id": "sonnet", "label": "Claude Sonnet", "provider": "claude"},
+    {"id": "opus", "label": "Claude Opus", "provider": "claude"},
+    {"id": "haiku", "label": "Claude Haiku", "provider": "claude"},
+)
+
+
+def provider_of(model):
+    return "claude" if model in CLAUDE_MODELS else "codex"
 
 
 class Contract(BaseModel):
@@ -131,7 +155,7 @@ class Plan(Contract):
     @model_validator(mode="after")
     def invariants(self):
         if self.model not in SUPPORTED_MODELS:
-            raise ValueError("Select a supported Codex model: " + ", ".join(SUPPORTED_MODELS))
+            raise ValueError("Select a supported model: " + ", ".join(SUPPORTED_MODELS))
         ids = [p.id for p in self.players]
         if len(set(ids)) != len(ids):
             raise ValueError("Player IDs must be unique")

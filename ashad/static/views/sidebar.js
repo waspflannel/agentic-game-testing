@@ -37,7 +37,7 @@ export function sidebarModel(data, ui) {
     projects: projects.map(p => group(p.id, runs.filter(r => r.project_id === p.id), { name: p.name || p.id, current: routeProject === p.id && !currentRun })),
     unassigned: unassignedRuns.length ? group('unassigned', unassignedRuns, { name: 'Unassigned' }) : null,
     active,
-    signInNeeded: data?.ai?.status !== 'ready',
+    signInNeeded: data?.ai?.status !== 'ready' && data?.ai_claude?.status !== 'ready',
     route: route.name,
   };
 }
@@ -84,6 +84,6 @@ export function sidebarHTML(m) {
     + `</div><div class="side-foot">${active}`
     + `<a class="row foot-link${m.route === 'usage' ? ' is-current' : ''}" href="#/usage" data-key="usage"${m.route === 'usage' ? ' aria-current="page"' : ''}>${icon('chart-column')}<span class="row-label">Usage</span></a>`
     + `<a class="row foot-link${m.route === 'settings' ? ' is-current' : ''}" href="#/settings" data-key="settings"${m.route === 'settings' ? ' aria-current="page"' : ''}>${icon('sliders')}<span class="row-label">Settings</span>`
-    + (m.signInNeeded ? `<span class="dot dot-attention" title="ChatGPT sign-in needed"><span class="sr-only">ChatGPT sign-in needed</span></span>` : '')
+    + (m.signInNeeded ? `<span class="dot dot-attention" title="AI sign-in needed"><span class="sr-only">AI sign-in needed</span></span>` : '')
     + `</a></div>`;
 }

@@ -7,7 +7,7 @@ from pathlib import Path
 import re
 import time
 
-from .codex_backend import TUNING_MANUAL_LIMIT, TUNING_PROMPT_VERSION
+from .prompts import TUNING_MANUAL_LIMIT, TUNING_PROMPT_VERSION
 from .models import MODEL, SUPPORTED_MODELS
 from .repository import Repository, sha256_file
 from .projects import Projects, _identifier, _name
@@ -104,7 +104,7 @@ class AgentProfiles:
             name = _name(name, "Agent configuration name")
         payload = {"build_id": build_id, "model": model, "name": name, "project_id": project_id}
         if model not in SUPPORTED_MODELS:
-            raise ValueError("Select a supported Codex model.")
+            raise ValueError("Select a supported model.")
         previous = self.store.command("tuning", request_id) if request_id else None
         if previous:
             if previous["request"] != payload:

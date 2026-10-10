@@ -9,9 +9,10 @@ import pytest
 from fastapi.testclient import TestClient
 from ashad.app import create_app
 from ashad.ai import OpenAI
+from ashad.claude_backend import ClaudeError
 from ashad.codex_backend import CodexError
 from ashad.coordinator import Coordinator
-from ashad.models import MODEL, SUPPORTED_MODELS, Plan
+from ashad.models import MODEL, SUPPORTED_MODELS, CLAUDE_MODELS, Plan
 from ashad.store import Store
 from ashad.validation import validate_plan
 from ashad.watchdog import once
@@ -47,6 +48,45 @@ class FakeCodexBackend:
         self.requests.append({"input": input, "questions": copy.deepcopy(questions), "model": model})
         return {"answers": {q["name"]: q["choices"][0]["value"] for q in questions},
                 "usage": None, "usage_scope": "selection_total", "thread_id": "test-thread", "turn_id": "test-turn"}
+
+    async def close(self):
+        pass
+
+
+class FakeClaudeBackend:
+    """Claude subscription double: no CLI process, token store, or live model calls."""
+    def __init__(self, ready=True):
+        self.ready = ready
+        self.requests = []
+        self.saved = []
+        self.cleared = 0
+
+    async def status(self, model="sonnet"):
+        return {"configured": self.ready, "status": "ready" if self.ready else "configuration_required",
+                "api": "claude", "auth_method": "claude_oauth_token", "billing": "subscription", "model": model,
+                "available_models": list(CLAUDE_MODELS),
+                "message": "Subscription ready" if self.ready else "Paste a token from claude setup-token"}
+
+    async def select(self, input, questions, *, model="sonnet"):
+        if not self.ready:
+            raise ClaudeError("configuration_required", "Paste a token from claude setup-token")
+        self.requests.append({"input": input, "questions": copy.deepcopy(questions), "model": model})
+        return {"answers": {q["name"]: q["choices"][0]["value"] for q in questions},
+                "usage": None, "usage_scope": "selection_total", "thread_id": "test-thread", "turn_id": "test-turn"}
+
+    async def tune(self, evidence, *, model="sonnet", stage="manual", repair=False):
+        if not self.ready:
+            raise ClaudeError("configuration_required", "Paste a token from claude setup-token")
+        return {"answers": {"instructions": "x" * 300}, "usage": None, "usage_scope": "tuning_total",
+                "thread_id": "test-thread", "turn_id": "test-turn"}
+
+    def save_token(self, token):
+        self.saved.append(token)
+        self.ready = True
+
+    def clear_token(self):
+        self.cleared += 1
+        self.ready = False
 
     async def close(self):
         pass

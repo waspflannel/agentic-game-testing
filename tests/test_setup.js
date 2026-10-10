@@ -176,3 +176,34 @@ test('setup markup escapes names, build labels and instructions', async () => {
   html += readinessHTML({ result: { provider: { message: evil }, build_validation: { reason: evil }, environments: [{ name: evil, reason: evil }], slot: { available: false, blocked_reason: evil }, steam: { reason: evil } } }, 0);
   assert.doesNotMatch(html, /<img/);
 });
+
+const bothProviders = (extra = {}) => data({
+  model_options: [{ id: 'gpt-6-astra', label: 'GPT-6 Astra', provider: 'codex' }, { id: 'sonnet', label: 'Claude Sonnet', provider: 'claude' }, { id: 'opus', label: 'Claude Opus', provider: 'claude' }],
+  ai_claude: { status: 'configuration_required' }, ...extra,
+});
+
+test('the model picker groups Codex and Claude models', async () => {
+  const { newSetup, setupSkeleton } = await load();
+  const html = setupSkeleton(bothProviders(), Object.assign(newSetup('p'), { buildId: 'b', model: 'sonnet' }), 4);
+  const codex = html.indexOf('<optgroup label="ChatGPT (Codex)">');
+  const claude = html.indexOf('<optgroup label="Claude">');
+  assert.ok(codex >= 0 && claude > codex);
+  assert.ok(html.indexOf('value="gpt-6-astra"') > codex && html.indexOf('value="gpt-6-astra"') < claude);
+  assert.ok(html.indexOf('value="sonnet"') > claude && html.indexOf('value="opus"') > claude);
+  assert.match(html, /value="sonnet" selected/);
+});
+
+test('a Claude model is enabled when only Claude is ready and disabled with the provider reason when it is not', async () => {
+  const { newSetup, setupModel, applyDefaults } = await load();
+  const s = Object.assign(newSetup('p'), { buildId: 'b', agentName: 'A', model: 'sonnet', readiness: readyProbe });
+  const off = setupModel(bothProviders({ ai: { status: 'configuration_required' } }), s);
+  assert.equal(off.signedIn, false);
+  assert.equal(off.step, 4);
+  assert.equal(off.blocked, 'Connect the provider for this model first.');
+  const on = setupModel(bothProviders({ ai: { status: 'configuration_required' }, ai_claude: { status: 'ready' } }), s);
+  assert.equal(on.signedIn, true);
+  assert.equal(on.step, 5, 'step 4 is complete');
+  const fresh = Object.assign(newSetup('p'), { buildId: 'b' });
+  applyDefaults(bothProviders({ ai: { status: 'configuration_required' }, ai_claude: { status: 'ready' } }), fresh);
+  assert.equal(fresh.model, 'sonnet');
+});

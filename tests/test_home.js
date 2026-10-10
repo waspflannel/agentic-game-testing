@@ -121,7 +121,7 @@ test('disabled Start always says why', async () => {
   const draft = { ...newDraft(), agentId: 'a' };
   const reasons = (d, readiness = { key: 'p|b|a', result: ready }) => composerModel(d, 'p', draft, readiness).blockers.join(' | ');
   assert.equal(reasons(data()), '');
-  assert.match(reasons(data({ ai: { status: 'not_validated' } })), /ChatGPT is not signed in/);
+  assert.match(reasons(data({ ai: { status: 'not_validated' } })), /No AI provider is connected/);
   assert.match(reasons(data({ instance_slot: { available: false, owners: [{ run_id: 'r' }], blocked_reason: 'One instance already owns the global slot' } })), /already owns the global slot/);
   assert.match(reasons(data(), { key: 'p|b|a', result: { ...ready, ready: false, environments: [{ ready: false, reason: 'Docker is not running' }] } }), /Desktop not ready: Docker is not running/);
   assert.match(reasons(data(), { key: 'p|b|a', loading: true }), /Checking desktop readiness/);

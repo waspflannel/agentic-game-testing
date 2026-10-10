@@ -1,5 +1,8 @@
 """Host credential storage. Service tokens stay backend-only; desktop passwords are human-only."""
+import contextlib
+
 import keyring
+import keyring.errors
 
 
 class Credentials:
@@ -15,3 +18,7 @@ class Credentials:
         if backend.priority <= 0 or "plaintext" in type(backend).__name__.lower():
             raise ValueError("A host credential store is required; plaintext fallback is disabled")
         keyring.set_password(self.service, reference, value.strip())
+
+    def remove(self, reference):
+        with contextlib.suppress(keyring.errors.PasswordDeleteError):
+            keyring.delete_password(self.service, reference)

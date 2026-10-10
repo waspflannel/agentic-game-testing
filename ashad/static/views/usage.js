@@ -36,7 +36,7 @@ export function usageModel(rows, ui, now = Date.now() / 1000) {
 
 const fmt = n => n.toLocaleString('en-US');
 const money = n => `$${n.toFixed(n < 1 ? 4 : 2)}`;
-const NOT_A_CHARGE = 'Estimate, not a charge. Billed through your ChatGPT subscription.';
+const NOT_A_CHARGE = 'Estimate, not a charge. Billed through your AI subscription.';
 
 export const usageSkeleton = () => `<div class="page usage-page"><div class="page-head row-between"><div><h1>Usage</h1><p>Every model turn ASHAD recorded: gameplay, planning and tuning.</p></div><div data-region="refresh"></div></div>`
   + `<div data-region="summary"></div><div data-region="controls"></div><div data-region="table"></div></div>`;

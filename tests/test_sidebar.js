@@ -82,8 +82,8 @@ test('every interactive row has a stable data-key so focus survives polls', asyn
   assert.match(html, /aria-label="Set up new game agent"/);
 });
 
-test('Settings carries a sign-in marker only when ChatGPT is not ready', async () => {
+test('Settings carries a sign-in marker only when no provider is ready', async () => {
   const { sidebarModel, sidebarHTML } = await load();
-  assert.doesNotMatch(sidebarHTML(sidebarModel(data(), ui())), /ChatGPT sign-in needed/);
-  assert.match(sidebarHTML(sidebarModel(data({ ai: { status: 'not_validated' } }), ui())), /ChatGPT sign-in needed/);
+  assert.doesNotMatch(sidebarHTML(sidebarModel(data(), ui())), /AI sign-in needed/);
+  assert.match(sidebarHTML(sidebarModel(data({ ai: { status: 'not_validated' } }), ui())), /AI sign-in needed/);
 });

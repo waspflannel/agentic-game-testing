@@ -13,6 +13,9 @@ export const newSetup = projectId => ({
 
 export const projectBuilds = (data, projectId) => (data?.builds || []).filter(b => b.project_id === projectId);
 
+// A model is usable when the provider it belongs to is connected.
+const providerReady = (data, model) => ((data?.model_options || []).find(o => o.id === model)?.provider === 'claude' ? data?.ai_claude : data?.ai)?.status === 'ready';
+
 // Step 4 starts from "<build> agent" and the signed-in model until the user edits either.
 export function applyDefaults(data, s) {
   const build = projectBuilds(data, s.projectId).find(b => b.id === s.buildId);
@@ -20,7 +23,7 @@ export function applyDefaults(data, s) {
   const project = (data?.projects || []).find(p => p.id === s.projectId);
   s.agentName ||= `${project?.name || build.name || build.id} agent`;
   const models = (data?.model_options || []).map(m => m.id);
-  s.model ||= models.includes(data?.ai?.model) ? data.ai.model : models[0] || '';
+  s.model ||= data?.ai?.status === 'ready' && models.includes(data.ai.model) ? data.ai.model : data?.ai_claude?.status === 'ready' ? 'sonnet' : models[0] || '';
 }
 
 // Steps are 1-based. Earlier steps' completion comes from data; desktop readiness and tuning from this session.
@@ -31,7 +34,7 @@ export function setupModel(data, s) {
   const check = build && s.readiness?.buildId === build.id ? s.readiness : null;
   const r = check && !check.loading && !check.error ? check.result : null;
   const envReady = (r?.environments || []).some(e => e.ready === true);
-  const signedIn = data?.ai?.status === 'ready';
+  const signedIn = providerReady(data, s.model);
   const done = [Boolean(project), Boolean(build), Boolean(r?.build_validation?.ready && envReady),
     Boolean(signedIn && s.agentName.trim() && s.model), Boolean(s.agent), false];
   const first = done.indexOf(false) + 1;
@@ -41,7 +44,7 @@ export function setupModel(data, s) {
     'Add or choose a build to continue.',
     !check || check.loading ? 'Checking readiness…' : check.error ? 'Re-check readiness to continue.'
       : !r.build_validation?.ready ? 'The build is not validated.' : 'No desktop is ready yet. Prepare one below.',
-    !signedIn ? 'Sign in to ChatGPT first.' : !s.agentName.trim() ? 'Name the configuration.' : 'Choose a model.',
+    !signedIn ? 'Connect the provider for this model first.' : !s.agentName.trim() ? 'Name the configuration.' : 'Choose a model.',
     s.tune.status === 'busy' ? 'Tuning is running.' : 'Run tuning to continue.',
     '',
   ];
@@ -119,7 +122,7 @@ export function tuningProgressHTML(op, now) {
   const calls = !p ? '' : `${p.model_calls} model ${p.model_calls === 1 ? 'reply' : 'replies'}${p.rejected_replies ? ` (${p.rejected_replies} rejected and retried)` : ''}`
     + ` · ${p.last_call_at ? 'last reply' : 'started'} <time data-elapsed="${lastAt}">${elapsed(now - lastAt)}</time> ago`;
   const stalled = p && now - lastAt > STALL_SECONDS
-    ? `<p class="note note-attention">${icon('clock')}<span>No model reply for ${Math.floor((now - lastAt) / 60)} minutes. A call usually takes under 2 minutes; ChatGPT may be slow or rate limited. Tuning is still running.</span></p>` : '';
+    ? `<p class="note note-attention">${icon('clock')}<span>No model reply for ${Math.floor((now - lastAt) / 60)} minutes. A call usually takes under 2 minutes; the provider may be slow or rate limited. Tuning is still running.</span></p>` : '';
   return `${bar}<p>${esc(stage)} · <time data-elapsed="${started}">${elapsed(now - started)}</time> elapsed</p>${calls ? `<p class="hint">${calls}</p>` : ''}${stalled}`;
 }
 
@@ -137,7 +140,7 @@ export function readinessHTML(record, now) {
     + `<span class="check-text"><span>${esc(label)}</span><span class="check-detail">${esc(detail)}</span></span></li>`;
   const envs = r.environments || [];
   const rows = [
-    row(r.provider?.ready === true, 'ChatGPT and model', r.provider?.ready ? `${r.provider.model || 'Model'} available` : r.provider?.message || 'Not available'),
+    row(r.provider?.ready === true, 'Provider and model', r.provider?.ready ? `${r.provider.model || 'Model'} available` : r.provider?.message || 'Not available'),
     row(r.build_validation?.ready === true, 'Build validation', r.build_validation?.reason || 'Not validated'),
     ...(envs.length ? envs.map(e => row(e.ready === true, e.name || e.id, e.ready ? 'Ready' : e.reason || 'Not ready'))
       : [row(false, 'Desktops', r.build_validation?.ready ? 'No desktop is registered. Prepare one, or add one under Settings › Desktops.' : 'Checked once the build validates')]),
@@ -171,8 +174,9 @@ export function setupSkeleton(data, s, step) {
     fields = `<form class="setup-form" data-form="setup-agent"><div class="field"><label for="setup-agent-name">Configuration name</label>`
       + `<input id="setup-agent-name" class="input" data-field="setup-agent-name" maxlength="200" autocomplete="off" value="${esc(s.agentName)}"><span class="hint">Shown in the composer's agent selector.</span></div>`
       + `<div class="field"><label for="setup-model">Model</label><select id="setup-model" class="select" data-field="setup-model">`
-      + models.map(o => `<option value="${esc(o.id)}"${o.id === s.model ? ' selected' : ''}>${esc(o.label || o.id)}</option>`).join('')
-      + `</select><span class="hint">Tuning and every turn of this agent use this model through your ChatGPT subscription.</span></div></form>`;
+      + [['codex', 'ChatGPT (Codex)'], ['claude', 'Claude']].map(([p, label]) => `<optgroup label="${label}">`
+        + models.filter(o => o.provider === p).map(o => `<option value="${esc(o.id)}"${o.id === s.model ? ' selected' : ''}>${esc(o.label || o.id)}</option>`).join('') + `</optgroup>`).join('')
+      + `</select><span class="hint">Tuning and every turn of this agent use this model through its provider subscription.</span></div></form>`;
   }
   return `<div class="center-col setup-page"><h1 class="hero">Set up a game agent</h1><nav data-region="stepper" aria-label="Setup progress"></nav>`
     + `<section class="card setup-card" aria-labelledby="setup-step-title"><h2 id="setup-step-title" class="setup-title" tabindex="-1">${step}. ${esc(STEPS[step - 1])}</h2>`
@@ -216,8 +220,8 @@ function mainHTML(data, s, m, now) {
         + `<div class="btn-row"><button type="button" class="btn ${m.done[2] ? 'btn-secondary' : 'btn-primary'}" data-action="setup-prepare" data-key="s3-prepare"${op.status === 'busy' || m.check?.loading ? ' aria-disabled="true"' : ''}>${icon('monitor')}Prepare desktop…</button></div>${prep}`;
     }
     case 4:
-      return m.signedIn ? `<p class="note">${icon('check')}<span>ChatGPT is signed in.</span></p>`
-        : `<p class="note note-error">${icon('alert')}<span>ChatGPT is not signed in. Tuning and every instance need it. <a href="#/settings/account" data-key="s4-signin">Sign in under Settings › Account</a>, then come back.</span></p>`;
+      return m.signedIn ? `<p class="note">${icon('check')}<span>The provider for this model is connected.</span></p>`
+        : `<p class="note note-error">${icon('alert')}<span>The provider for this model is not connected. Tuning and every instance need it. <a href="#/settings/account" data-key="s4-signin">Connect it under Settings › Account</a>, then come back.</span></p>`;
     case 5: {
       const op = s.tune;
       const model = (data?.model_options || []).find(o => o.id === s.model)?.label || s.model;

@@ -6,7 +6,7 @@ const chipDot = tone => `<span class="dot dot-${tone}" aria-hidden="true"></span
 
 // ── Empty workspace ─────────────────────────────────────────────────────────
 export function emptyHTML(data) {
-  const signedIn = data?.ai?.status === 'ready';
+  const signedIn = data?.ai?.status === 'ready' || data?.ai_claude?.status === 'ready';
   const desktops = (data?.workers || []).length;
   const item = (ok, label, detail, fix) => `<li class="prereq">${ok === null ? icon('info', 'icon prereq-info') : ok ? icon('check', 'icon prereq-ok') : icon('alert', 'icon prereq-missing')}`
     + `<span class="prereq-text"><span>${esc(label)}</span><span class="prereq-detail">${esc(detail)}</span></span>${fix && !ok ? fix : ''}</li>`;
@@ -14,7 +14,7 @@ export function emptyHTML(data) {
     + `<h1 class="hero">Set up your first game agent</h1>`
     + `<p class="lede">ASHAD prepares a desktop, tunes instructions from your build, then runs one bot against a goal you give it.</p>`
     + `<ul class="prereqs" aria-label="Prerequisites">`
-    + item(signedIn, 'ChatGPT signed in', signedIn ? 'Ready' : 'Not signed in', `<a href="#/settings/account" data-key="fix-account">Sign in</a>`)
+    + item(signedIn, 'AI provider connected', signedIn ? 'Ready' : 'Not signed in', `<a href="#/settings/account" data-key="fix-account">Sign in</a>`)
     + item(desktops > 0, 'A worker desktop registered', desktops ? `${desktops} registered` : 'None registered', `<a href="#/settings/desktops" data-key="fix-desktops">Add a desktop</a>`)
     + item(null, 'A build manifest or folder on this computer', 'Checked during setup')
     + `</ul><a class="btn btn-primary" href="#/setup" data-key="setup-first">Set up new game agent</a></div>`;
@@ -64,7 +64,7 @@ export function composerModel(data, projectId, draft, readiness) {
 
   const blockers = [];
   if (slot.available === false) blockers.push(slot.blocked_reason || 'Another instance owns the slot.');
-  if (data?.ai?.status !== 'ready') blockers.push('ChatGPT is not signed in. Sign in under Settings › Account.');
+  if (data?.ai?.status !== 'ready' && data?.ai_claude?.status !== 'ready') blockers.push('No AI provider is connected. Connect one under Settings › Account.');
   else if (r && r.provider?.ready === false) blockers.push(r.provider.message || 'The model is not available.');
   if (slot.available !== false) {
     if (!check || check.loading) blockers.push('Checking desktop readiness…');

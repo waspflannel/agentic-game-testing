@@ -10,7 +10,11 @@ base_url themselves.
 """
 import functools
 
+import keyring
+import pytest
 from starlette.testclient import TestClient
+
+from ashad import claude_backend
 
 _init = TestClient.__init__
 
@@ -21,3 +25,14 @@ def _loopback_init(self, app, base_url="http://127.0.0.1", *args, **kwargs):
 
 
 TestClient.__init__ = _loopback_init
+
+
+def _refuse_keyring(*args, **kwargs):
+    raise AssertionError("test touched the real keyring")
+
+
+@pytest.fixture(autouse=True)
+def no_real_claude_or_keyring(monkeypatch):
+    for name in ("get_password", "set_password", "delete_password"):
+        monkeypatch.setattr(keyring, name, _refuse_keyring)
+    monkeypatch.setattr(claude_backend, "find_binary", lambda: None)

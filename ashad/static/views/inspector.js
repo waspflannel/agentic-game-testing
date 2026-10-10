@@ -124,7 +124,7 @@ function tokensHTML(run) {
     + `${row('Output', n(t.output))}${row('of which reasoning', n(t.reasoning), true)}${row('Turns', t.turns.toLocaleString())}`
     + `${row('API-equivalent estimate', t.cost === null ? '<span title="unknown">— not available</span>' : `$${t.cost.toFixed(2)}`)}</dl>`
     + (t.turns > t.counted ? `<p class="insp-dim">${t.turns - t.counted} of ${t.turns} turns recorded no token counts; totals cover the rest.</p>` : '')
-    + '<p class="insp-note">Estimate, not a charge. Billed through your ChatGPT subscription.</p>';
+    + '<p class="insp-note">Estimate, not a charge. Billed through your AI subscription.</p>';
 }
 
 const GOAL_STATUS = {

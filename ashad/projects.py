@@ -21,7 +21,7 @@ from .store import redact, uid
 MIGRATION_ID = "projects-v1"
 TERMINAL = {"ended", "completed", "failed", "terminated", "cancelled"}
 # Passive heartbeat/auth-status polling never changes ownership or durable history.
-PASSIVE_SETTINGS = ("coordinator_heartbeat", "ai_status")
+PASSIVE_SETTINGS = ("coordinator_heartbeat", "ai_status", "ai_status_claude")
 
 
 def _identifier(value, label):
@@ -233,7 +233,7 @@ class Projects:
         for table in ("records", "leases", "commands", "events"):
             query, parameters = f"SELECT * FROM {table}", ()
             if table == "records":
-                query, parameters = query + " WHERE NOT (kind='settings' AND id IN (?,?))", PASSIVE_SETTINGS
+                query, parameters = query + f" WHERE NOT (kind='settings' AND id IN ({','.join('?' * len(PASSIVE_SETTINGS))}))", PASSIVE_SETTINGS
             digest.update(table.encode() + b"\n")
             for row in connection.execute(query + " ORDER BY 1,2", parameters):
                 digest.update(json.dumps(tuple(row), ensure_ascii=False).encode() + b"\n")
@@ -300,7 +300,7 @@ class Projects:
                     "blockers": blockers, "source_token": source_token, "grouping_hash": grouping_hash,
                     "preview_token": _digest({"source": source_token, "grouping": grouping_hash}),
                     "already_applied": bool(self._marker(grouping_hash)),
-                    "backup_scope": "SQLite metadata and run evidence only; Codex home, registrations, external builds, keyring and Docker volumes are not copied. This is not a complete workspace backup."}
+                    "backup_scope": "SQLite metadata and run evidence only; Codex home, registrations, external builds, keyring, Claude token and Docker volumes are not copied. This is not a complete workspace backup."}
 
     def _verify_database(self, database, source_token):
         _safe_path(database)
@@ -382,7 +382,7 @@ class Projects:
             "build_paths": [{"id": build["id"], **{key: build[key] for key in ("manifest_path", "source_root", "catalog_path", "brief_path") if key in build}} for build in self.store.list("builds")],
             "worker_ids": [record["id"] for record in self.store.list("workers")],
             "account_ids": [record["id"] for record in self.store.list("accounts")],
-            "limitations": ["Codex home, registrations, external builds, keyring and Docker volumes are not copied.",
+            "limitations": ["Codex home, registrations, external builds, keyring, Claude token and Docker volumes are not copied.",
                             "Reauthentication and separately authorized external backups may be required."]}
         _safe_path(manifest)
         with manifest.open("x", encoding="utf-8") as saved:

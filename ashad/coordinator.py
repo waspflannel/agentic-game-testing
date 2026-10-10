@@ -10,7 +10,7 @@ from pathlib import Path
 import shutil
 import time
 import uuid
-from .models import Plan, MODEL, CONTROLLER_VERSION, ACTIVE_STATES, TERMINAL_QUEST
+from .models import Plan, MODEL, PROVIDERS, provider_of, CONTROLLER_VERSION, ACTIVE_STATES, TERMINAL_QUEST
 from .repository import Repository
 from .reports import generate_report
 from .repair_tasks import record_task, publish_pending
@@ -252,7 +252,7 @@ class Coordinator:
             scenario = self.store.require("scenarios", f"{scenario_id}:{revision}")
             status = await self.ai.validate(Plan.model_validate(scenario["plan"]).model)
             if status.get("status") != "ready" or status.get("configured") is not True:
-                raise ValueError(status.get("message") or "Verify ChatGPT sign-in and this model before starting an instance")
+                raise ValueError(status.get("message") or "Verify AI sign-in and this model before starting an instance")
             checked = validate_plan(scenario["plan"], self.store, self.credentials, check_credentials=True)
             if not checked["valid"]:
                 raise ValueError("; ".join(checked["errors"]))
@@ -289,7 +289,7 @@ class Coordinator:
                 run.update(agent_id=agent_profile["id"], agent_profile=copy.deepcopy(agent_profile))
                 if len(plan["players"]) == 1:
                     run["subgoal_plan"] = new_plan(plan["players"][0]["goal"], plan["players"][0]["id"], run_id)
-            run.update(api="codex", billing="subscription")
+            run.update(api=PROVIDERS[provider_of(plan["model"])]["pricing"]["api"], billing="subscription")
             run["source_run_id"] = scenario.get("source_run_id")
             run["rerun_kind"] = scenario.get("rerun_kind")
             run["project_id"] = run["build"].get("project_id")
@@ -1035,7 +1035,7 @@ class Coordinator:
                 self.require_instance_slot(run_id)
                 status = await self.ai.validate(run.get("model") or run["plan"].get("model", MODEL))
                 if status.get("status") != "ready":
-                    raise ValueError(status.get("message") or "Connect your ChatGPT subscription before resuming.")
+                    raise ValueError(status.get("message") or "Connect the AI provider for this model before resuming.")
                 if not self.store.reserve(run_id, [("instance", "global")]):
                     raise InstanceConflict([owner for owner in self.occupied_instances() if owner["run_id"] != run_id])
             if command == "extend":

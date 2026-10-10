@@ -16,10 +16,11 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from .ai import OpenAI, ProviderError, SUBSCRIPTION_PRICING
+from .claude_backend import ClaudeError
 from .codex_backend import CodexError
 from .coordinator import Coordinator, InstanceConflict
 from .credentials import Credentials
-from .models import Plan, MODEL, SUPPORTED_MODELS, AI_API, ACTIVE_STATES, RecalculateGoalsRequest
+from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, AI_API, ACTIVE_STATES, RecalculateGoalsRequest
 from .repository import Repository, sha256_file
 from .reports import generate_report
 from .agent_profiles import AgentProfiles
@@ -78,7 +79,7 @@ def build_record(path, name=None, build_id=None):
     return manifest
 
 
-def create_app(data_root, credentials=None, start_services=True, ai_backend=None, controller_lock=None):
+def create_app(data_root, credentials=None, start_services=True, ai_backend=None, claude_backend=None, controller_lock=None):
     store = Store(data_root)
     credentials = credentials or Credentials()
     if not store.get("settings", "main"):
@@ -93,7 +94,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         store.put("settings", {"configured": False, "status": "configuration_required", "model": MODEL,
                   "api": AI_API, "auth_method": "chatgpt", "billing": "subscription",
                   "message": "Sign in with ChatGPT in AI Settings to connect your Codex subscription."}, "ai_status")
-    ai = OpenAI(store, credentials, backend=ai_backend)
+    ai = OpenAI(store, credentials, backend=ai_backend, claude_backend=claude_backend)
     profiles = AgentProfiles(store, ai)
     coordinator = Coordinator(store, credentials, ai)
     instances = Instances(coordinator)
@@ -106,6 +107,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         try:
             if start_services:
                 await ai.validate()
+                await ai.validate(CLAUDE_MODEL)
                 tasks.append(asyncio.create_task(coordinator.loop()))
                 tasks.append(asyncio.create_task(heartbeats()))
             async with game_mcp.server.session_manager.run():
@@ -192,6 +194,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
 
     @app.exception_handler(ProviderError)
     @app.exception_handler(CodexError)
+    @app.exception_handler(ClaudeError)
     async def provider(request, exc):
         return JSONResponse({"detail": exc.message, "status": exc.status}, status_code=409 if exc.status == "configuration_required" else 502)
 
@@ -257,8 +260,8 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         # Persisted account-status rows are history, not current authentication.
         # In particular an import/restart must validate this backend's own home.
         ai_status = {**ai.status, "api": AI_API}
-        model_options = [{"id": model, "label": model.replace("gpt-", "GPT-").replace("-luna", " Luna").replace("-sol", " Sol").replace("-astra", " Astra")} for model in SUPPORTED_MODELS]
-        return {"settings": settings, "ai": ai_status, "model_options": model_options, "builds": builds, "workers": workers, "accounts": store.list("accounts"), "agents": store.list("agents"), "runs": store.list("runs"), "usage_count": usage_count(), "leases": store.leases(), "projects": store.list("projects"),
+        model_options = [dict(o) for o in MODEL_OPTIONS]
+        return {"settings": settings, "ai": ai_status, "ai_claude": ai.claude_status, "model_options": model_options, "builds": builds, "workers": workers, "accounts": store.list("accounts"), "agents": store.list("agents"), "runs": store.list("runs"), "usage_count": usage_count(), "leases": store.leases(), "projects": store.list("projects"),
                 "instance_slot": instance_slot(),
                 "workspace_import": {"interrupted": coordinator.import_interrupted(), "completed": store.get("migrations", WORKSPACE_IMPORT_ID),
                                      "readiness_verified": False}}
@@ -330,7 +333,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             status = await ai.validate(model)
             provider = {"ready": status.get("configured") is True and status.get("status") == "ready",
                         "status": status.get("status", "unknown"), "message": status.get("message", "Unknown AI connection"), "model": model}
-        except (ProviderError, CodexError) as exc:
+        except (ProviderError, CodexError, ClaudeError) as exc:
             provider = {"ready": False, "status": exc.status, "message": exc.message, "model": model}
         environments = []
         if build_validation["ready"]:
@@ -656,11 +659,11 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             raise ValueError("Wait for agent tuning to finish before changing AI sign-in.")
         runs = store.list("runs")
         if any(r["state"] in {"Queued", "Starting", "Running", "Stopping"} for r in runs):
-            raise ValueError("Pause or stop active bots and stop queued runs before changing Codex sign-in.")
+            raise ValueError("Pause or stop active bots and stop queued runs before changing AI sign-in.")
         # Goal recalculation runs inference while its run is Paused.
         if (any(r.get("goal_recalculation", {}).get("status") == "planning" for r in runs)
                 or any(not task.done() for task in coordinator.tasks.values())):
-            raise ValueError("Wait for goal recalculation and pending agent inference before changing Codex sign-in.")
+            raise ValueError("Wait for goal recalculation and pending agent inference before changing AI sign-in.")
 
     @app.post("/api/settings/codex/login")
     async def codex_login():
@@ -682,6 +685,28 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             require_ai_idle()
             await ai.backend.logout()
             return await ai.validate()
+
+    @app.get("/api/settings/claude/status")
+    async def claude_status():
+        return await ai.validate(CLAUDE_MODEL)
+
+    @app.post("/api/settings/claude/token")
+    async def claude_token_save(body: dict):
+        token = body.get("token")
+        token = token.strip() if isinstance(token, str) else ""
+        if not (token.startswith("sk-ant-oat") and 20 <= len(token) <= 512 and not any(c.isspace() for c in token)):
+            raise ValueError("Paste the token printed by `claude setup-token`.")
+        async with coordinator.lock:
+            require_ai_idle()
+            await asyncio.to_thread(ai.claude_backend.save_token, token)
+            return await ai.validate(CLAUDE_MODEL)
+
+    @app.delete("/api/settings/claude/token")
+    async def claude_token_remove():
+        async with coordinator.lock:
+            require_ai_idle()
+            await asyncio.to_thread(ai.claude_backend.clear_token)
+            return await ai.validate(CLAUDE_MODEL)
 
     @app.post("/api/builds")
     async def add_build(body: dict):

@@ -64,7 +64,7 @@ test('cached and reasoning tokens are subsets, never double-counted', async () =
   const html = inspectorRegions(run('Running', { usage: rows }), ctx([]))['insp-tokens'];
   assert.match(html, /1,800/);
   assert.match(html, /1 of 3 turns recorded no token counts/);
-  assert.match(html, /Estimate, not a charge\. Billed through your ChatGPT subscription\./);
+  assert.match(html, /Estimate, not a charge\. Billed through your AI subscription\./);
   assert.match(html, /— not available/, 'no invented dollar figure for subscription usage');
   assert.match(inspectorRegions(run('Running', { usage: [{ usage: null }] }), ctx([]))['insp-tokens'], /— unknown/);
 });

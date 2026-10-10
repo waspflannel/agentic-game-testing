@@ -1,17 +1,12 @@
-// Right inspector (spec §8.6). Pure: renders only what the run and its retained events recorded. It never probes
+// Goals, World state and Model usage panels (spec §8.6). Pure: renders only what the run and its retained events recorded. It never probes
 // the game, so there is no live-context call anywhere in this module.
 import { esc, icon, humanize } from '../core.js';
-import { observationOf, eventKind, describeEvent } from './timeline.js';
+import { observationOf } from './timeline.js';
 
 export const STALE_AFTER_S = 30;  // Fresh vs Stale, while Running.
 const NOT_OBSERVED = '<span class="insp-missing">Not observed</span>';
 const short = id => { const text = String(id || ''); return text.length > 18 ? `…${text.slice(-14)}` : text; };
 const secondsAgo = s => (s < 60 ? `${Math.floor(s)}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h`);
-
-export const SECTIONS = [['world', 'Observed world state'], ['recent', 'Recent activity'], ['tokens', 'Tokens and cost'], ['goal', 'Goal']];
-// Mounted once; the <details> elements are never re-created, so their open state survives polls and route changes.
-export const inspectorSkeleton = () => SECTIONS.map(([id, title]) => `<details class="insp-section" open data-section="${id}">`
-  + `<summary class="insp-head">${icon('chevron-right', 'icon chevron')}${title}</summary><div class="insp-body" data-region="insp-${id}"></div></details>`).join('');
 
 // Every loaded event once, oldest first: the run detail's newest page plus the timeline window.
 export function mergeEvents(...lists) {
@@ -87,14 +82,6 @@ function worldHTML(run, ctx) {
   const badges = atDecision ? [{ tone: 'muted', label: `Decision #${selectedEvent.seq}` }, ...freshness(shown, run, now).filter(b => b.label === 'Partial')] : freshness(shown, run, now);
   return `${toggle}<div class="insp-meta"><code title="${esc(observation.observation_id || '')}">${esc(short(observation.observation_id) || 'no ID')}</code>`
     + `<span>observed ${secondsAgo(age)} ago</span>${badges.map(badge).join('')}</div>${worldBody(observation)}`;
-}
-
-// The last 8 lifecycle, control and problem events; each row jumps to its timeline card.
-function recentHTML(events) {
-  const rows = events.filter(e => ['control', 'problem'].includes(eventKind(e.kind))).slice(-8).reverse();
-  if (!rows.length) return '<p class="insp-empty">No control or lifecycle events in the loaded activity.</p>';
-  return `<ul class="insp-recent">${rows.map(e => `<li><button type="button" class="insp-row" data-action="tl-jump" data-seq="${e.seq}" data-key="insp-r-${e.seq}">`
-    + `${icon(eventKind(e.kind) === 'problem' ? 'alert' : 'sliders', `icon${eventKind(e.kind) === 'problem' ? ' insp-warn' : ''}`)}<span class="insp-row-text">${esc(describeEvent(e))}</span><span class="insp-dim">#${e.seq}</span></button></li>`).join('')}</ul>`;
 }
 
 // Cached input and reasoning output are subsets of input and output; the total never adds them again.
@@ -173,6 +160,6 @@ function goalHTML(run, { events, goalOpen }) {
   return chasing + (root ? `<ul class="goal-tree goal-root">${row(root, 0)}</ul>` : '');
 }
 
-export function inspectorRegions(run, ctx) {
-  return { 'insp-world': worldHTML(run, ctx), 'insp-recent': recentHTML(ctx.events), 'insp-tokens': tokensHTML(run), 'insp-goal': goalHTML(run, ctx) };
+export function panelRegions(run, ctx) {
+  return { goals: goalHTML(run, ctx), world: worldHTML(run, ctx), usage: tokensHTML(run) };
 }

@@ -11,7 +11,9 @@ from pydantic import ValidationError
 
 from .codex_backend import CodexBackend, CodexError, TUNING_MANUAL_LIMIT
 
-from .models import MODEL, PROVIDERS, SUPPORTED_MODELS
+from .claude_backend import ClaudeBackend, ClaudeError
+from .credentials import Credentials
+from .models import CLAUDE_MODEL, MODEL, PROVIDERS, SUPPORTED_MODELS, provider_of
 from .store import uid
 
 
@@ -127,12 +129,19 @@ def action_groups(context):
 
 
 class OpenAI:
-    def __init__(self, store, credentials=None, *, backend=None):
+    def __init__(self, store, credentials=None, *, backend=None, claude_backend=None):
         self.store = store
         self.backend = backend if backend is not None else CodexBackend(store)
+        self.claude_backend = claude_backend if claude_backend is not None else ClaudeBackend(store, credentials or Credentials())
+        self.claude_status = {"configured": False, "status": "not_validated", "model": CLAUDE_MODEL,
+                              "api": "claude", "auth_method": "claude_oauth_token",
+                              "message": "Check the Claude token in Settings › Account."}
         self.status = {"configured": False, "status": "not_validated", "model": MODEL,
                        "api": "codex", "auth_method": "chatgpt",
                        "message": "Check Codex ChatGPT sign-in in AI Settings."}
+
+    def _backend(self, model):
+        return self.claude_backend if provider_of(model) == "claude" else self.backend
 
     async def decisions(self, input, questions, purpose="player", run_id=None, model=None):
         """Select fixed options through managed Codex; never use an API-key fallback."""
@@ -140,14 +149,15 @@ class OpenAI:
             run = self.store.require("runs", run_id)
             model = run.get("model") or run.get("plan", {}).get("model", MODEL)
         model = model or MODEL
+        label = PROVIDERS[provider_of(model)]["label"]
         if model not in SUPPORTED_MODELS:
-            raise ProviderError("model_unavailable", f"Unsupported Codex model: {model}.")
+            raise ProviderError("model_unavailable", f"Unsupported {label} model: {model}.")
         if not isinstance(input, str) or not isinstance(questions, list) or not questions:
-            raise ValueError("Codex selection requires text evidence and at least one question")
+            raise ValueError(f"{label} selection requires text evidence and at least one question")
         names = []
         for question in questions:
             if not isinstance(question, dict) or question.get("type") != "choice" or not isinstance(question.get("name"), str):
-                raise ValueError("Codex selection requires named choice questions")
+                raise ValueError(f"{label} selection requires named choice questions")
             names.append(question["name"])
             options = question.get("choices")
             if not isinstance(options, list) or not options or any(not isinstance(option, dict) or not isinstance(option.get("value"), str) for option in options):
@@ -167,10 +177,11 @@ class OpenAI:
 
         run = self.store.require("runs", run_id) if run_id else {}
         model = run.get("model") or run.get("plan", {}).get("model", MODEL)
+        label = PROVIDERS[provider_of(model)]["label"]
         if model not in SUPPORTED_MODELS:
-            raise ProviderError("model_unavailable", f"Unsupported Codex model: {model}.")
+            raise ProviderError("model_unavailable", f"Unsupported {label} model: {model}.")
         if not isinstance(context, dict):
-            raise ValueError("Codex planning requires a context object")
+            raise ValueError(f"{label} planning requires a context object")
         input = json.dumps(context, ensure_ascii=False)
         schema = PlanningDecision.model_json_schema()
         input_bytes = len(json.dumps({"evidence": input, "schema": schema}, ensure_ascii=False).encode("utf-8"))
@@ -179,8 +190,9 @@ class OpenAI:
         return await self._request(input, None, "planning", run_id, model, input_bytes, planning_schema=schema)
 
     async def tune_agent(self, evidence, model=MODEL, *, stage="manual"):
+        label = PROVIDERS[provider_of(model)]["label"]
         if model not in SUPPORTED_MODELS:
-            raise ProviderError("model_unavailable", f"Unsupported Codex model: {model}.")
+            raise ProviderError("model_unavailable", f"Unsupported {label} model: {model}.")
         if stage not in {"manual", "source_notes"}:
             raise ValueError("Unknown tuning stage")
         for attempt in range(2):
@@ -198,7 +210,10 @@ class OpenAI:
 
     async def _request(self, input, questions, purpose, run_id, model, input_bytes, *, tuning_stage="manual", tuning_repair=False, planning_schema=None):
         started = time.monotonic()
-        diagnostic = {"id": uid("request_"), "api": "codex", "auth_method": "chatgpt", "model": model,
+        provider = provider_of(model)
+        label, pricing = PROVIDERS[provider]["label"], PROVIDERS[provider]["pricing"]
+        backend = self._backend(model)
+        diagnostic = {"id": uid("request_"), "api": pricing["api"], "auth_method": pricing["auth_method"], "model": model,
                       "purpose": purpose, "run_id": run_id, "timestamp": time.time(),
                       "question_names": [q["name"] for q in questions] if questions else ["instructions"],
                       "input_bytes": input_bytes, "status": "requesting"}
@@ -211,42 +226,42 @@ class OpenAI:
             if run_id:
                 self.store.event(run_id, "provider_request_started", diagnostic)
             if questions:
-                data = await self.backend.select(input, questions, model=model)
+                data = await backend.select(input, questions, model=model)
             elif planning_schema is not None:
-                data = await self.backend.plan(input, planning_schema, model=model)
+                data = await backend.plan(input, planning_schema, model=model)
             else:
-                data = await self.backend.tune(input, model=model, stage=tuning_stage, repair=tuning_repair)
+                data = await backend.tune(input, model=model, stage=tuning_stage, repair=tuning_repair)
             if isinstance(data, dict):
                 diagnostic.update(thread_id=data.get("thread_id"), turn_id=data.get("turn_id"))
             if questions:
-                result = self._answers(data, questions)
+                result = self._answers(data, questions, label)
             elif planning_schema is not None:
                 from .subgoals import PlanningDecision
                 try:
                     result = PlanningDecision.model_validate(data.get("answers") if isinstance(data, dict) else None).model_dump()
                 except ValidationError as exc:
-                    raise ProviderError("invalid_plan", "Codex returned invalid subgoal planning JSON; no action was executed.") from exc
+                    raise ProviderError("invalid_plan", f"{label} returned invalid subgoal planning JSON; no action was executed.") from exc
             else:
                 answers = data.get("answers") if isinstance(data, dict) else None
                 result = answers.get("instructions") if isinstance(answers, dict) else None
                 limit = 8000 if tuning_stage == "source_notes" else TUNING_MANUAL_LIMIT
-                label = "source notes" if tuning_stage == "source_notes" else "controls manual"
+                kind = "source notes" if tuning_stage == "source_notes" else "controls manual"
                 size = len(result.strip().encode("utf-8")) if isinstance(result, str) else None
                 diagnostic.update(output_bytes=size, output_limit_bytes=limit)
                 if not isinstance(result, str) or set(answers) != {"instructions"}:
-                    raise ProviderError("invalid_tuning", f"Codex returned invalid {label} JSON: expected one instructions string; no agent was saved.")
+                    raise ProviderError("invalid_tuning", f"{label} returned invalid {kind} JSON: expected one instructions string; no agent was saved.")
                 result = result.strip()
                 if size < 200:
-                    raise ProviderError("invalid_tuning", f"Codex returned incomplete {label} ({size} UTF-8 bytes; minimum 200); no agent was saved.")
+                    raise ProviderError("invalid_tuning", f"{label} returned incomplete {kind} ({size} UTF-8 bytes; minimum 200); no agent was saved.")
                 if size > limit:
                     retry = " after one compression retry" if tuning_repair else ""
-                    raise ProviderError("invalid_tuning", f"Codex {label} exceeded the {limit}-byte limit ({size} UTF-8 bytes){retry}; no agent was saved.", draft=result)
+                    raise ProviderError("invalid_tuning", f"{label} {kind} exceeded the {limit}-byte limit ({size} UTF-8 bytes){retry}; no agent was saved.", draft=result)
             diagnostic["status"] = "completed"
             return result
         except asyncio.CancelledError:
             diagnostic["status"] = "request_cancelled"
             raise
-        except CodexError as exc:
+        except (CodexError, ClaudeError) as exc:
             data = exc.selection
             if isinstance(data, dict):
                 diagnostic.update(thread_id=data.get("thread_id"), turn_id=data.get("turn_id"))
@@ -256,7 +271,7 @@ class OpenAI:
             diagnostic.update(status=exc.status, message=exc.message)
             raise
         except Exception as exc:
-            message = f"Codex request could not complete ({type(exc).__name__}). Inspect the local Codex connection before resuming."
+            message = f"{label} request could not complete ({type(exc).__name__}). Inspect the local {label} connection before resuming."
             diagnostic.update(status="provider_failure", message=message)
             raise ProviderError("provider_failure", message) from exc
         finally:
@@ -267,42 +282,50 @@ class OpenAI:
                 self.store.event(run_id, "provider_request_finished", diagnostic)
 
     @staticmethod
-    def _answers(data, questions):
+    def _answers(data, questions, label="Codex"):
         answers = data.get("answers") if isinstance(data, dict) else None
         if not isinstance(answers, dict) or set(answers) != {question["name"] for question in questions}:
-            raise ProviderError("invalid_decision", "Codex returned missing or unexpected selection answers; no action was executed.")
+            raise ProviderError("invalid_decision", f"{label} returned missing or unexpected selection answers; no action was executed.")
         result = {}
         for question in questions:
             selected = answers[question["name"]]
             if not isinstance(selected, str) or selected not in {option["value"] for option in question["choices"]}:
-                raise ProviderError("invalid_decision", "Codex returned an unsupported selection; no action was executed.")
+                raise ProviderError("invalid_decision", f"{label} returned an unsupported selection; no action was executed.")
             result[question["name"]] = {"choice": selected}
         return result
 
     def _record_usage(self, data, purpose, run_id, diagnostic):
         usage = data.get("usage") if isinstance(data, dict) else None
-        record = {"id": uid("usage_"), "purpose": purpose, "run_id": run_id, "api": "codex",
-                  "auth_method": "chatgpt", "billing": "subscription", "model": diagnostic["model"], "requested_model": diagnostic["model"],
+        pricing = PROVIDERS[provider_of(diagnostic["model"])]["pricing"]
+        record = {"id": uid("usage_"), "purpose": purpose, "run_id": run_id, "api": pricing["api"],
+                  "auth_method": pricing["auth_method"], "billing": "subscription", "model": diagnostic["model"], "requested_model": diagnostic["model"],
                   "timestamp": time.time(), "latency_seconds": diagnostic["latency_seconds"],
                   "usage": usage if isinstance(usage, dict) else None, "estimated_cost_usd": None,
                   "usage_scope": data.get("usage_scope") if isinstance(data, dict) else None,
-                  "pricing_basis": SUBSCRIPTION_PRICING, "thread_id": diagnostic.get("thread_id"),
+                  "pricing_basis": pricing, "thread_id": diagnostic.get("thread_id"),
                   "turn_id": diagnostic.get("turn_id"), "status": diagnostic["status"]}
         self.store.put("usage", record)
         if run_id:
             self.store.event(run_id, "inference_usage", record)
 
     async def validate(self, model=MODEL):
+        provider = provider_of(model)
+        pricing = PROVIDERS[provider]["pricing"]
         try:
-            self.status = await self.backend.status(model)
-        except CodexError as exc:
-            self.status = {"configured": False, "status": exc.status, "api": "codex", "auth_method": "chatgpt",
-                           "model": model, "available_models": [], "message": exc.message}
-        self.store.put("settings", self.status, "ai_status")
-        return self.status
+            status = await self._backend(model).status(model)
+        except (CodexError, ClaudeError) as exc:
+            status = {"configured": False, "status": exc.status, "api": pricing["api"], "auth_method": pricing["auth_method"],
+                      "model": model, "available_models": [], "message": exc.message}
+        if provider == "claude":
+            self.claude_status = status
+        else:
+            self.status = status
+        self.store.put("settings", status, PROVIDERS[provider]["status_key"])
+        return status
 
     async def close(self):
         await self.backend.close()
+        await self.claude_backend.close()
 
 
     async def player_turn(self, context, repo, dispatch, can_continue, run_id, effort=None):

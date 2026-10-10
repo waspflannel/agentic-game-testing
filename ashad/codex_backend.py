@@ -9,7 +9,7 @@ from openai_codex import AsyncCodex, ApprovalMode, CodexConfig, Sandbox
 from openai_codex.types import ReasoningEffort
 from openai_codex.generated.v2_all import ThreadUnsubscribeResponse
 
-from .models import MODEL, SUPPORTED_MODELS
+from .models import MODEL, CODEX_MODELS
 from .prompts import TUNING_MANUAL_LIMIT, TUNING_PROMPT_VERSION, planning_request, selection_request, tuning_request
 from .store import redact
 
@@ -71,7 +71,7 @@ class CodexBackend:
         result = {"configured": False, "status": "configuration_required", "model": model, "available_models": [],
             "api": "codex", "auth_method": "chatgpt", "billing": "subscription",
             "message": "Sign in with ChatGPT in AI Settings to use your Codex subscription."}
-        if model not in SUPPORTED_MODELS:
+        if model not in CODEX_MODELS:
             result.update(status="model_unavailable", message=f"Unsupported Codex model: {model}.")
             return result
         self.ready_until.pop(model, None)
@@ -93,7 +93,7 @@ class CodexBackend:
                 result.update(configured=True, plan_type=str(getattr(account.plan_type, "value", account.plan_type)))
                 models = await client.models()
                 available = {item.model for item in models.data}
-                result["available_models"] = [name for name in SUPPORTED_MODELS if name in available]
+                result["available_models"] = [name for name in CODEX_MODELS if name in available]
                 if model not in available:
                     result.update(status="model_unavailable", message=f"Your Codex account does not list {model}. No substitute model or API billing was used.")
                     return result

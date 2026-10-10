@@ -104,7 +104,7 @@ class AgentProfiles:
             name = _name(name, "Agent configuration name")
         payload = {"build_id": build_id, "model": model, "name": name, "project_id": project_id}
         if model not in SUPPORTED_MODELS:
-            raise ValueError("Select a supported Codex model.")
+            raise ValueError("Select a supported model.")
         previous = self.store.command("tuning", request_id) if request_id else None
         if previous:
             if previous["request"] != payload:

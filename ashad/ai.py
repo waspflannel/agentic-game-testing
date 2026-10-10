@@ -11,12 +11,11 @@ from pydantic import ValidationError
 
 from .codex_backend import CodexBackend, CodexError, TUNING_MANUAL_LIMIT
 
-from .models import MODEL, SUPPORTED_MODELS
+from .models import MODEL, PROVIDERS, SUPPORTED_MODELS
 from .store import uid
 
 
-SUBSCRIPTION_PRICING = {"api": "codex", "billing": "subscription", "auth_method": "chatgpt",
-                        "limitations": "Codex uses the signed-in ChatGPT subscription limits; per-request dollar cost is unavailable."}
+SUBSCRIPTION_PRICING = PROVIDERS["codex"]["pricing"]
 
 
 class ProviderError(Exception):

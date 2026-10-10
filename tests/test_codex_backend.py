@@ -9,7 +9,7 @@ import pytest
 
 import ashad.codex_backend as module
 from ashad.codex_backend import CodexBackend, CodexError
-from ashad.models import MODEL, SUPPORTED_MODELS, Plan
+from ashad.models import MODEL, CODEX_MODELS, Plan
 from ashad.store import Store
 from test_controller import environment  # noqa: F401
 
@@ -139,11 +139,11 @@ async def test_selection_uses_schema_and_deny_all_with_observed_choices(store):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", SUPPORTED_MODELS)
+@pytest.mark.parametrize("model", CODEX_MODELS)
 async def test_planning_uses_contract_schema_grounding_and_same_no_tools_runtime(store, model):
     from ashad.subgoals import PlanningDecision
     from test_decisions import planning_answers
-    client = Client(models=SUPPORTED_MODELS)
+    client = Client(models=CODEX_MODELS)
     response = await client.handle.run()
     response.final_response = json.dumps(planning_answers()["answers"])
     client.handle.run = AsyncMock(return_value=response)
@@ -417,13 +417,13 @@ async def test_resume_while_signed_out_keeps_inputs_held_and_history_unchanged(e
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", SUPPORTED_MODELS)
+@pytest.mark.parametrize("model", CODEX_MODELS)
 async def test_selected_model_is_checked_and_sent_to_both_sdk_stages(store, model):
-    client = Client(models=(*SUPPORTED_MODELS, "unrelated-model"))
+    client = Client(models=(*CODEX_MODELS, "unrelated-model"))
     backend = CodexBackend(store, client=client)
     status = await backend.status(model)
     assert status["status"] == "ready" and status["model"] == model
-    assert status["available_models"] == list(SUPPORTED_MODELS)
+    assert status["available_models"] == list(CODEX_MODELS)
     await backend.select("game evidence", QUESTIONS, model=model)
     assert client.thread_start.call_args.kwargs["model"] == model
     assert client.thread.turn.call_args.kwargs["model"] == model
@@ -460,9 +460,9 @@ async def test_completed_invalid_json_keeps_total_usage(store, operation):
 
 def test_plan_defaults_to_luna_and_rejects_unknown_models():
     assert Plan().model == "gpt-6-luna"
-    for model in SUPPORTED_MODELS:
+    for model in CODEX_MODELS:
         assert Plan(model=model).model == model
-    with pytest.raises(ValueError, match="supported Codex model"):
+    with pytest.raises(ValueError, match="supported model"):
         Plan(model="unapproved-model")
 
 

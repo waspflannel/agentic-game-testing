@@ -1,5 +1,5 @@
 // Empty workspace and the new-instance composer (spec §8.1, §8.2). Markup and the start flow are pure; app.js owns the DOM.
-import { esc, icon, href, newId, ApiError } from '../core.js';
+import { esc, icon, href, newId, modelLabel, ApiError } from '../core.js';
 
 const enc = encodeURIComponent;
 const chipDot = tone => `<span class="dot dot-${tone}" aria-hidden="true"></span>`;
@@ -45,7 +45,6 @@ export function composerModel(data, projectId, draft, readiness) {
   const agents = projectAgents(data, projectId);
   const agent = agents.find(a => a.id === draft.agentId) || agents[0];
   const build = agent && (data.builds || []).find(b => b.id === agent.build_id);
-  const modelLabel = id => (data?.model_options || []).find(m => m.id === id)?.label || id || 'Unknown model';
   const check = agent && readiness?.key === readinessKey(projectId, agent) ? readiness : null;
   const r = check && !check.loading && !check.error ? check.result : null;
   const slot = data?.instance_slot || {};
@@ -76,8 +75,8 @@ export function composerModel(data, projectId, draft, readiness) {
   return {
     project, agents, agent, build, steam, desktop, blockers,
     projects: data?.projects || [],
-    agentOptions: agents.map(a => ({ id: a.id, label: a.name || a.id, title: `${a.name || a.id} · ${modelLabel(a.model)}` })),
-    summary: agent ? `${modelLabel(agent.model)} · build ${build?.name || agent.build_id} · Fresh world` : '',
+    agentOptions: agents.map(a => ({ id: a.id, label: a.name || a.id, title: `${a.name || a.id} · ${modelLabel(data, a.model)}` })),
+    summary: agent ? `${modelLabel(data, agent.model)} · build ${build?.name || agent.build_id} · Fresh world` : '',
     canStart: !blockers.length && !draft.busy,
   };
 }
@@ -168,7 +167,8 @@ export async function startInstance(draft, projectId, api) {
     const prior = await checkStart(draft, api);
     if (prior.kind === 'accepted') { draft.requestId = newId(); draft.sent = null; return { kind: 'earlier-accepted', run: prior.run }; }
     if (prior.kind === 'in-progress') return prior;
-    draft.requestId = newId();  // The earlier request never launched; this payload gets its own ID.
+    if (prior.unanswered) return prior;  // The earlier start may have been accepted; keep its ID and check again on retry.
+    draft.requestId = newId();  // ASHAD said the earlier request never launched; this payload gets its own ID.
   }
   draft.requestId ||= newId();
   draft.sent = signature;
@@ -188,5 +188,5 @@ export async function checkStart(draft, api) {
   try { prior = await api(`/api/instances/requests/${enc(draft.requestId)}`); } catch { prior = null; }
   if (prior?.status === 'accepted' && prior.run?.id) return { kind: 'accepted', run: prior.run };
   if (prior?.status === 'in_progress') return { kind: 'in-progress' };
-  return { kind: 'not-started', message: prior ? 'Nothing was launched. Retry sends the same request.' : 'ASHAD did not answer. Retry checks the same request first.' };
+  return { kind: 'not-started', unanswered: !prior, message: prior ? 'Nothing was launched. Retry sends the same request.' : 'ASHAD did not answer. Retry checks the same request first.' };
 }

@@ -1,5 +1,5 @@
 // Setup flow (spec §8.4). Model, markup and the tuning flow are pure; app.js owns the DOM, the chooser and I/O.
-import { esc, icon, href, ago, newOp, submitOnce } from '../core.js';
+import { esc, icon, href, since, modelLabel, newOp, submitOnce } from '../core.js';
 
 const enc = encodeURIComponent;
 export const STEPS = ['Project', 'Build', 'Desktop', 'Agent and model', 'Tuning', 'Instructions'];
@@ -127,14 +127,13 @@ export function tuningProgressHTML(op, now) {
 }
 
 // ── Markup ──────────────────────────────────────────────────────────────────
-const since = (t, now) => { const a = ago(t, now); return a === 'now' ? 'just now' : `${a} ago`; };
 export const elapsed = seconds => { const s = Math.max(0, Math.floor(seconds)); return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
-const note = (kind, text, extra = '') => `<p class="note${kind ? ` note-${kind}` : ''}"${kind === 'error' ? ' data-announce' : ''}>${icon(kind === 'error' ? 'alert' : 'info')}<span>${text}</span>${extra}</p>`;
+const noteHTML = (kind, text, extra = '') => `<p class="note${kind ? ` note-${kind}` : ''}"${kind === 'error' ? ' data-announce' : ''}>${icon(kind === 'error' ? 'alert' : 'info')}<span>${text}</span>${extra}</p>`;
 
 // Desktop readiness checklist, shared with the project overview. record: { loading, result, error, at }.
 export function readinessHTML(record, now) {
   if (!record || record.loading) return `<p class="note">${icon('loader', 'icon spin')}<span>Checking this computer. This probes each desktop and can take a few seconds.</span></p>`;
-  if (record.error) return note('error', `Readiness check failed: ${esc(record.error)}`);
+  if (record.error) return noteHTML('error', `Readiness check failed: ${esc(record.error)}`);
   const r = record.result;
   const row = (ok, label, detail) => `<li class="check-row">${ok === true ? icon('check', 'icon check-ok') : ok === false ? icon('alert', 'icon check-bad') : icon('info', 'icon check-info')}`
     + `<span class="check-text"><span>${esc(label)}</span><span class="check-detail">${esc(detail)}</span></span></li>`;
@@ -194,7 +193,7 @@ function mainHTML(data, s, m, now) {
       const op = s.project;
       const others = (data?.projects || []).map(p => `<li><a href="#/setup?project=${enc(p.id)}" data-key="sp-${esc(p.id)}">${esc(p.name || p.id)}</a></li>`).join('');
       return (op.status === 'busy' ? `<p class="note">${icon('loader', 'icon spin')}<span>Creating the project…</span></p>`
-        : op.error ? note('error', esc(op.error), op.status === 'lost' ? ' <button type="button" class="btn btn-secondary btn-sm" data-action="setup-create" data-key="sp-retry">Retry</button>' : '') : '')
+        : op.error ? noteHTML('error', esc(op.error), op.status === 'lost' ? ' <button type="button" class="btn btn-secondary btn-sm" data-action="setup-create" data-key="sp-retry">Retry</button>' : '') : '')
         + (others ? `<div class="setup-aside"><p class="hint">Or add an agent configuration to an existing project:</p><ul class="link-list">${others}</ul></div>` : '');
     }
     case 2: {
@@ -202,18 +201,18 @@ function mainHTML(data, s, m, now) {
         + `<span class="radio-text"><span>${esc(b.name || b.id)}</span><span class="mono check-detail" title="${esc(b.manifest_sha256 || '')}">${esc(b.source_revision ? String(b.source_revision).slice(0, 40) : b.id)}</span></span></label></li>`).join('');
       const chooser = s.chooser;
       const catalog = !m.build ? '' : !s.catalog || s.catalog.buildId !== m.build.id || s.catalog.loading ? `<p class="note">${icon('loader', 'icon spin')}<span>Reading the build catalog…</span></p>`
-        : s.catalog.error ? note('', `Catalog unavailable: ${esc(s.catalog.error)}`)
+        : s.catalog.error ? noteHTML('', `Catalog unavailable: ${esc(s.catalog.error)}`)
         : `<p class="note">${icon('list-checks')}<span>Catalog: ${esc(catalogSummary(s.catalog.result) || 'no goals or items listed')}</span></p>`;
       return (list ? `<ul class="radio-list" aria-label="Builds in this project">${list}</ul>` : `<p class="lede">No build is registered for this project yet.</p>`)
         + `<div class="btn-row"><button type="button" class="btn btn-secondary" data-action="setup-add-build" data-kind="manifest" data-key="sb-manifest"${chooser.busy ? ' aria-disabled="true"' : ''}>${icon('file-text')}Choose manifest.json…</button>`
         + `<button type="button" class="btn btn-secondary" data-action="setup-add-build" data-kind="folder" data-key="sb-folder"${chooser.busy ? ' aria-disabled="true"' : ''}>${icon('folder-open')}Choose build folder…</button></div>`
-        + (chooser.busy ? `<p class="note">${icon('loader', 'icon spin')}<span>Registering the build…</span></p>` : chooser.error ? note('error', esc(chooser.error)) : '')
+        + (chooser.busy ? `<p class="note">${icon('loader', 'icon spin')}<span>Registering the build…</span></p>` : chooser.error ? noteHTML('error', esc(chooser.error)) : '')
         + catalog;
     }
     case 3: {
       const op = s.prepare;
       const prep = op.status === 'busy' ? `<p class="note">${icon('loader', 'icon spin')}<span>Preparing the desktop. This can take several minutes; you can leave this page and it keeps going.</span></p>`
-        : op.error ? note('error', esc(op.error)) : '';
+        : op.error ? noteHTML('error', esc(op.error)) : '';
       return `<div class="row-between"><p class="hint">Probes run when this step opens and when you re-check, never in the background.</p>`
         + `<button type="button" class="btn btn-ghost btn-sm" data-action="setup-recheck" data-key="s3-recheck"${m.check?.loading ? ' aria-disabled="true"' : ''}>${icon('refresh')}Re-check</button></div>`
         + readinessHTML(m.check, now)
@@ -224,17 +223,17 @@ function mainHTML(data, s, m, now) {
         : `<p class="note note-error">${icon('alert')}<span>The provider for this model is not connected. Tuning and every instance need it. <a href="#/settings/account" data-key="s4-signin">Connect it under Settings › Account</a>, then come back.</span></p>`;
     case 5: {
       const op = s.tune;
-      const model = (data?.model_options || []).find(o => o.id === s.model)?.label || s.model;
+      const model = modelLabel(data, s.model);
       const summary = `<dl class="kv"><dt>Configuration</dt><dd>${esc(s.agentName.trim())}</dd><dt>Model</dt><dd>${esc(model)}</dd><dt>Build</dt><dd>${esc(m.build?.name || s.buildId)}</dd></dl>`;
       const about = `<p class="hint">Tuning reads the build's source and writes a controls manual for the agent. This prepares instructions, not model weights.</p>`;
       if (op.waiting) return summary + `<p class="note">${icon('clock')}<span>Another agent is being tuned. Only one tuning runs at a time, so this one starts when that finishes.</span>`
         + ` <button type="button" class="btn btn-secondary btn-sm" data-action="setup-stop-waiting" data-key="s5-stop">Stop waiting</button></p>`;
       if (op.status === 'busy') return summary + `<div class="tuning">${tuningProgressHTML(op, now)}<p class="hint">You can leave this page; tuning keeps going.</p></div>` + about;
-      return summary + about + (op.error ? note('error', esc(op.error)) : '');
+      return summary + about + (op.error ? noteHTML('error', esc(op.error)) : '');
     }
     case 6: {
       const a = s.agent || {};
-      const model = (data?.model_options || []).find(o => o.id === a.model)?.label || a.model;
+      const model = modelLabel(data, a.model);
       return `<dl class="kv"><dt>Configuration</dt><dd>${esc(a.name || a.id)}</dd><dt>Model</dt><dd>${esc(model || 'Unknown')}</dd><dt>Build</dt><dd>${esc(m.build?.name || a.build_id)}</dd>`
         + `<dt>Tuned</dt><dd>${a.created_at ? esc(new Date(a.created_at * 1000).toLocaleString()) : 'Not recorded'}</dd></dl>`
         + `<pre class="instructions" tabindex="0" aria-label="Saved instructions">${esc(a.instructions || 'No instructions were returned.')}</pre>`;

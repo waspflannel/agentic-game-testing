@@ -213,6 +213,13 @@ test('Claude token buttons are disabled with the blocker reason', async () => {
   assert.doesNotMatch(open.match(/<button[^>]*data-action="claude-token-save"[^>]*>/)[0], /aria-disabled/);
 });
 
+test('a blank storage reserve is an error and never an error string in the payload', async () => {
+  const { limitsPayload } = await settings();
+  const { errors, body } = limitsPayload({ duration: '10', spend: '5', reserve: '' });
+  assert.equal(errors.reserve, 'Enter a reserve, or 0 for none.');
+  assert.equal(body.storage_reserve_bytes, null);
+});
+
 test('Claude token clicks reach the token action and Enter in the form saves instead of navigating', async () => {
   const app = fs.readFileSync(path.join(__dirname, '../ashad/static/app.js'), 'utf8');
   const route = new RegExp(app.match(/else if \(\/(.+?)\/\.test\(action\)\) \{\n    settingsAction/)[1]);

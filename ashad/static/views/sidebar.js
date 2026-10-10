@@ -60,7 +60,6 @@ function groupBlock(g, isProject) {
     body = g.threads.map(threadRow).join('');
     if (g.total > THREADS_SHOWN) body += `<li><button type="button" class="row row-more" data-action="show-all" data-id="${esc(g.id)}" data-key="sa:${esc(g.id)}">${g.showAll ? 'Show fewer' : `Show all (${g.total})`}</button></li>`;
     if (isProject) body += `<li><a class="row row-new" href="${href('p', g.id, 'new')}" data-key="nn:${esc(g.id)}">${icon('plus')}<span class="row-label">New instance</span></a></li>`;
-    if (!g.total && !isProject) body = '';
     body = `<ul class="threads">${body}</ul>`;
   }
   return `<li class="group"><div class="row group-row${g.current ? ' is-current' : ''}">`

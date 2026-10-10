@@ -1,5 +1,5 @@
 // Usage page (spec §8.7). Fetched on view open and Refresh only; the model and markup are pure.
-import { esc, icon, href, ago, humanize } from '../core.js';
+import { esc, icon, href, since, humanize } from '../core.js';
 
 export const PAGE_ROWS = 200;
 export const RANGES = [['7d', '7 days', 7], ['30d', '30 days', 30], ['all', 'All time', null]];
@@ -43,7 +43,7 @@ export const usageSkeleton = () => `<div class="page usage-page"><div class="pag
 
 // usage: { loading, rows, error, at } or null before the first fetch.
 export function usageRegions(usage, ui, modelLabels, now = Date.now() / 1000) {
-  const refresh = `<span class="hint">${usage?.at ? `Fetched ${ago(usage.at, now) === 'now' ? 'just now' : `${ago(usage.at, now)} ago`}` : ''}</span>`
+  const refresh = `<span class="hint">${usage?.at ? `Fetched ${since(usage.at, now)}` : ''}</span>`
     + `<button type="button" class="btn btn-secondary" data-action="usage-refresh" data-key="u-refresh"${usage?.loading ? ' aria-busy="true" aria-disabled="true"' : ''}>${icon(usage?.loading ? 'loader' : 'refresh', usage?.loading ? 'icon spin' : 'icon')}Refresh</button>`;
   if (!usage?.rows) {
     const body = usage?.error ? `<p class="note note-error" data-announce>${icon('alert')}<span>Usage is unavailable: ${esc(usage.error)}. Refresh to try again.</span></p>`

@@ -1,5 +1,5 @@
 // Project overview (spec §8.3). Model and markup are pure; app.js owns the DOM, the chooser and I/O.
-import { esc, icon, href, ago, newOp, runGoal, runTime, runStatus } from '../core.js';
+import { esc, icon, href, ago, since, modelLabel, newOp, runGoal, runTime, runStatus } from '../core.js';
 import { readinessHTML, projectBuilds, tuningProgressHTML } from './setup.js';
 
 const enc = encodeURIComponent;
@@ -24,7 +24,6 @@ export function overviewModel(data, ov, now = Date.now() / 1000) {
   const builds = projectBuilds(data, ov.projectId);
   const build = builds.find(b => b.id === ov.buildId) || builds[0] || null;
   const buildName = id => builds.find(b => b.id === id)?.name || id;
-  const modelLabel = id => (data?.model_options || []).find(m => m.id === id)?.label || id || 'Unknown model';
   const agents = (data?.agents || []).filter(a => (a.project_id || builds.find(b => b.id === a.build_id)?.project_id) === ov.projectId)
     .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
   const owners = new Map((data?.instance_slot?.owners || []).map(o => [o.run_id, o]));
@@ -32,7 +31,7 @@ export function overviewModel(data, ov, now = Date.now() / 1000) {
   return {
     project, builds, build, agents, total: runs.length,
     recent: runs.slice(0, RECENT).map(r => ({ id: r.id, goal: runGoal(r), age: ago(runTime(r), now), status: runStatus(r, owners.get(r.id)), state: r.state, reason: r.ending_reason, duration: duration(r) })),
-    buildName, modelLabel,
+    buildName, modelLabel: id => modelLabel(data, id),
   };
 }
 
@@ -70,7 +69,7 @@ export function overviewRegions(m, ov, now = Date.now() / 1000) {
       : op.status === 'busy' ? `<div class="tuning">${tuningProgressHTML(op, now)}</div>`
       : op.status === 'done' ? note('', `Retuned as ${op.value?.name || op.value?.id || 'a new configuration'}.`) : op.error ? note('error', op.error) : '';
     return `<li class="list-row"><div class="list-main"><span class="list-title">${esc(a.name || a.id)}</span>`
-      + `<span class="check-detail">${esc(m.modelLabel(a.model))} · build ${esc(m.buildName(a.build_id))} · tuned ${a.created_at ? esc(ago(a.created_at, now) === 'now' ? 'just now' : `${ago(a.created_at, now)} ago`) : 'at an unrecorded time'}</span>${status}</div>`
+      + `<span class="check-detail">${esc(m.modelLabel(a.model))} · build ${esc(m.buildName(a.build_id))} · tuned ${a.created_at ? esc(since(a.created_at, now)) : 'at an unrecorded time'}</span>${status}</div>`
       + `<div class="list-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="ov-instructions" data-id="${esc(a.id)}" data-key="ov-ins-${esc(a.id)}">View instructions</button>`
       + `<button type="button" class="btn btn-ghost btn-sm" data-action="ov-retune" data-id="${esc(a.id)}" data-key="ov-tune-${esc(a.id)}"${busy ? ' aria-busy="true" aria-disabled="true"' : ''}>Retune…</button>`
       + `<a class="btn btn-ghost btn-sm" href="${href('p', pid, 'new')}?agent=${enc(a.id)}" data-key="ov-run-${esc(a.id)}">New instance</a></div></li>`;

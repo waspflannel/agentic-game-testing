@@ -58,9 +58,8 @@ export function outcomeLabel(result) {
 
 // The structured observation an event retained, or null. Shared with the inspector.
 export const observationOf = event => event?.payload?.full_observation || event?.payload?.context?.observation || null;
-export const observationId = event => observationOf(event)?.observation_id || event?.payload?.observation_id || event?.payload?.source_observation || null;
 const count = value => (Array.isArray(value) ? value.length : null);
-const short = id => { const text = String(id || ''); return text.length > 18 ? `…${text.slice(-14)}` : text; };
+export const short = id => { const text = String(id || ''); return text.length > 18 ? `…${text.slice(-14)}` : text; };
 const tokens = n => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 const clip = (text, n = 160) => { const s = String(text ?? ''); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 const args = value => clip(Object.entries(value || {}).filter(([k]) => k !== 'reason').map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', '), 120);
@@ -99,8 +98,6 @@ function summary(event, kind) {
     default: return { text: humanize(event.kind) || 'Unnamed event' };
   }
 }
-
-export const describeEvent = event => summary(event, eventKind(event.kind)).text;
 
 // Adjacent model events collapse into one "Model turn" row.
 function modelSummary(events) {

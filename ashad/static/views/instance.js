@@ -1,5 +1,5 @@
 // Instance thread: header, tabs, camera and control bar (spec §8.5 A–C, §9). Markup and state are pure; app.js owns I/O.
-import { esc, icon, newId, runGoal, humanize } from '../core.js';
+import { esc, icon, newId, runGoal, humanize, badge, modelLabel } from '../core.js';
 
 const enc = encodeURIComponent;
 const LIVE_STATES = new Set(['Starting', 'Running', 'Paused', 'Investigating', 'Stopping']);  // /live serves only these.
@@ -165,19 +165,20 @@ const ACTIONS = {
   recalculate: { label: 'Recalculate goals', icon: 'refresh' },
   extend: { label: 'Extend investigation', icon: 'clock' },
   flag: { label: 'Flag issue', icon: 'flag' },
+  stop: { label: 'Stop', icon: 'stop', cls: 'btn-danger' },
 };
 
 export function threadRegions(run, ctx) {
   const { status, owner, data, ui, pending, error, cameraStatus, player, tab } = ctx;
   const goal = runGoal(run);
   const agent = (data?.agents || []).find(a => a.id === run.agent_id) || run.agent_profile;
-  const model = (data?.model_options || []).find(m => m.id === run.model)?.label || run.model;
+  const model = run.model && modelLabel(data, run.model);
   const build = run.build?.name || run.plan?.build_id;
   const transport = { enet: 'ENet', steam: 'Steam' }[run.plan?.transport?.mode];
   const chips = [agent?.name, model, build && `build ${build}`, transport].filter(Boolean).map(text => `<span class="chip" title="${esc(text)}"><span class="chip-text">${esc(text)}</span></span>`).join('');
   const head = `<button type="button" class="thread-goal" popovertarget="goal-full" data-key="t-goal" title="Show the full goal">${esc(goal)}</button>`
     + `<div id="goal-full" class="popover goal-pop" popover>${esc(goal)}</div>`
-    + `<span class="badge badge-${status.badge.tone}"><span class="dot dot-${status.badge.tone}" aria-hidden="true"></span>${esc(status.badge.label)}</span>`
+    + badge(status.badge)
     + `<div class="thread-meta">${chips}</div>`
     + (chips ? `<button type="button" class="icon-btn meta-more" popovertarget="meta-pop" data-key="t-meta" aria-label="Instance details" title="Instance details">${icon('ellipsis')}</button>`
       + `<div id="meta-pop" class="popover menu meta-pop" popover>${chips}</div>` : '');
@@ -239,9 +240,7 @@ function controlsHTML(status, pending, error) {
     ? `<button type="button" class="icon-btn" popovertarget="menu-more" data-key="ctl-more" aria-label="More actions" title="More actions"${menuBusy ? ' aria-busy="true"' : ''}>${icon(menuBusy ? 'loader' : 'ellipsis', menuBusy ? 'icon spin' : 'icon')}</button>`
       + `<div id="menu-more" class="popover menu" popover>${status.menu.map(action => `<button type="button" class="menu-item" data-action="ctl" data-ctl="${action}" data-key="ctl-${action}"${pending.has(action) ? ' aria-disabled="true"' : ''}>${icon(ACTIONS[action].icon)}${ACTIONS[action].label}</button>`).join('')}</div>`
     : '';
-  const stop = status.stop
-    ? `<button type="button" class="btn btn-danger" data-action="ctl" data-ctl="stop" data-key="ctl-stop"${pending.has('stop') ? ' aria-busy="true" aria-disabled="true"' : ''}>${icon(pending.has('stop') ? 'loader' : 'stop', pending.has('stop') ? 'icon spin' : 'icon')}Stop</button>`
-    : '';
+  const stop = status.stop ? button('stop', pending) : '';
   const note = status.note ? `<span class="control-note">${icon('loader', 'icon spin')}${esc(status.note)}</span>` : '';
   const bar = `<div class="control-bar" role="toolbar" aria-label="Instance controls">${left}${note}<span class="control-right">${menu}${stop}</span></div>`;
   return bar + (error ? `<p class="note note-error control-error" data-announce>${icon('alert')}<span>${esc(error)} Try again to retry the same command.</span></p>` : '');

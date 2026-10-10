@@ -156,7 +156,6 @@ button.chip:hover { color: var(--text); background: var(--surface-3); }
 .card h3 { font-size: var(--fs-meta); font-weight: 600; color: var(--text-2); margin-bottom: 10px; }
 .field { display: grid; gap: 6px; }
 .field label { font-size: var(--fs-meta); color: var(--text-2); }
-.field .hint { font-size: var(--fs-meta); color: var(--text-3); }
 .field .error { font-size: var(--fs-meta); color: var(--danger); }
 .input, .select, .textarea {
   width: 100%; min-height: 32px; padding: 6px 10px;
@@ -353,7 +352,6 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .settings-link.is-current, .settings-link:hover { color: var(--text); }
 .settings-body { flex: 1; min-width: 0; display: grid; gap: 16px; }
 .settings-card { display: grid; gap: 14px; }
-.settings-form { gap: 14px; }
 .card-title { font-size: var(--fs-title); font-weight: 600; }
 .settings-actions { display: grid; gap: 10px; }
 .signin-step { display: grid; gap: 8px; justify-items: start; padding: 12px; border-radius: var(--r-row); background: var(--surface-2); }
@@ -462,7 +460,6 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .btn[aria-busy="true"] { cursor: progress; }
 .instruction { display: grid; gap: 6px; padding: 12px; border-radius: var(--r-card); background: var(--surface); }
 .instruction label { font-size: var(--fs-meta); color: var(--text-2); }
-.instruction .hint { font-size: var(--fs-meta); color: var(--text-3); }
 .instruction-actions { display: flex; justify-content: flex-end; gap: 8px; }
 /* ── Activity timeline (§10) ── */
 .activity { padding-top: 12px; display: grid; gap: 6px; }
@@ -487,8 +484,7 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .tl-icon { width: 14px; height: 14px; color: var(--text-3); }
 .tl-kind { flex: none; width: 64px; color: var(--text-2); font-size: var(--fs-meta); }
 .tl-sum { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tl-sum .mono { font-size: var(--fs-meta); }
-.tl-call { font-family: var(--mono); font-size: var(--fs-meta); color: var(--text); }
+.tl-call { color: var(--text); }
 .tl-time { flex: none; color: var(--text-3); font-size: 11px; font-variant-numeric: tabular-nums; }
 .tone-live .tl-icon { color: var(--live); }
 .tone-attention .tl-icon, .tone-attention .tl-kind { color: var(--attention); }

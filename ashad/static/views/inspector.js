@@ -1,11 +1,10 @@
 // Goals, World state and Model usage panels (spec §8.6). Pure: renders only what the run and its retained events recorded. It never probes
 // the game, so there is no live-context call anywhere in this module.
-import { esc, icon, humanize } from '../core.js';
-import { observationOf } from './timeline.js';
+import { esc, icon, humanize, badge } from '../core.js';
+import { observationOf, short } from './timeline.js';
 
 export const STALE_AFTER_S = 30;  // Fresh vs Stale, while Running.
 const NOT_OBSERVED = '<span class="insp-missing">Not observed</span>';
-const short = id => { const text = String(id || ''); return text.length > 18 ? `…${text.slice(-14)}` : text; };
 const secondsAgo = s => (s < 60 ? `${Math.floor(s)}s` : s < 3600 ? `${Math.floor(s / 60)}m` : `${Math.floor(s / 3600)}h`);
 
 // Every loaded event once, oldest first: the run detail's newest page plus the timeline window.
@@ -39,7 +38,6 @@ export function freshness(event, run, now) {
   return badges;
 }
 
-const badge = b => `<span class="badge badge-${b.tone}"><span class="dot dot-${b.tone}" aria-hidden="true"></span>${esc(b.label)}</span>`;
 const show = value => (Array.isArray(value) ? value.map(v => (typeof v === 'object' ? JSON.stringify(v) : v)).join(', ') : typeof value === 'object' && value !== null ? JSON.stringify(value) : String(value));
 const group = (title, body) => `<div class="insp-group"><h4>${esc(title)}</h4>${body}</div>`;
 const list = items => (items.length ? `<ul class="insp-list">${items.map(item => `<li>${item}</li>`).join('')}</ul>` : '<p class="insp-empty">None</p>');

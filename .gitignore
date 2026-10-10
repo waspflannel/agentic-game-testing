@@ -38,14 +38,7 @@
 
 # App documentation only; omit local validation history and game-layer designs.
 /docs/*
-!/docs/ui.md
-!/docs/workers.md
-!/docs/structured-testing.md
 !/docs/future-work.md
-!/docs/architecture.md
-!/docs/api-contract.md
-!/docs/electron-workspace-refactor-plan.md
-!/docs/frontend-spec.md
 
 # Generated files and secrets must never accompany source.
 __pycache__/

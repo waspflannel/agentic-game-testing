@@ -30,11 +30,9 @@ Build preparation requires Git (only tracked sources are packaged) and downloads
 
 Chromium's sandbox needs ordinary user read access to the app's files. If `ASHAD.exe` exits immediately when started inside a folder with restricted permissions, install it with the NSIS build or copy `win-unpacked` to a normal per-user location such as `%LOCALAPPDATA%`.
 
-The [Electron workspace refactor plan](<docs/electron-workspace-refactor-plan.md>) records the Codex-style desktop direction, project/instance model, milestones, migration safeguards, and acceptance checks, with implemented milestones tracked separately from remaining release gates.
-
 Quit lists owning instances and in-flight work. **Cancel** leaves them unchanged; **Stop/cancel and quit** waits for confirmed teardown and clean controller exit. Failed teardown keeps the app open for reconciliation. If the controller has already exited, Quit asks for confirmation rather than trapping the window; the watchdog keeps its authority. Closing a human viewer never hands control back automatically.
 
-Data from an older checkout-based controller (`.data\controller`) is not loaded automatically; bring it in explicitly with **Import existing workspace…**. Desktop preparation, build registration and Steam account setup live in the app; see [worker setup](docs/workers.md) for infrastructure details.
+Data from an older checkout-based controller (`.data\controller`) is not loaded automatically; bring it in explicitly with **Import existing workspace…**. Desktop preparation, build registration and Steam account setup live in the app.
 
 ## Connect your ChatGPT subscription
 
@@ -48,7 +46,7 @@ Profile tuning and bot decisions require account access to the selected model. M
 
 Use **Projects + → Setup new game agent** to create a game project, select/register a supported pinned manifest, explicitly inspect/prepare its desktop, tune a named model-specific configuration and review its saved guide. Selection never imports, prepares, tunes or starts automatically. Duplicate names remain independent IDs. Completed tuning retries reconcile the same request rather than silently retuning. Exactly **one occupied instance globally** is allowed, including queued, paused, human-owned and ended/unconfirmed work. Existing higher saved caps remain historical settings, not effective capacity.
 
-Optional **Import existing workspace…** requires an empty owned target, a stopped source controller/watchdog, confirmed idle worker/account pool, a fresh verified SQLite/evidence backup and explicit separate external backups/inventory. It does not copy Codex auth, OS keyring values, registrations, external builds or Docker volumes, and does not infer current readiness. Project grouping is a separate explicit preview/backup/apply operation; unassigned history remains readable. Interrupted imports block editing/admission until operator reconciliation: retain the journal, evidence and backup; do not remove them blindly. See the [migration contracts and verification](<docs/electron-workspace-refactor-plan.md#p2-execution-record--2026-10-07-controller-contracts-complete>).
+Optional **Import existing workspace…** requires an empty owned target, a stopped source controller/watchdog, confirmed idle worker/account pool, a fresh verified SQLite/evidence backup and explicit separate external backups/inventory. It does not copy Codex auth, OS keyring values, registrations, external builds or Docker volumes, and does not infer current readiness. Project grouping is a separate explicit preview/backup/apply operation; unassigned history remains readable. Interrupted imports block editing/admission until operator reconciliation: retain the journal, evidence and backup; do not remove them blindly.
 
 ## Tune an agent, then run it
 
@@ -89,7 +87,7 @@ The live camera is for the human operator. Routine model decisions use the filte
 
 The supported workflow is agent tuning and fresh, one-bot instances. Old scenarios, runs, saves, usage and evidence remain stored and readable for operational compatibility. Retired feature endpoints are unavailable; preserving a record does not make its old editing or launch workflow available.
 
-[Future work](docs/future-work.md) records deferred features and the prerequisites for restoring them. Older architecture, API and validation documents contain historical implementation details; use this README, [app guide](docs/ui.md) and [structured testing](docs/structured-testing.md) for the current workflow.
+[Future work](docs/future-work.md) records deferred features and the prerequisites for restoring them.
 
 Controller data lives in `%APPDATA%\ASHAD\controller`; worker volumes contain game and Steam state. Back up both when preserving local history. Keep Steam profiles and credentials out of shared evidence exports.
 
@@ -101,6 +99,6 @@ Development checks need Node.js and a Python environment; run `.\scripts\setup.p
 .\scripts\test.ps1
 ```
 
-See [structured testing](docs/structured-testing.md) for app checks and separate live acceptance gates. Mocked tests do not establish live account access, Steam gameplay, UI acceptance or autonomous campaign completion. Game-adapter checks and historical validation records are maintained separately and are not included here.
+Mocked tests do not establish live account access, Steam gameplay, UI acceptance or autonomous campaign completion. Game-adapter checks and historical validation records are maintained separately and are not included here.
 
 Code map: `ashad/` contains the controller, agents and storage; `ashad/static/` the app UI rendered by Electron; `desktop/` the Electron shell and packaging; `worker/` isolated desktop services; `integration/fixtures.py` Python-side save/archive utilities required by the controller; `tests/` app automated checks; `scripts/` development setup, desktop provisioning and verification tools.

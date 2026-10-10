@@ -133,6 +133,20 @@ def test_worker_url_change_requires_new_token_and_owned_workers_are_frozen(tmp_p
     assert credentials.get("worker:w1") == "new-token"
 
 
+def test_deleting_a_resource_matches_exact_plan_ids_not_substrings(tmp_path):
+    app = offline_app(tmp_path)
+    store = app.state.store
+    store.put("workers", {"id": "worker_1"})
+    store.put("workers", {"id": "worker_10"})
+    store.put("runs", {"id": "live", "state": "Running", "players": {},
+                       "plan": {"build_id": "b", "primary_goal": "worker_1 is only goal text",
+                                "players": [{"id": "p", "worker_id": "worker_10", "account_id": None}]}})
+    with TestClient(app) as client:
+        assert client.delete("/api/workers/worker_1", headers=HEADERS).status_code == 200
+        blocked = client.delete("/api/workers/worker_10", headers=HEADERS)
+        assert blocked.status_code == 422 and "approved run" in blocked.json()["detail"]
+
+
 @pytest.mark.parametrize("busy", ["recalculating", "pending_inference"])
 def test_sign_in_changes_wait_for_paused_goal_recalculation_and_inference(tmp_path, busy):
     app = offline_app(tmp_path)

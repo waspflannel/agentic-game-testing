@@ -11,7 +11,6 @@ import shutil
 import time
 import uuid
 from .models import Plan, MODEL, PROVIDERS, provider_of, CONTROLLER_VERSION, ACTIVE_STATES, TERMINAL_QUEST
-from .repository import Repository
 from .reports import generate_report
 from .repair_tasks import record_task, publish_pending
 from .store import uid
@@ -460,50 +459,11 @@ class Coordinator:
             ps = run["players"][player["id"]]
             if not ps["bound"] or not ps["launched"]:
                 continue
-            monitoring_step = "sending worker heartbeat"
             try:
-                await self.request(ps["worker_id"], "POST", "/heartbeat", {"epoch": ps["epoch"], "deadline": run.get("investigation_deadline")})
-                monitoring_step = "reading worker status"
-                status = await self.request(ps["worker_id"], "GET", "/status")
-                ps["worker_status"] = status
-                if run.get("human_control", {}).get("player_id") == player["id"] and status.get("human_control") is False:
-                    run.pop("human_control", None)
-                    run["pause"] = self.pause_details("manual_pause", "Remote desktop access closed. Bots remain paused; take over again or Resume when ready.", list(run["players"]))
-                    ps["agent_status"] = {**(ps.get("agent_status") or {}), "phase": "paused", "detail": run["pause"]["reason"], "updated_at": now}
-                    self.store.event(run["id"], "human_control_lost", {"player_id": player["id"], "reason": "Worker confirmed desktop access is closed"})
-                ps["feed_captured_at"] = status.get("capture", {}).get("last_at")
-                measured = status.get("build", {})
-                for actual_key, expected_key in (("executable_sha256", "engine_sha256"), ("artifact_sha256", "artifact_sha256")):
-                    if run["build"].get(expected_key) and measured.get(actual_key) != run["build"][expected_key]:
-                        raise ValueError(f"Actual worker build {actual_key} differs from pinned artifact")
-                if status.get("infrastructure_error"):
-                    raise ValueError(f"Worker failure: {status['infrastructure_error']}")
-                if not status.get("game_running", True) and now - ps["launched_at"] > 5:
-                    raise ValueError("Game process exited; logs and capture required before classification")
-                monitoring_step = "reading game telemetry"
-                telemetry = await self.request(ps["worker_id"], "GET", "/telemetry")
-                if "telemetry" in telemetry:
-                    telemetry = telemetry["telemetry"] or {}
-                previous = ps.get("telemetry") or {}
-                if telemetry and telemetry.get("sequence") != previous.get("sequence"):
-                    ps["telemetry_received_at"] = now
-                    ps["telemetry"] = telemetry
-                    if any(previous.get(k) != telemetry.get(k) for k in ("completed_quests", "handler", "votes", "connected", "world_synced", "resources", "world_id")):
-                        self.store.event(run["id"], "monitor_observation", {"player_id": player["id"], "source": "read_only_diagnostics", "telemetry": telemetry})
-                if telemetry:
-                    self.check_identity(run, player, ps, telemetry)
-                    ready = telemetry.get("connected") is True and telemetry.get("world_synced") is True and telemetry.get("world_loaded") is True
-                    ps["phase"] = "ready" if ready else "synchronized" if telemetry.get("world_synced") else "connected" if telemetry.get("connected") else "authenticated" if telemetry.get("authenticated") else "launched"
-                    if ready and not ps.get("ready_at"):
-                        ps["ready_at"] = now
-                        self.store.event(run["id"], "player_ready", {"player_id": player["id"], "telemetry_sequence": telemetry.get("sequence")})
-                    if telemetry.get("sync_timed_out") and not ready:
-                        raise ValueError("World synchronization timed out; readiness not established")
-                if now - ps["launched_at"] > 180 and ps["phase"] != "ready" and run["state"] == "Starting":
-                    raise ValueError("Initial player readiness deadline expired")
+                await self._monitor_player(run, player, ps, now)
             except Exception as exc:
                 self.save_run(run)
-                await self.investigate(run["id"], "infrastructure_failure", f"{player['name']} while {monitoring_step}: {type(exc).__name__}: {exc}", players=[player["id"]])
+                await self.investigate(run["id"], "infrastructure_failure", f"{player['name']} while {exc.monitoring_step}: {type(exc).__name__}: {exc}", players=[player["id"]])
                 return
         host = next(p for p in run["plan"]["players"] if p["role"] == "host")
         host_state = run["players"][host["id"]]
@@ -532,6 +492,53 @@ class Coordinator:
                     key = (run["id"], player["id"])
                     if ps["launched"] and (key not in self.tasks or self.tasks[key].done()):
                         self.tasks[key] = asyncio.create_task(self.player_turn(run["id"], player["id"]))
+
+    async def _monitor_player(self, run, player, ps, now):
+        """Heartbeat, status, build pin, telemetry and readiness for one launched player; failures carry the step they hit."""
+        monitoring_step = "sending worker heartbeat"
+        try:
+            await self.request(ps["worker_id"], "POST", "/heartbeat", {"epoch": ps["epoch"], "deadline": run.get("investigation_deadline")})
+            monitoring_step = "reading worker status"
+            status = await self.request(ps["worker_id"], "GET", "/status")
+            ps["worker_status"] = status
+            if run.get("human_control", {}).get("player_id") == player["id"] and status.get("human_control") is False:
+                run.pop("human_control", None)
+                run["pause"] = self.pause_details("manual_pause", "Remote desktop access closed. Bots remain paused; take over again or Resume when ready.", list(run["players"]))
+                ps["agent_status"] = {**(ps.get("agent_status") or {}), "phase": "paused", "detail": run["pause"]["reason"], "updated_at": now}
+                self.store.event(run["id"], "human_control_lost", {"player_id": player["id"], "reason": "Worker confirmed desktop access is closed"})
+            ps["feed_captured_at"] = status.get("capture", {}).get("last_at")
+            measured = status.get("build", {})
+            for actual_key, expected_key in (("executable_sha256", "engine_sha256"), ("artifact_sha256", "artifact_sha256")):
+                if run["build"].get(expected_key) and measured.get(actual_key) != run["build"][expected_key]:
+                    raise ValueError(f"Actual worker build {actual_key} differs from pinned artifact")
+            if status.get("infrastructure_error"):
+                raise ValueError(f"Worker failure: {status['infrastructure_error']}")
+            if not status.get("game_running", True) and now - ps["launched_at"] > 5:
+                raise ValueError("Game process exited; logs and capture required before classification")
+            monitoring_step = "reading game telemetry"
+            telemetry = await self.request(ps["worker_id"], "GET", "/telemetry")
+            if "telemetry" in telemetry:
+                telemetry = telemetry["telemetry"] or {}
+            previous = ps.get("telemetry") or {}
+            if telemetry and telemetry.get("sequence") != previous.get("sequence"):
+                ps["telemetry_received_at"] = now
+                ps["telemetry"] = telemetry
+                if any(previous.get(k) != telemetry.get(k) for k in ("completed_quests", "handler", "votes", "connected", "world_synced", "resources", "world_id")):
+                    self.store.event(run["id"], "monitor_observation", {"player_id": player["id"], "source": "read_only_diagnostics", "telemetry": telemetry})
+            if telemetry:
+                self.check_identity(run, player, ps, telemetry)
+                ready = telemetry.get("connected") is True and telemetry.get("world_synced") is True and telemetry.get("world_loaded") is True
+                ps["phase"] = "ready" if ready else "synchronized" if telemetry.get("world_synced") else "connected" if telemetry.get("connected") else "authenticated" if telemetry.get("authenticated") else "launched"
+                if ready and not ps.get("ready_at"):
+                    ps["ready_at"] = now
+                    self.store.event(run["id"], "player_ready", {"player_id": player["id"], "telemetry_sequence": telemetry.get("sequence")})
+                if telemetry.get("sync_timed_out") and not ready:
+                    raise ValueError("World synchronization timed out; readiness not established")
+            if now - ps["launched_at"] > 180 and ps["phase"] != "ready" and run["state"] == "Starting":
+                raise ValueError("Initial player readiness deadline expired")
+        except Exception as exc:
+            exc.monitoring_step = monitoring_step
+            raise
 
     def check_identity(self, run, player, state, telemetry):
         expected = run["plan"]["transport"]
@@ -756,13 +763,11 @@ class Coordinator:
                 self.structured.status(run_id, player_id, "error", reason, last_error=reason, error_at=time.time())
                 await self.investigate(run_id, "controller_failure", reason, [player_id])
 
-    async def flag(self, run_id, actual, expected="Unknown; requires review", players=None, category="manual_flag", confidence="unknown", expected_source=None):
+    async def flag(self, run_id, actual, expected="Unknown; requires review", players=None, category="manual_flag"):
         run = self.store.require("runs", run_id)
         players = players or list(run["players"])
-        signature = hashlib.sha256(json.dumps([category, run["plan"]["build_id"], sorted(players), run["progress"].get("completed_quests"), expected_source], sort_keys=True).encode()).hexdigest()
-        # Deduplicate only when source/category/stage/actors match, not by wording.
-        existing = next((i for i in self.store.list("incidents") if i["run_id"] == run_id and i.get("signature") == signature and expected_source and i["status"] == "suspected"), None)
-        incident = existing or {"id": uid("incident_"), "run_id": run_id, "session_id": run_id, "category": category, "status": "suspected", "classification": "unresolved", "confidence": confidence, "severity": "review_required", "expected": expected, "expected_source": expected_source, "actual": actual, "players": players, "stage": run["progress"].get("completed_quests", []), "signature": signature, "first_occurrence": time.time(), "occurrences": [], "evidence_ids": [], "review_history": [], "reproduction": {"scenario_id": run["scenario_id"], "revision": run["scenario_revision"], "build": run["build"], "transport": run["plan"]["transport"]}}
+        signature = hashlib.sha256(json.dumps([category, run["plan"]["build_id"], sorted(players), run["progress"].get("completed_quests"), None], sort_keys=True).encode()).hexdigest()
+        incident = {"id": uid("incident_"), "run_id": run_id, "session_id": run_id, "category": category, "status": "suspected", "classification": "unresolved", "confidence": "unknown", "severity": "review_required", "expected": expected, "expected_source": None, "actual": actual, "players": players, "stage": run["progress"].get("completed_quests", []), "signature": signature, "first_occurrence": time.time(), "occurrences": [], "evidence_ids": [], "review_history": [], "reproduction": {"scenario_id": run["scenario_id"], "revision": run["scenario_revision"], "build": run["build"], "transport": run["plan"]["transport"]}}
         event = self.store.event(run_id, "incident_flag", {"incident_id": incident["id"], "actual": actual, "players": players, "category": category})
         incident["occurrences"].append({"timestamp": time.time(), "event_id": event["id"], "actual": actual})
         incident["evidence_ids"].append(event["id"])
@@ -1059,104 +1064,15 @@ class Coordinator:
             if command in {"stop", "terminate"}:
                 await self.finish(run_id, "user_stopped", terminate=command == "terminate")
             elif command == "takeover":
-                if run["state"] in {"Starting", "Running"}:
-                    run["resume_state"] = run["state"]
-                run.update(state="Paused", investigation_deadline=None)
-                run["human_control"] = run.get("human_control") or {"player_id": ps["id"], "worker_id": ps["worker_id"],
-                    "started_at": time.time(), "desktop_url": options.get("desktop_url", "")}
-                run["human_control"]["status"] = "opening"
-                run["pause"] = self.pause_details("human_control", f"You are taking control of {ps['id']}. All bots are paused.", list(run["players"]))
-                self.save_run(run)  # Keep ownership even if the remote start acknowledgement is lost.
-                event = self.store.event(run_id, "human_control_requested", run["human_control"])
-                record_task(self.store, run_id, "pause", run["pause"]["reason"], key=event["id"], category="manual_pause", event_id=event["id"])
-                try:
-                    results = await self.hold_inputs(run)
-                    for player_state, result in zip(run["players"].values(), results):
-                        if result and (not isinstance(result.get("ack"), dict) or
-                                (player_state["launched"] and result["ack"].get("lifecycle") != "paused")):
-                            raise ValueError("Not every worker confirmed its inputs are paused")
-                    result = await self.request(ps["worker_id"], "POST", "/desktop/start", {"epoch": ps["epoch"]})
-                    if result.get("human_control") is not True:
-                        raise ValueError("Worker did not confirm human desktop control")
-                    run["human_control"]["status"] = "active"
-                    ps["agent_status"].update(phase="human_control", detail="You control this desktop. Hand back to bots when ready.")
-                    self.save_run(run)
-                    self.store.event(run_id, "human_control_started", run["human_control"])
-                except Exception as exc:
-                    try:
-                        await self.close_human_control(run)
-                    except Exception:
-                        pass  # Retain ownership so a retry can close an ambiguously opened viewer.
-                    run["pause"] = self.pause_details("infrastructure_failure", f"Take over failed; bots remain paused. {exc}", list(run["players"]))
-                    self.save_run(run)
-                    self.store.event(run_id, "human_control_failed", {"reason": run["pause"]["reason"]})
-                    raise ValueError(run["pause"]["reason"]) from exc
-                finally:
-                    publish_pending(self.store)
+                await self._take_over(run, ps, options)
             elif command == "takeover_finish" and not resuming:
                 await self.close_human_control(run)
                 run["pause"] = self.pause_details("manual_pause", "Human desktop access closed. Bots remain paused until you Resume.", list(run["players"]))
                 self.save_run(run)
             elif command == "pause":
-                if recalculating:
-                    await self.cancel_players(run_id)
-                    run = self.store.require("runs", run_id)
-                    run["pause"] = self.pause_details("goal_recalculation", "Recalculation cancelled. Existing goals are unchanged; retry or Resume.", list(run["players"]))
-                    self.save_run(run)
-                if run["state"] in {"Starting", "Running"}:
-                    run["resume_state"] = run["state"]
-                    run["state"] = "Paused"
-                    run["pause"] = self.pause_details("manual_pause", reason or "You paused the bots.", list(run["players"]))
-                    self.save_run(run)
-                    event = self.store.event(run_id, "run_paused", run["pause"])
-                    record_task(self.store, run_id, "pause", run["pause"]["reason"],
-                        key=event["id"], category="manual_pause", event_id=event["id"])
-                    await self.hold_inputs(run)
-                    publish_pending(self.store)
+                await self._pause(run, reason, recalculating)
             elif resuming:
-                await self.close_human_control(run)
-                for ps in run["players"].values():
-                    ps["generation"] += 1
-                    ps["last_observation"] = None
-                    ps["structured_context"] = None
-                self.save_run(run)
-                await self.cancel_players(run_id)
-                try:
-                    for ps in run["players"].values():
-                        if ps["bound"] and ps["launched"]:
-                            result = await self.request(ps["worker_id"], "POST", "/resume", {"epoch": ps["epoch"]})
-                            if result.get("game_running") is False or (result.get("lifecycle") is not None and result["lifecycle"] != "running"):
-                                raise ValueError(f"{ps['id']}: game did not resume; terminate and rerun if its process has exited")
-                            await self.request(ps["worker_id"], "POST", "/heartbeat", {"epoch": ps["epoch"], "deadline": None})
-                except Exception as exc:
-                    message = f"Resume failed; bots remain paused. {type(exc).__name__}: {exc}"
-                    run["pause"] = self.pause_details("infrastructure_failure", message, list(run["players"]))
-                    self.save_run(run)
-                    await self.hold_inputs(run)
-                    event = self.store.event(run_id, "resume_failed", {"reason": message})
-                    record_task(self.store, run_id, "resume_failed", message,
-                        key=f"resume:{command_id}", category="infrastructure_failure", event_id=event["id"])
-                    publish_pending(self.store)
-                    raise ValueError(message) from exc
-                run["investigation_deadline"] = None
-                run["pause"] = None
-                run["recovery_instruction"] = reason
-                for ps in run["players"].values():
-                    ps["invalid_actions"] = 0
-                    ps["simulation_advanced_at"] = time.time()
-                    ps["telemetry_received_at"] = time.time()
-                    ps["agent_status"] = {**(ps.get("agent_status") or {}), "phase": "ready", "detail": "Resumed; acquiring fresh game state.", "started_at": time.time(), "updated_at": time.time(), "action_id": None, "wait_until": None}
-                held_seconds = max(0, time.time() - run.pop("inputs_held_since", time.time()))
-                for event in run["plan"]["events"]:
-                    state = run["events"][event["id"]]
-                    if state["status"] == "executing":
-                        state["started_at"] += held_seconds
-                    overdue = event_due(run, event, state, time.time())
-                    state["held_during_pause"] = state["status"] == "pending" and bool(overdue)
-                    if state.get("held_during_pause") and event["overdue_policy"] == "reschedule":
-                        state["rescheduled_at"] = time.time() + max(1, float(event["value"]) if event["trigger"] == "elapsed" else 1)
-                run["state"] = run.get("resume_state", "Running")
-                self.save_run(run)
+                await self._resume(run, reason, command_id)
             elif command == "extend":
                 run["investigation_deadline"] = max(time.time(), run["investigation_deadline"]) + seconds
                 self.save_run(run)
@@ -1177,6 +1093,107 @@ class Coordinator:
             generate_report(self.store, run_id)
             return self.store.require("runs", run_id)
 
+    async def _take_over(self, run, ps, options):
+        run_id = run["id"]
+        if run["state"] in {"Starting", "Running"}:
+            run["resume_state"] = run["state"]
+        run.update(state="Paused", investigation_deadline=None)
+        run["human_control"] = run.get("human_control") or {"player_id": ps["id"], "worker_id": ps["worker_id"],
+            "started_at": time.time(), "desktop_url": options.get("desktop_url", "")}
+        run["human_control"]["status"] = "opening"
+        run["pause"] = self.pause_details("human_control", f"You are taking control of {ps['id']}. All bots are paused.", list(run["players"]))
+        self.save_run(run)  # Keep ownership even if the remote start acknowledgement is lost.
+        event = self.store.event(run_id, "human_control_requested", run["human_control"])
+        record_task(self.store, run_id, "pause", run["pause"]["reason"], key=event["id"], category="manual_pause", event_id=event["id"])
+        try:
+            results = await self.hold_inputs(run)
+            for player_state, result in zip(run["players"].values(), results):
+                if result and (not isinstance(result.get("ack"), dict) or
+                        (player_state["launched"] and result["ack"].get("lifecycle") != "paused")):
+                    raise ValueError("Not every worker confirmed its inputs are paused")
+            result = await self.request(ps["worker_id"], "POST", "/desktop/start", {"epoch": ps["epoch"]})
+            if result.get("human_control") is not True:
+                raise ValueError("Worker did not confirm human desktop control")
+            run["human_control"]["status"] = "active"
+            ps["agent_status"].update(phase="human_control", detail="You control this desktop. Hand back to bots when ready.")
+            self.save_run(run)
+            self.store.event(run_id, "human_control_started", run["human_control"])
+        except Exception as exc:
+            try:
+                await self.close_human_control(run)
+            except Exception:
+                pass  # Retain ownership so a retry can close an ambiguously opened viewer.
+            run["pause"] = self.pause_details("infrastructure_failure", f"Take over failed; bots remain paused. {exc}", list(run["players"]))
+            self.save_run(run)
+            self.store.event(run_id, "human_control_failed", {"reason": run["pause"]["reason"]})
+            raise ValueError(run["pause"]["reason"]) from exc
+        finally:
+            publish_pending(self.store)
+
+    async def _pause(self, run, reason, recalculating):
+        run_id = run["id"]
+        if recalculating:
+            await self.cancel_players(run_id)
+            run = self.store.require("runs", run_id)
+            run["pause"] = self.pause_details("goal_recalculation", "Recalculation cancelled. Existing goals are unchanged; retry or Resume.", list(run["players"]))
+            self.save_run(run)
+        if run["state"] in {"Starting", "Running"}:
+            run["resume_state"] = run["state"]
+            run["state"] = "Paused"
+            run["pause"] = self.pause_details("manual_pause", reason or "You paused the bots.", list(run["players"]))
+            self.save_run(run)
+            event = self.store.event(run_id, "run_paused", run["pause"])
+            record_task(self.store, run_id, "pause", run["pause"]["reason"],
+                key=event["id"], category="manual_pause", event_id=event["id"])
+            await self.hold_inputs(run)
+            publish_pending(self.store)
+
+    async def _resume(self, run, reason, command_id):
+        run_id = run["id"]
+        await self.close_human_control(run)
+        for ps in run["players"].values():
+            ps["generation"] += 1
+            ps["last_observation"] = None
+            ps["structured_context"] = None
+        self.save_run(run)
+        await self.cancel_players(run_id)
+        try:
+            for ps in run["players"].values():
+                if ps["bound"] and ps["launched"]:
+                    result = await self.request(ps["worker_id"], "POST", "/resume", {"epoch": ps["epoch"]})
+                    if result.get("game_running") is False or (result.get("lifecycle") is not None and result["lifecycle"] != "running"):
+                        raise ValueError(f"{ps['id']}: game did not resume; terminate and rerun if its process has exited")
+                    await self.request(ps["worker_id"], "POST", "/heartbeat", {"epoch": ps["epoch"], "deadline": None})
+        except Exception as exc:
+            message = f"Resume failed; bots remain paused. {type(exc).__name__}: {exc}"
+            run["pause"] = self.pause_details("infrastructure_failure", message, list(run["players"]))
+            self.save_run(run)
+            await self.hold_inputs(run)
+            event = self.store.event(run_id, "resume_failed", {"reason": message})
+            record_task(self.store, run_id, "resume_failed", message,
+                key=f"resume:{command_id}", category="infrastructure_failure", event_id=event["id"])
+            publish_pending(self.store)
+            raise ValueError(message) from exc
+        run["investigation_deadline"] = None
+        run["pause"] = None
+        run["recovery_instruction"] = reason
+        for ps in run["players"].values():
+            ps["invalid_actions"] = 0
+            ps["simulation_advanced_at"] = time.time()
+            ps["telemetry_received_at"] = time.time()
+            ps["agent_status"] = {**(ps.get("agent_status") or {}), "phase": "ready", "detail": "Resumed; acquiring fresh game state.", "started_at": time.time(), "updated_at": time.time(), "action_id": None, "wait_until": None}
+        held_seconds = max(0, time.time() - run.pop("inputs_held_since", time.time()))
+        for event in run["plan"]["events"]:
+            state = run["events"][event["id"]]
+            if state["status"] == "executing":
+                state["started_at"] += held_seconds
+            overdue = event_due(run, event, state, time.time())
+            state["held_during_pause"] = state["status"] == "pending" and bool(overdue)
+            if state.get("held_during_pause") and event["overdue_policy"] == "reschedule":
+                state["rescheduled_at"] = time.time() + max(1, float(event["value"]) if event["trigger"] == "elapsed" else 1)
+        run["state"] = run.get("resume_state", "Running")
+        self.save_run(run)
+
     async def finish(self, run_id, reason, terminate=False, limitation=None):
         await self.cancel_tick(run_id)
         run = self.store.require("runs", run_id)
@@ -1195,30 +1212,33 @@ class Coordinator:
         run = self.store.require("runs", run_id)  # Retain cancellation outcomes written by the stopped tasks.
         event = self.store.event(run_id, "stopping", {"reason": reason, "terminate": terminate, "save": "not_promised" if terminate else "bounded_graceful_attempt"})
         record_task(self.store, run_id, "stop", limitation or reason, key="stop", category=reason, event_id=event["id"])
+        def confirmed_of(result):
+            return result.get("teardown_confirmed", result.get("stopped", False)) is True
+
         async def stop(ps):
             if not ps["bound"]:
                 return True, {"status": "never_launched"}
             try:
                 result = await asyncio.wait_for(self.request(ps["worker_id"], "POST", "/stop", {"epoch": ps["epoch"], "terminate": terminate}), 8 if terminate else 20)
-                confirmed = result.get("teardown_confirmed", result.get("stopped", False)) is True
-                return confirmed, result
+                return confirmed_of(result), result
             except Exception as exc:
                 try:
                     result = await asyncio.wait_for(self.request(ps["worker_id"], "POST", "/stop", {"epoch": ps["epoch"], "terminate": True}), 5)
-                    return result.get("teardown_confirmed", result.get("stopped", False)) is True, result
+                    return confirmed_of(result), result
                 except Exception:
                     return False, {"status": "unknown", "error": type(exc).__name__}
         results = await asyncio.gather(*(stop(ps) for ps in run["players"].values()))
+        all_confirmed = all(c for c, _ in results)
         for ps, (confirmed, result) in zip(run["players"].values(), results):
             ps.update(teardown_confirmed=confirmed, phase="ended" if confirmed else "teardown_unknown", launched=False if confirmed else ps["launched"])
             ps["agent_status"] = {**(ps.get("agent_status") or {}), "phase": "ended", "detail": f"Run ended: {reason}." if confirmed else "Teardown unconfirmed; use Reconcile teardown to retry.", "started_at": time.time(), "updated_at": time.time(), "wait_until": None}
             self.store.event(run_id, "teardown_result", {"player_id": ps["id"], "worker_id": ps["worker_id"], "confirmed": confirmed, "result": result})
-        if all(x[0] for x in results):
+        if all_confirmed:
             self.store.release(run_id)
         human = run.get("human_control")
         if human and run["players"][human["player_id"]]["teardown_confirmed"]:
             run.pop("human_control", None)
-        if not all(x[0] for x in results):
+        if not all_confirmed:
             run["limitations"].append("Teardown was not confirmed; worker/account leases remain reserved pending reconciliation.")
             run["evidence_status"] = "incomplete"
         run.update(state="Ended", ended_at=time.time(), investigation_deadline=None)
@@ -1226,7 +1246,7 @@ class Coordinator:
             run["evidence_status"] = "complete" if not run["limitations"] else "partial"
         self.save_run(run)
         event = self.store.event(run_id, "run_ended", {"reason": reason, "validity": run["validity"], "goal_complete": run["goal_complete"], "demo_complete": run["demo_complete"], "evidence_status": run["evidence_status"]})
-        if not all(x[0] for x in results):
+        if not all_confirmed:
             record_task(self.store, run_id, "teardown_failed", "Game teardown was not confirmed; worker/account leases remain reserved.",
                 key="teardown_failed", category="infrastructure_failure", event_id=event["id"])
         publish_pending(self.store)
@@ -1245,8 +1265,6 @@ class Coordinator:
                 continue
             try:
                 client = self.client(ps["worker_id"])
-                if not hasattr(client, "evidence_index"):
-                    continue
                 listing = await client.evidence_index(run_id)
                 for item in listing.get("files", []):
                     relative = Path(item["path"])

@@ -128,15 +128,18 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
 
     async def heartbeats():
         while True:
-            game_mcp.cleanup()
-            calls = []
-            for run in store.list("runs"):
-                if run["state"] in ACTIVE_STATES:
-                    for ps in run["players"].values():
-                        if ps["bound"]:
-                            calls.append(coordinator.request(ps["worker_id"], "POST", "/heartbeat", {"epoch": ps["epoch"], "deadline": run.get("investigation_deadline")}))
-            if calls:
-                await asyncio.gather(*calls, return_exceptions=True)
+            try:
+                game_mcp.cleanup()
+                calls = []
+                for run in store.list("runs"):
+                    if run["state"] in ACTIVE_STATES:
+                        for ps in run["players"].values():
+                            if ps["bound"]:
+                                calls.append(coordinator.request(ps["worker_id"], "POST", "/heartbeat", {"epoch": ps["epoch"], "deadline": run.get("investigation_deadline")}))
+                if calls:
+                    await asyncio.gather(*calls, return_exceptions=True)
+            except Exception as exc:
+                print(f"ASHAD heartbeat error: {type(exc).__name__}", flush=True)
             await asyncio.sleep(3)
 
     app = FastAPI(title="ASHAD Bot", version="1.0.0", lifespan=lifespan)
@@ -224,12 +227,6 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         login = getattr(ai.backend, "login_wait", None)
         return bool(app.state.tuning_task) or len(app.state.operations) > 1 or bool(login and not login.done())
 
-    def run_records(kind, run_id):
-        with store.lock:
-            rows = store.db.execute("SELECT data FROM records WHERE kind=? AND json_extract(data, '$.run_id')=? ORDER BY updated DESC",
-                                    (kind, run_id)).fetchall()
-        return [json.loads(row[0]) for row in rows]
-
     def require_unleased_worker(worker_id, message):
         if any(l["kind"] == "worker" and l["resource_id"] == worker_id for l in store.leases()):
             raise ValueError(message)
@@ -238,12 +235,15 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         if any(l["resource_id"] == record_id for l in store.leases()):
             raise ValueError("This resource has an active or unresolved lease")
         for run in store.list("runs"):
-            if run["state"] in ACTIVE_STATES | {"Queued"} and record_id in json.dumps(run["plan"]):
-                raise ValueError("Resource is referenced by an approved run")
+            if run["state"] in ACTIVE_STATES | {"Queued"}:
+                plan = run["plan"]
+                players = plan.get("players", [])
+                if record_id == plan.get("build_id") or any(record_id in (p.get("worker_id"), p.get("account_id")) for p in players):
+                    raise ValueError("Resource is referenced by an approved run")
 
-    def usage_count():
-        with store.lock:
-            return store.db.execute("SELECT COUNT(*) FROM records WHERE kind='usage'").fetchone()[0]
+    def require_controller_lock(action):
+        if app.state.controller_lock is None or app.state.controller_lock.closed:
+            raise ValueError(f"{action} requires the process lock held by the owned ASHAD controller entry")
 
     @app.get("/api/usage")
     async def usage():
@@ -261,15 +261,14 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         # In particular an import/restart must validate this backend's own home.
         ai_status = {**ai.status, "api": AI_API}
         model_options = [dict(o) for o in MODEL_OPTIONS]
-        return {"settings": settings, "ai": ai_status, "ai_claude": ai.claude_status, "model_options": model_options, "builds": builds, "workers": workers, "accounts": store.list("accounts"), "agents": store.list("agents"), "runs": store.list("runs"), "usage_count": usage_count(), "leases": store.leases(), "projects": store.list("projects"),
+        return {"settings": settings, "ai": ai_status, "ai_claude": ai.claude_status, "model_options": model_options, "builds": builds, "workers": workers, "accounts": store.list("accounts"), "agents": store.list("agents"), "runs": store.list("runs"), "usage_count": store.count("usage"), "leases": store.leases(), "projects": store.list("projects"),
                 "instance_slot": instance_slot(),
                 "workspace_import": {"interrupted": coordinator.import_interrupted(), "completed": store.get("migrations", WORKSPACE_IMPORT_ID),
                                      "readiness_verified": False}}
 
     @app.post("/api/workspace/import")
     async def workspace_import(body: dict):
-        if app.state.controller_lock is None or app.state.controller_lock.closed:
-            raise ValueError("Import requires the process lock held by the owned ASHAD controller entry")
+        require_controller_lock("Import")
         for name in ("source_root", "backup_dir"):
             if not isinstance(body.get(name), str) or not Path(body[name]).is_absolute():
                 raise ValueError("Import requires explicit absolute source and fresh backup paths")
@@ -354,8 +353,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
     async def project_prepare(project_id: str, body: dict):
         if set(body) != {"build_id", "request_id", "confirmed"} or body.get("confirmed") is not True:
             raise ValueError("Preparation requires build_id, stable request_id and explicit confirmation of image/volume/credential creation")
-        if app.state.controller_lock is None or app.state.controller_lock.closed:
-            raise ValueError("Preparation requires the process lock held by the owned ASHAD controller entry")
+        require_controller_lock("Preparation")
         Projects(store).project_for_build(body["build_id"], project_id)
         build = store.require("builds", body["build_id"])
         async with coordinator.lock:
@@ -376,8 +374,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
 
     @app.post("/api/projects/migration/apply")
     async def migration_apply(body: dict):
-        if app.state.controller_lock is None or app.state.controller_lock.closed:
-            raise ValueError("Migration requires the process lock held by the owned ASHAD controller entry")
+        require_controller_lock("Migration")
         if not isinstance(body.get("backup_dir"), str) or not Path(body["backup_dir"]).is_absolute():
             raise ValueError("Choose an absolute, fresh migration backup directory")
         if not isinstance(body.get("preview_token"), str):
@@ -411,10 +408,8 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         app.state.tuning_task = asyncio.current_task()
         app.state.tuning_request_id = body.get("request_id")
         try:
-            if any(key in body for key in ("project_id", "name", "request_id")):
-                return await profiles.tune(body.get("build_id"), model, project_id=body.get("project_id"),
-                                           name=body.get("name"), request_id=body.get("request_id"))
-            return await profiles.tune(body.get("build_id"), model)
+            return await profiles.tune(body.get("build_id"), model, project_id=body.get("project_id"),
+                                       name=body.get("name"), request_id=body.get("request_id"))
         except asyncio.CancelledError:
             # Only the owned quit drain (DesktopLifecycle) cancels tuning on purpose; server
             # shutdown or a dropped client must keep propagating cancellation.
@@ -440,10 +435,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         progress = profiles.progress
         if not progress:
             return None
-        with store.lock:
-            rows = store.db.execute("SELECT json_extract(data, '$.status'), json_extract(data, '$.timestamp') FROM records "
-                                    "WHERE kind='usage' AND json_extract(data, '$.purpose')='tuning' AND json_extract(data, '$.timestamp') >= ?",
-                                    (progress["started_at"],)).fetchall()
+        rows = store.usage_since("tuning", progress["started_at"])
         return {**progress, "model_calls": len(rows), "rejected_replies": sum(status != "completed" for status, _ in rows),
                 "last_call_at": max((at for _, at in rows), default=None)}
 
@@ -515,7 +507,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             else:
                 run["pause"] = coordinator.pause_details("manual_pause", "Bot inputs are paused. Review the run before continuing.", list(run["players"]))
         for kind in ("incidents", "usage"):
-            run[kind] = await asyncio.to_thread(run_records, kind, run_id)
+            run[kind] = await asyncio.to_thread(store.records_for_run, kind, run_id)
         return run
 
     @app.get("/api/runs/{run_id}/events")

@@ -52,24 +52,25 @@ def _file_hash(path):
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def _safe_path(value):
+def _safe_path(value, error=ValueError, *, regular_only=True):
     """Reject links before resolving: resolve() alone hides unsafe ancestors.
 
-    The resolved result also canonicalizes trailing-dot and 8.3 short-name aliases."""
+    The resolved result also canonicalizes trailing-dot and 8.3 short-name aliases.
+    `error` is the exception type raised; regular_only=False tolerates special files."""
     path = Path(value)
     if not path.is_absolute() or ".." in path.parts:
-        raise ValueError("Unsafe path: it must be absolute without parent traversal")
+        raise error("Unsafe path: it must be absolute without parent traversal")
     for component in reversed([path, *path.parents]):
         try:
             info = component.lstat()
         except FileNotFoundError:
             continue
         if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-            raise ValueError("Unsafe path: symlinks and reparse points are not allowed")
+            raise error("Unsafe path: symlinks and reparse points are not allowed")
         if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
-            raise ValueError("Unsafe path: hardlinked files are not allowed")
-        if not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
-            raise ValueError("Unsafe path: only regular files and directories are allowed")
+            raise error("Unsafe path: hardlinked files are not allowed")
+        if regular_only and not (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)):
+            raise error("Unsafe path: only regular files and directories are allowed")
     return path.resolve()
 
 
@@ -86,27 +87,37 @@ def _copy_file(source, target):
     return {"sha256": digest.hexdigest(), "bytes": size}
 
 
+def _player_unreleased(player):
+    return (player.get("teardown_confirmed") is False
+            or ((player.get("bound") or player.get("launched") or player.get("phase") == "teardown_unknown")
+                and player.get("teardown_confirmed") is not True))
+
+
 def _ownership_unresolved(run):
     """Ended is not proof of release; an unknown legacy player shape is never assumed released."""
     players = run.get("players", {})
     if not isinstance(players, dict) or not all(isinstance(player, dict) for player in players.values()):
         return True
-    return bool(str(run.get("state", "unknown")).lower() not in TERMINAL or run.get("human_control")
-        or run.get("external_control") or any(player.get("teardown_confirmed") is False
-        or ((player.get("bound") or player.get("launched") or player.get("phase") == "teardown_unknown")
-            and player.get("teardown_confirmed") is not True) for player in players.values()))
+    if str(run.get("state", "unknown")).lower() not in TERMINAL:
+        return True
+    if run.get("human_control") or run.get("external_control"):
+        return True
+    return any(_player_unreleased(player) for player in players.values())
 
 
-def _tree_files(root):
+def _tree_files(root, directories=None):
+    """Link-checked {relative: path} of every file; relative subdirectories are appended to `directories` when given."""
     root = _safe_path(root)
     if not root.is_dir():
-        raise ValueError("Backup evidence directory is unavailable")
+        raise ValueError("Run evidence directory is unavailable")
     def unreadable(error):
         raise error
     files = {}
-    for directory, directories, names in os.walk(root, followlinks=False, onerror=unreadable):
-        for name in directories:
-            _safe_path(Path(directory) / name)
+    for directory, subdirectories, names in os.walk(root, followlinks=False, onerror=unreadable):
+        for name in subdirectories:
+            path = _safe_path(Path(directory) / name)
+            if directories is not None:
+                directories.append(path.relative_to(root).as_posix())
         for name in names:
             path = _safe_path(Path(directory) / name)
             files[path.relative_to(root).as_posix()] = path
@@ -320,6 +331,30 @@ class Projects:
         except sqlite3.DatabaseError as error:
             raise ValueError("Backup verification failed: invalid SQLite snapshot") from error
 
+    def _verify_existing_backup(self, destination, preview, evidence):
+        actual = _tree_files(destination)
+        if "inventory.json" not in actual:
+            raise ValueError("Backup is incomplete or destination is occupied; choose a new backup directory")
+        expected = {relative: _file_record(source, relative) for relative, source in evidence.items()}
+        try:
+            inventory = json.loads(actual["inventory.json"].read_text(encoding="utf-8"))
+            if not isinstance(inventory, dict) or inventory.get("version") != 1 or inventory.get("source_root") != str(self.store.root) or inventory.get("preview_token") != preview["preview_token"] or inventory.get("grouping_hash") != preview["grouping_hash"]:
+                raise ValueError("Backup verification failed: different source root or preview")
+            entries = inventory.get("copied_files")
+            if not isinstance(entries, list) or any(not isinstance(item, dict) or not isinstance(item.get("path"), str)
+                or type(item.get("bytes")) is not int or item["bytes"] < 0 for item in entries):
+                raise ValueError("Backup verification failed: invalid file inventory")
+            recorded = {item["path"]: item for item in entries}
+            required = set(expected) | {"ashad.sqlite3"}
+            if len(recorded) != len(entries) or set(recorded) != required or set(actual) != required | {"inventory.json"}:
+                raise ValueError("Backup verification failed: incomplete or unexpected file inventory")
+            for relative, record in recorded.items():
+                if record != _file_record(actual[relative], relative) or (relative in expected and record != expected[relative]):
+                    raise ValueError("Existing backup verification failed: hash, size or source evidence mismatch")
+            self._verify_database(actual["ashad.sqlite3"], preview["source_token"])
+        except (OSError, TypeError, KeyError, json.JSONDecodeError) as error:
+            raise ValueError("Backup verification failed: unreadable or invalid inventory") from error
+
     def _backup(self, destination, preview, codex_home):
         destination = _safe_path(destination)
         _unredacted(str(destination))
@@ -330,28 +365,7 @@ class Projects:
         evidence = {"runs/" + relative: source for relative, source in _tree_files(self.store.root / "runs").items()}
         manifest, database = destination / "inventory.json", destination / "ashad.sqlite3"
         if destination.exists():
-            actual = _tree_files(destination)
-            if "inventory.json" not in actual:
-                raise ValueError("Backup is incomplete or destination is occupied; choose a new backup directory")
-            expected = {relative: _file_record(source, relative) for relative, source in evidence.items()}
-            try:
-                inventory = json.loads(manifest.read_text(encoding="utf-8"))
-                if not isinstance(inventory, dict) or inventory.get("version") != 1 or inventory.get("source_root") != str(self.store.root) or inventory.get("preview_token") != preview["preview_token"] or inventory.get("grouping_hash") != preview["grouping_hash"]:
-                    raise ValueError("Backup verification failed: different source root or preview")
-                entries = inventory.get("copied_files")
-                if not isinstance(entries, list) or any(not isinstance(item, dict) or not isinstance(item.get("path"), str)
-                    or type(item.get("bytes")) is not int or item["bytes"] < 0 for item in entries):
-                    raise ValueError("Backup verification failed: invalid file inventory")
-                recorded = {item["path"]: item for item in entries}
-                required = set(expected) | {"ashad.sqlite3"}
-                if len(recorded) != len(entries) or set(recorded) != required or set(actual) != required | {"inventory.json"}:
-                    raise ValueError("Backup verification failed: incomplete or unexpected file inventory")
-                for relative, record in recorded.items():
-                    if record != _file_record(actual[relative], relative) or (relative in expected and record != expected[relative]):
-                        raise ValueError("Existing backup verification failed: hash, size or source evidence mismatch")
-                self._verify_database(database, preview["source_token"])
-            except (OSError, TypeError, KeyError, json.JSONDecodeError) as error:
-                raise ValueError("Backup verification failed: unreadable or invalid inventory") from error
+            self._verify_existing_backup(destination, preview, evidence)
             return destination
         destination.mkdir(parents=True)
         _safe_path(destination)

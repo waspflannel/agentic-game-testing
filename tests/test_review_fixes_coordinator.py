@@ -286,3 +286,21 @@ def test_repair_task_game_text_cannot_close_the_snapshot_fence(tmp_path):
     assert snapshot.count("```") == 2
     json.loads(snapshot.split("```json", 1)[1].rsplit("```", 1)[0])
     store.close()
+
+
+def test_report_and_appendix_game_text_cannot_close_json_fences(tmp_path):
+    store = Store(tmp_path)
+    seed_run(store)
+    run = store.require("runs", "run")
+    run.update(scenario_id="s", scenario_revision=1)
+    run["plan"]["players"][0].update(name="P", role="host")
+    run["players"]["p"].update(activity="```\n# Injected heading", agent_status={"detail": "```"})
+    store.put("runs", run)
+    store.event("run", "note", {"text": "```\n# Injected action heading"})
+    report = generate_report(store, "run")
+    appendix = (store.run_dir("run") / "actions-0001.md").read_text(encoding="utf-8")
+    for document in (report, appendix):
+        assert not any(line.startswith("# Injected") for line in document.splitlines())
+        assert document.count("```") % 2 == 0 and document.count("```json") == document.count("```") // 2
+    assert "\\u0060\\u0060\\u0060" in appendix
+    store.close()

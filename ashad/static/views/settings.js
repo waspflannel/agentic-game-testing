@@ -207,16 +207,17 @@ export function limitsSkeleton(data) {
 
 export function limitsPayload(values) {
   const errors = {};
-  const num = (key, name, scale = 1, allowZero = false, required = false) => {
+  const num = (key, name, scale = 1, allowZero = false) => {
     const raw = String(values[key] ?? '').trim();
-    if (!raw) { if (required) errors[key] = 'Enter a reserve, or 0 for none.'; return null; }
+    if (!raw) return null;
     const n = Number(raw);
     if (!Number.isFinite(n) || n < 0 || (!allowZero && n === 0)) { errors[key] = `${name} must be a positive number${allowZero ? ' or 0' : ''}.`; return undefined; }
     return n * scale;
   };
   const duration = num('duration', 'Duration', 60);
   const spend = num('spend', 'Spend cap');
-  const reserve = num('reserve', 'Storage reserve', GB, true, true);
+  const reserve = num('reserve', 'Storage reserve', GB, true);
+  if (reserve === null) errors.reserve = 'Enter a reserve, or 0 for none.';
   return { errors, body: { duration_seconds: duration, spend_usd: spend, storage_reserve_bytes: Number.isFinite(reserve) ? Math.round(reserve) : reserve } };
 }
 

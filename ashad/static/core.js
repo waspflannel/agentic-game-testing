@@ -99,6 +99,12 @@ export function ago(seconds, now = Date.now() / 1000) {
   return `${Math.floor(s / 86400)}d`;
 }
 
+export const since = (t, now) => { const a = ago(t, now); return !a ? 'never' : a === 'now' ? 'just now' : `${a} ago`; };
+
+export const modelLabel = (data, id) => (data?.model_options || []).find(m => m.id === id)?.label || id || 'Unknown model';
+
+export const badge = ({ tone, label }) => `<span class="badge badge-${tone}"><span class="dot dot-${tone}" aria-hidden="true"></span>${esc(label)}</span>`;
+
 // §12 drawers: below a breakpoint a pane moves into a modal <dialog> (focus trap, Esc) and goes back to the layout
 // when the dialog closes, returning focus to its toggle. place(pane) re-inserts it; toggle() finds the toggle at close
 // time, because re-rendering on close may have replaced the element that opened the drawer.

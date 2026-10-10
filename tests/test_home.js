@@ -70,6 +70,25 @@ test('an unresolved lost reply says not started, and Retry resends the same requ
   assert.deepEqual(f.posts().map(c => c.body.request_id), ['req-1', 'req-1']);
 });
 
+test('a changed goal is not resent while ASHAD cannot say what happened to the earlier start', async () => {
+  const { startInstance } = await load();
+  let reachable = false;
+  const f = fakeApi({
+    '/api/instances/requests/': () => { if (!reachable) throw new TypeError('Failed to fetch'); return { status: 'unknown' }; },
+    '/api/instances': () => { throw new TypeError('Failed to fetch'); },
+  });
+  const draft = await draftWith('First goal');
+  assert.equal((await startInstance(draft, 'p', f.api)).kind, 'not-started');
+  draft.goal = 'Changed goal';
+  assert.equal((await startInstance(draft, 'p', f.api)).kind, 'not-started');
+  assert.equal(draft.requestId, 'req-1', 'a failed check keeps the earlier ID');
+  assert.equal(f.posts().length, 1, 'the changed goal was not sent');
+  reachable = true;  // ASHAD answers that the earlier request never launched.
+  await startInstance(draft, 'p', f.api);
+  assert.notEqual(draft.requestId, 'req-1');
+  assert.equal(f.posts().length, 2);
+});
+
 test('a changed goal after an accepted start is not silently resubmitted', async () => {
   const { startInstance } = await load();
   let accepted = false;

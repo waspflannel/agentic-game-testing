@@ -175,7 +175,7 @@ export function setupSkeleton(data, s, step) {
       + `<input id="setup-agent-name" class="input" data-field="setup-agent-name" maxlength="200" autocomplete="off" value="${esc(s.agentName)}"><span class="hint">Shown in the composer's agent selector.</span></div>`
       + `<div class="field"><label for="setup-model">Model</label><select id="setup-model" class="select" data-field="setup-model">`
       + [['codex', 'ChatGPT (Codex)'], ['claude', 'Claude']].map(([p, label]) => `<optgroup label="${label}">`
-        + models.filter(o => (o.provider || 'codex') === p).map(o => `<option value="${esc(o.id)}"${o.id === s.model ? ' selected' : ''}>${esc(o.label || o.id)}</option>`).join('') + `</optgroup>`).join('')
+        + models.filter(o => o.provider === p).map(o => `<option value="${esc(o.id)}"${o.id === s.model ? ' selected' : ''}>${esc(o.label || o.id)}</option>`).join('') + `</optgroup>`).join('')
       + `</select><span class="hint">Tuning and every turn of this agent use this model through its provider subscription.</span></div></form>`;
   }
   return `<div class="center-col setup-page"><h1 class="hero">Set up a game agent</h1><nav data-region="stepper" aria-label="Setup progress"></nav>`

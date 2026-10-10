@@ -5,9 +5,9 @@ import sys
 import time
 
 # The backend gives the child a scrubbed environment, so tests pass the scenario as a leading
-# --scenario=NAME argument (stripped before recording); FAKE_CLAUDE_SCENARIO is the fallback.
+# --scenario=NAME argument, stripped before recording.
 argv = sys.argv[1:]
-scenario = os.environ.get("FAKE_CLAUDE_SCENARIO") or "success"
+scenario = "success"
 if argv and argv[0].startswith("--scenario="):
     scenario = argv.pop(0).split("=", 1)[1]
 if "--version" in argv:

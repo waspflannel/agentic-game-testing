@@ -77,7 +77,8 @@ class FakeClaudeBackend:
     async def tune(self, evidence, *, model="sonnet", stage="manual", repair=False):
         if not self.ready:
             raise ClaudeError("configuration_required", "Paste a token from claude setup-token")
-        return {"instructions": "x" * 300, "usage": None}
+        return {"answers": {"instructions": "x" * 300}, "usage": None, "usage_scope": "tuning_total",
+                "thread_id": "test-thread", "turn_id": "test-turn"}
 
     def save_token(self, token):
         self.saved.append(token)

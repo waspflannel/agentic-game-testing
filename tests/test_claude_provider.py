@@ -1,13 +1,19 @@
-"""Provider metadata checks; no CLI, keyring, or model calls."""
+"""Claude provider routing, token routes and launch checks against fakes; no real CLI, keyring, or model calls."""
 import asyncio
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock
+
+import pytest
+from fastapi.testclient import TestClient
 
 from ashad.ai import OpenAI
+from ashad.app import create_app
 from ashad.claude_backend import ClaudeBackend
-from ashad.store import Store
-from test_controller import FakeCodexBackend, MemoryCredentials
 from ashad.models import CLAUDE_MODELS, CODEX_MODELS, MODEL_OPTIONS, SUPPORTED_MODELS, Plan, provider_of
+from ashad.store import Store, redact
+from ashad.validation import validate_plan
+from test_controller import FakeClaudeBackend, FakeCodexBackend, MemoryCredentials, environment  # noqa: F401
 
 
 def test_provider_of_routes_claude_aliases_and_defaults_to_codex():
@@ -27,7 +33,6 @@ def test_plan_accepts_claude_alias():
 
 
 def test_redact_strips_claude_oauth_token():
-    from ashad.store import redact
     assert "sk-ant-oat01" not in redact("x sk-ant-oat01-" + "a" * 40)
     assert redact({"oauth_token": "v"})["oauth_token"] == "[REDACTED]"
     assert redact({"claude_code_oauth_token": "v"})["claude_code_oauth_token"] == "[REDACTED]"
@@ -75,14 +80,6 @@ def test_validate_keeps_statuses_separate(tmp_path):
     assert store.get("settings", "ai_status_claude")["api"] == "claude"
     assert store.get("settings", "ai_status", None) is None
 
-
-# ---- App routes, bootstrap, launch validation ----
-import pytest
-from fastapi.testclient import TestClient
-from unittest.mock import AsyncMock
-from ashad.app import create_app
-from ashad.validation import validate_plan
-from test_controller import FakeClaudeBackend, environment  # noqa: F401
 
 HEADERS = {"X-ASHAD-Request": "1"}
 TOKEN = "sk-ant-oat01-" + "z" * 40
@@ -170,4 +167,7 @@ async def test_sonnet_profile_run_records_claude_api(environment):
     run = await ready_run(environment, plan)
     assert run["api"] == "claude" and run["billing"] == "subscription"
     assert run["model"] == "sonnet"
-    assert store.get("settings", "ai_status_claude")["status"] == "ready"
+    await coordinator.control(run["id"], "pause", command_id="pause-sonnet")
+    await coordinator.control(run["id"], "resume", command_id="resume-sonnet")
+    assert store.get("settings", "ai_status_claude")["model"] == "sonnet"
+    assert store.require("runs", run["id"])["api"] == "claude"

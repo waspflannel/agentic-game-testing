@@ -282,7 +282,7 @@ class OpenAI:
                 self.store.event(run_id, "provider_request_finished", diagnostic)
 
     @staticmethod
-    def _answers(data, questions, label="Codex"):
+    def _answers(data, questions, label):
         answers = data.get("answers") if isinstance(data, dict) else None
         if not isinstance(answers, dict) or set(answers) != {question["name"] for question in questions}:
             raise ProviderError("invalid_decision", f"{label} returned missing or unexpected selection answers; no action was executed.")

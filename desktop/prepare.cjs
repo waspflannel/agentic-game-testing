@@ -120,7 +120,9 @@ async function prepare() {
   await run(python, ['-I', '-B', '-c',
     'import sys; from pathlib import Path; from importlib.metadata import version; ' +
     `assert sys.version.split()[0] == "${PYTHON_VERSION}"; ` +
-    'pins=[line.split()[0].split("==") for line in Path(sys.argv[1]).read_text().splitlines() if line.strip()]; ' +
+    'from packaging.requirements import Requirement; ' +
+    'reqs=[Requirement(line.split(" --hash")[0]) for line in Path(sys.argv[1]).read_text().splitlines() if line.strip()]; ' +
+    'pins=[(r.name, next(iter(r.specifier)).version) for r in reqs if r.marker is None or r.marker.evaluate()]; ' +
     'assert all(version(name)==expected for name,expected in pins); ' +
     'import ashad.__main__, ashad.watchdog, ashad.app, integration.fixtures; ' +
     'from keyring.backends.Windows import WinVaultKeyring; assert WinVaultKeyring.priority > 0; ' +

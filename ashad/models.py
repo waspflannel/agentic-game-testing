@@ -47,6 +47,11 @@ class RecalculateGoalsRequest(Contract):
     command_id: str = Field(min_length=1, max_length=100)
 
 
+class ManualSaveRequest(Contract):
+    command_id: str = Field(min_length=1, max_length=100)
+    label: str | None = Field(default=None, max_length=100)
+
+
 class Transport(Contract):
     mode: Literal["enet", "steam"] = "enet"
     app_id: int | None = Field(default=None, gt=0)

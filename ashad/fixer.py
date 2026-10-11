@@ -701,22 +701,12 @@ class Fixer:
         pr = self._unit(loop, kind)["pr"]
         number = str(pr["number"])
         await self._run(["gh", "pr", "merge", number, "--repo", FIX_REPO, "--merge", "--match-head-commit", pr["head_sha"]], cwd=self.checkout_root)
-        code, text = await self._run(["gh", "pr", "view", number, "--repo", FIX_REPO, "--json", "state,mergeCommit,headRefOid"], cwd=self.checkout_root)
-        merged = self._merged_sha(code, text)
-        if merged is None:
+        state, merged, _ = await self._pr_state(number)
+        if state != "MERGED" or not merged:
             if kind == "fix":
                 return await self._fail_attempt(loop_id, "merge_failed")
             return self._needs_you(loop_id, "revert_failed", sha=self._current(loop)[1]["merge_sha"])
         await self._confirm_merge(loop_id, kind, merged)
-
-    @staticmethod
-    def _merged_sha(code, text):
-        """The merge commit of `gh pr view --json state,mergeCommit` when the PR is MERGED, else None."""
-        try:
-            view = json.loads(text) if code == 0 else {}
-            return view["mergeCommit"]["oid"] if view.get("state") == "MERGED" else None
-        except (ValueError, KeyError, TypeError, AttributeError):
-            return None
 
     async def _confirm_merge(self, loop_id, kind, merge_sha):
         """D14: main may only gain the exact head that was tested: two parents and parent 2 is the gated head."""
@@ -966,11 +956,8 @@ class Fixer:
         kind = "revert" if self._current(self.store.require("loops", loop_id))[0] == "revert" else "fix"
         if reason in ("review_pr", "review_revert"):
             loop = self.store.require("loops", loop_id)
-            number = str(self._unit(loop, kind)["pr"]["number"])
-            code, text = await self._run(["gh", "pr", "view", number, "--repo", FIX_REPO, "--json", "state,mergeCommit,headRefOid"],
-                                         cwd=self.checkout_root)
-            merged = self._merged_sha(code, text)
-            if merged is None:
+            state, merged, _ = await self._pr_state(self._unit(loop, kind)["pr"]["number"])
+            if state != "MERGED" or not merged:
                 return self._needs_you(loop_id, reason, message=NEEDS_YOU["not_merged"])
             return await self._confirm_merge(loop_id, kind, merged)
         await self._apply(loop_id, kind)
@@ -982,7 +969,7 @@ class Fixer:
         try:
             view = json.loads(text) if code == 0 else {}
             return view.get("state"), (view.get("mergeCommit") or {}).get("oid"), view.get("headRefOid")
-        except (ValueError, AttributeError):
+        except (ValueError, AttributeError, TypeError):
             return None, None, None
 
     async def _cancel(self, loop_id):

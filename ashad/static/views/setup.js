@@ -42,7 +42,7 @@ export function setupModel(data, s) {
     'Add or choose a build to continue.',
     !check || check.loading ? 'Checking readiness…' : check.error ? 'Re-check readiness to continue.'
       : !r.build_validation?.ready ? 'The build is not validated.' : 'No desktop is ready yet. Prepare one below.',
-    !signedIn ? 'Connect Claude to get game controls.' : !s.agentName.trim() ? 'Name the configuration.' : s.controls.status === 'busy' ? 'Getting game controls…' : '',
+    s.controls.status === 'busy' ? 'Getting game controls…' : !signedIn ? 'Connect Claude to get game controls.' : !s.agentName.trim() ? 'Name the configuration.' : '',
   ];
   return { project, builds, build, check, done, first, step, signedIn, blocked: done[step - 1] ? '' : reasons[step - 1] };
 }
@@ -210,7 +210,6 @@ function mainHTML(data, s, m, now) {
         + `<div class="btn-row"><button type="button" class="btn ${m.done[2] ? 'btn-secondary' : 'btn-primary'}" data-action="setup-prepare" data-key="s3-prepare"${op.status === 'busy' || m.check?.loading ? ' aria-disabled="true"' : ''}>${icon('monitor')}Prepare desktop…</button></div>${prep}`;
     }
     case 4: {
-      if (!m.signedIn) return `<p class="note note-error">${icon('alert')}<span>Getting game controls uses Claude Sonnet. <a href="#/settings/account" data-key="s4-signin">Connect Claude under Settings › Account</a>, then come back. Instances can still use Codex.</span></p>`;
       if (s.agent) {
         const a = s.agent;
         return `<dl class="kv"><dt>Configuration</dt><dd>${esc(a.name || a.id)}</dd><dt>Build</dt><dd>${esc(m.build?.name || a.build_id)}</dd><dt>Gathered by</dt><dd>Claude Sonnet</dd>`
@@ -222,6 +221,7 @@ function mainHTML(data, s, m, now) {
       if (op.waiting) return about + `<p class="note">${icon('clock')}<span>Another Get game controls run is in progress; this one starts when it finishes.</span>`
         + ` <button type="button" class="btn btn-secondary btn-sm" data-action="setup-stop-waiting" data-key="s4-stop">Stop waiting</button></p>`;
       if (op.status === 'busy') return about + `<div class="tuning">${controlsProgressHTML(op, now)}<p class="hint">You can leave this page; it keeps going.</p></div>`;
+      if (!m.signedIn) return `<p class="note note-error">${icon('alert')}<span>Getting game controls uses Claude Sonnet. <a href="#/settings/account" data-key="s4-signin">Connect Claude under Settings › Account</a>, then come back. Instances can still use Codex.</span></p>`;
       return about + (op.error ? noteHTML('error', esc(op.error)) : '');
     }
     default: return '';

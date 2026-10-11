@@ -262,7 +262,7 @@ test('a blocked run with no replacement links to Get game controls again', async
   const { instanceState, threadRegions, blockedReplacement } = await load();
   const r = run('Ended', { agent_id: 'gone', project_id: 'p' });
   const data = { agents: [{ id: 'ret', project_id: 'p', status: 'retired' }] };
-  assert.deepEqual(blockedReplacement(r, data), { replacement: null });
+  assert.deepEqual(blockedReplacement(r, data), { retired: false, replacement: null });
   const banner = threadRegions(r, { status: instanceState(r), data, ui: {}, pending: new Set(), cameraStatus: 'offline', player: 'p1', tab: 'actions' }).banner;
   assert.match(banner, /href="#\/setup\?project=p&step=4" data-key="t-reconfigure">Get game controls again<\/a> to reconfigure the project\./);
 });
@@ -274,4 +274,13 @@ test('a run with a ready configuration, or none recorded, is not blocked', async
   assert.equal(blockedReplacement(run('Ended', { agent_id: undefined }), data), undefined);
   const r = run('Ended', { project_id: 'p' });
   assert.equal(threadRegions(r, { status: instanceState(r), data, ui: {}, pending: new Set(), cameraStatus: 'offline', player: 'p1', tab: 'actions' }).banner, '');
+});
+
+test('a retired configuration says retired, and a live run is never shown as blocked', async () => {
+  const { instanceState, threadRegions, blockedReplacement } = await load();
+  const data = { agents: [{ id: 'ret', project_id: 'p', status: 'retired' }, { id: 'new', name: 'Newer', project_id: 'p', status: 'ready', created_at: 5 }] };
+  const ended = run('Ended', { agent_id: 'ret', project_id: 'p' });
+  const banner = threadRegions(ended, { status: instanceState(ended), data, ui: {}, pending: new Set(), cameraStatus: 'offline', player: 'p1', tab: 'actions' }).banner;
+  assert.match(banner, /<strong>Blocked\.<\/strong> This instance's project configuration is retired\. <a [^>]*>Start again with Newer</);
+  assert.equal(blockedReplacement(run('Paused', { agent_id: 'ret', project_id: 'p' }), data), undefined);
 });

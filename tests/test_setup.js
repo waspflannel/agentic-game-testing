@@ -210,6 +210,20 @@ test('step 4 is blocked with the Claude message when only Codex is ready', async
   assert.doesNotMatch(on.nav, /aria-disabled/);
   assert.match(on.nav, />Get game controls</);
 });
+test('step 4 keeps a running or finished Get game controls visible when Claude stops reporting ready', async () => {
+  const { newSetup, setupModel, setupRegions } = await load();
+  const d = bothProviders({ ai: { status: 'ready', model: 'gpt-6-astra' } });
+  const busy = Object.assign(newSetup('p'), { buildId: 'b', agentName: 'A', readiness: readyProbe, step: 4 });
+  Object.assign(busy.controls, { status: 'busy', progress: { stage: 'exploring', batch_count: 8, batches_done: 5, workers: 4, started_at: 1, model_calls: 5 } });
+  const running = setupRegions(d, busy, setupModel(d, busy), 2);
+  assert.match(running.main, /5 of 8 batches/);
+  assert.doesNotMatch(running.main, /uses Claude Sonnet\. <a/);
+  const done = Object.assign(newSetup('p'), { buildId: 'b', agentName: 'A', readiness: readyProbe, step: 4, agent: { id: 'a1', name: 'A', build_id: 'b' } });
+  const finished = setupRegions(d, done, setupModel(d, done));
+  assert.match(finished.main, /data-action="ov-controls" data-id="a1"/);
+  assert.match(finished.nav, /Start an instance/);
+});
+
 
 test('step 1 lists existing projects as links without a delete button', async () => {
   const { newSetup, setupModel, setupRegions } = await load();

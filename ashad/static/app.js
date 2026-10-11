@@ -385,6 +385,8 @@ async function deleteAgent(id) {
     await api(`/api/agents/${enc(id)}`, { method: 'DELETE' });
     state.data.agents = state.data.agents.filter(a => a.id !== id);
     for (const ov of state.overviews.values()) ov.refreshes.delete(id);
+    // A setup that finished while its page was closed still shows this configuration; it starts over at step 4.
+    for (const s of state.setups.values()) if (s.agent?.id === id) Object.assign(s, { agent: null, controls: newOp() });
     toast(`${name} deleted.`, 'ok');
   } catch (error) { toast(error.message, 'error'); }
   render();

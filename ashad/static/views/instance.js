@@ -170,22 +170,28 @@ const ACTIONS = {
 
 const MODEL_CHANGE_STATES = new Set(['Queued', 'Starting', 'Running', 'Paused', 'Investigating']);
 
-// A run is blocked when its configuration is missing or not ready. Returns undefined when it is not blocked,
-// else { replacement }: the newest ready configuration of the same project, or null.
+// An ended run is blocked when its configuration is missing or not ready. Returns undefined when it is not blocked,
+// else { retired, replacement }: whether the configuration still exists (retired) and the newest ready configuration
+// of the same project, or null.
 export function blockedReplacement(run, data) {
-  if (!run?.agent_id || (data?.agents || []).some(a => a.id === run.agent_id && (a.status ?? 'ready') === 'ready')) return undefined;
-  const replacement = (data?.agents || []).filter(a => a.project_id === run.project_id && (a.status ?? 'ready') === 'ready')
+  if (!run?.agent_id || isActiveRun(run)) return undefined;
+  const agents = data?.agents || [];
+  const ready = a => (a.status ?? 'ready') === 'ready';
+  const current = agents.find(a => a.id === run.agent_id);
+  if (current && ready(current)) return undefined;
+  const replacement = agents.filter(a => a.project_id === run.project_id && ready(a))
     .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))[0] || null;
-  return { replacement };
+  return { retired: Boolean(current), replacement };
 }
 
 function blockedBannerHTML(run, data) {
   const blocked = blockedReplacement(run, data);
   if (!blocked) return '';
   const r = blocked.replacement;
+  const reason = blocked.retired ? "This instance's project configuration is retired. " : "This instance's project configuration was deleted. ";
   const text = r
-    ? `This instance's project configuration was deleted. <a href="${href('p', run.project_id, 'new')}?agent=${enc(r.id)}&from=${enc(run.id)}" data-key="t-unblock">Start again with ${esc(r.name || r.id)}</a>`
-    : `This instance's project configuration was deleted. <a href="#/setup?project=${enc(run.project_id)}&step=4" data-key="t-reconfigure">Get game controls again</a> to reconfigure the project.`;
+    ? `${reason}<a href="${href('p', run.project_id, 'new')}?agent=${enc(r.id)}&from=${enc(run.id)}" data-key="t-unblock">Start again with ${esc(r.name || r.id)}</a>`
+    : `${reason}<a href="#/setup?project=${enc(run.project_id)}&step=4" data-key="t-reconfigure">Get game controls again</a> to reconfigure the project.`;
   return `<div class="thread-banner">${icon('alert')}<div><strong>Blocked.</strong> ${text}</div></div>`;
 }
 

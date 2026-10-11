@@ -152,18 +152,18 @@ test('Get controls shows real progress: batches, workers, step count and a stall
   const { newOp } = await core();
   const op = Object.assign(newOp(), { status: 'busy', startedAt: 1000 });
   assert.match(controlsProgressHTML(op, 1010), /<progress class="progress" aria-label="Get controls in progress"><\/progress><p>Starting…/, 'no progress yet: indeterminate');
-  op.progress = { stage: 'exploring', batch_count: 8, batches_done: 5, workers: 4, started_at: 1000 };
+  op.progress = { stage: 'exploring', batch_count: 8, batches_done: 5, workers: 4, started_at: 1000, model_calls: 7, rejected_replies: 2, last_call_at: 1070 };
   let html = controlsProgressHTML(op, 1100);
   assert.match(html, /<progress class="progress" max="9" value="5" aria-label="Get controls progress, step 6 of 9">/);
   assert.match(html, /Reading source: 5 of 8 batches \(4 workers in parallel\) · <time data-elapsed="1000">1m 40s<\/time> elapsed/);
-  assert.doesNotMatch(html, /Nothing has finished/);
-  op.progress = { ...op.progress, batches_done: 0 };
-  html = controlsProgressHTML(op, 1000 + STALL_SECONDS + 60);
-  assert.match(html, /Nothing has finished for 4 minutes[\s\S]*Getting game controls is still running\./, 'a long silence is called out');
+  assert.match(html, /7 model replies \(2 rejected and retried\) · last reply <time data-elapsed="1070">0m 30s<\/time> ago/);
+  assert.doesNotMatch(html, /No model reply/);
+  html = controlsProgressHTML(op, 1070 + STALL_SECONDS + 60);
+  assert.match(html, /No model reply for 4 minutes[\s\S]*Getting game controls is still running\./, 'a long silence is called out');
   op.progress = { stage: 'writing', batch_count: 8, batches_done: 8, workers: 4, started_at: 1000 };
   assert.match(controlsProgressHTML(op, 1100), /max="9" value="8"[\s\S]*Writing the game controls from 8 batches of notes/);
-  op.progress = { stage: 'writing', batch_count: 0, batches_done: 0, workers: 4, started_at: 1000 };
-  assert.match(controlsProgressHTML(op, 1030), /max="1" value="0"[\s\S]*Writing the game controls · /);
+  op.progress = { stage: 'writing', batch_count: 0, batches_done: 0, workers: 0, started_at: 1000, model_calls: 0, rejected_replies: 0, last_call_at: null };
+  assert.match(controlsProgressHTML(op, 1030), /max="1" value="0"[\s\S]*Writing the game controls · [\s\S]*0 model replies · started <time data-elapsed="1000">0m 30s<\/time> ago/);
 });
 
 test('setup markup escapes names and build labels, including the done view', async () => {

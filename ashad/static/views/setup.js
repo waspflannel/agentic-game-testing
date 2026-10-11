@@ -114,9 +114,12 @@ export function controlsProgressHTML(op, now) {
   const bar = steps ? `<progress class="progress" max="${steps}" value="${done}" aria-label="Get controls progress, step ${done + 1} of ${steps}"></progress>`
     : `<progress class="progress" aria-label="Get controls in progress"></progress>`;
   const started = op.startedAt || p?.started_at || now;
-  const stalled = p?.started_at && !done && now - p.started_at > STALL_SECONDS
-    ? `<p class="note note-attention">${icon('clock')}<span>Nothing has finished for ${Math.floor((now - p.started_at) / 60)} minutes. A step usually takes under 2 minutes; the provider may be slow or rate limited. Getting game controls is still running.</span></p>` : '';
-  return `${bar}<p>${esc(stage)} · <time data-elapsed="${started}">${elapsed(now - started)}</time> elapsed</p>${stalled}`;
+  const lastAt = p?.last_call_at || p?.started_at;
+  const calls = !p ? '' : `${p.model_calls} model ${p.model_calls === 1 ? 'reply' : 'replies'}${p.rejected_replies ? ` (${p.rejected_replies} rejected and retried)` : ''}`
+    + ` · ${p.last_call_at ? 'last reply' : 'started'} <time data-elapsed="${lastAt}">${elapsed(now - lastAt)}</time> ago`;
+  const stalled = p && now - lastAt > STALL_SECONDS
+    ? `<p class="note note-attention">${icon('clock')}<span>No model reply for ${Math.floor((now - lastAt) / 60)} minutes. A call usually takes under 2 minutes; the provider may be slow or rate limited. Getting game controls is still running.</span></p>` : '';
+  return `${bar}<p>${esc(stage)} · <time data-elapsed="${started}">${elapsed(now - started)}</time> elapsed</p>${calls ? `<p class="hint">${calls}</p>` : ''}${stalled}`;
 }
 
 // ── Markup ──────────────────────────────────────────────────────────────────

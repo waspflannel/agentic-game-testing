@@ -304,6 +304,19 @@ def test_instance_still_finishing_cannot_be_deleted(tmp_path):
         assert store.get("runs", "r1") is not None
 
 
+def test_instance_with_a_running_player_task_cannot_be_deleted(tmp_path):
+    app = offline_app(tmp_path)
+    store = app.state.store
+    store.put("runs", released_run("r1"))
+    tasks = app.state.coordinator.tasks
+    tasks[("r1", "p1")] = SimpleNamespace(done=lambda: False)
+    with TestClient(app) as client:
+        refused = client.delete("/api/runs/r1", headers=HEADERS)
+        assert refused.status_code == 422 and "still saving" in refused.json()["detail"]
+        assert store.get("runs", "r1") is not None
+        tasks.clear()  # Shutdown cancels real tasks; the fake has nothing to cancel.
+
+
 def test_shared_scenario_survives_deleting_one_of_its_runs(tmp_path):
     app = offline_app(tmp_path)
     store = app.state.store

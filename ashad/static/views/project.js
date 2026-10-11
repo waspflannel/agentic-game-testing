@@ -30,7 +30,7 @@ export function overviewModel(data, ov, now = Date.now() / 1000) {
   const runs = (data?.runs || []).filter(r => r.project_id === ov.projectId).sort((a, b) => (runTime(b) || 0) - (runTime(a) || 0));
   return {
     busy: runs.some(r => owners.has(r.id)),
-    project, builds, build, agents, total: runs.length,
+    project, builds, build, agents, hasReady: agents.some(a => a.status !== 'retired'), total: runs.length,
     recent: runs.slice(0, RECENT).map(r => ({ id: r.id, goal: runGoal(r), age: ago(runTime(r), now), status: runStatus(r, owners.get(r.id)), state: r.state, reason: r.ending_reason, duration: duration(r) })),
     buildName,
   };
@@ -48,7 +48,7 @@ export function overviewRegions(m, ov, now = Date.now() / 1000) {
   const pid = ov.projectId;
   const head = `<h1>${esc(m.project.name || m.project.id)}</h1><div class="btn-row">`
     + `<button type="button" class="btn btn-ghost" data-action="ov-delete-project" data-key="ov-delete-project"${m.busy ? ' aria-disabled="true" title="Stop its active instance before deleting this project"' : ''}>${icon('trash')}Delete project</button>`
-    + `<a class="btn btn-secondary" href="#/setup?project=${enc(pid)}" data-key="ov-add-agent">${icon('plus')}Add project configuration</a>`
+    + (m.hasReady ? '' : `<a class="btn btn-secondary" href="#/setup?project=${enc(pid)}" data-key="ov-add-agent">${icon('plus')}Add project configuration</a>`)
     + `<a class="btn btn-primary" href="${href('p', pid, 'new')}" data-key="ov-new">${icon('square-pen')}New instance</a></div>`;
 
   const validation = b => {

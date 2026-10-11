@@ -2,7 +2,7 @@
 
 ASHAD currently supports tuning a reusable agent profile and starting a fresh, one-bot host instance with a primary goal over ENet or Steam. This reduction keeps the next question testable: can the bot use its controls, understand the current state and make progress without getting trapped in ordinary UI?
 
-Tuning creates instructions from pinned source/control evidence. It does not train weights or establish that the bot can complete the game. Each run freezes its profile, build and model. Usage, capacity, infrastructure settings, live view, pause, stop, takeover and operational evidence remain in scope.
+Tuning creates instructions from pinned source/control evidence. It does not train weights or establish that the bot can complete the game. Each run freezes its profile and build; its model defaults to the profile's and can be changed within the same provider. Usage, capacity, infrastructure settings, live view, pause, stop, takeover and operational evidence remain in scope.
 
 ## Before restoring broader features
 

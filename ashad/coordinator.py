@@ -77,6 +77,8 @@ class Coordinator:
         self.draining = False
         from .structured import StructuredPlayers
         self.structured = StructuredPlayers(self)
+        from .saves import Saves
+        self.saves = Saves(self)
 
     def occupied_instances(self):
         """Lifecycle labels cannot release unresolved desktop/account ownership."""
@@ -176,8 +178,9 @@ class Coordinator:
                    "'instance_' || id IN (SELECT id FROM commands WHERE scope='launch' AND json_extract(result,'$.run_id')=?))",
                    (rid, rid))
         db.execute("DELETE FROM commands WHERE scope='launch' AND json_extract(result,'$.run_id')=?", (rid,))
+        db.execute("DELETE FROM commands WHERE scope=?", ("save:" + rid,))
         db.execute("DELETE FROM events WHERE run_id=?", (rid,))
-        db.execute("DELETE FROM records WHERE kind IN ('incidents','repair_task_exports') AND json_extract(data,'$.run_id')=?", (rid,))
+        db.execute("DELETE FROM records WHERE kind IN ('incidents','repair_task_exports','saves') AND json_extract(data,'$.run_id')=?", (rid,))
         db.execute("DELETE FROM records WHERE kind='runs' AND id=?", (rid,))
         scenario_id = run.get("scenario_id")
         if scenario_id and not db.execute("SELECT 1 FROM records WHERE kind='runs' AND json_extract(data,'$.scenario_id')=? LIMIT 1",
@@ -209,7 +212,7 @@ class Coordinator:
                 if field in latest:
                     run[field] = copy.deepcopy(latest[field])
             for pid, ps in run["players"].items():
-                for key in ("last_observation", "activity", "invalid_actions", "structured_context", "agent_memory", "agent_status", "pending_action", "observation_signature", "last_state_change_at"):
+                for key in ("last_observation", "activity", "invalid_actions", "structured_context", "agent_memory", "agent_status", "pending_action", "observation_signature", "last_state_change_at", "attempted_actions"):
                     if key == "agent_status" and run["state"] not in {"Starting", "Running"}:
                         continue
                     ps[key] = latest["players"][pid].get(key, ps.get(key))
@@ -273,7 +276,7 @@ class Coordinator:
         self.clients[worker_id] = WorkerClient(worker["url"], token, timeout=8)
         return self.clients[worker_id]
 
-    async def request(self, worker_id, method, path, body=None):
+    async def request(self, worker_id, method, path, body=None, timeout=None):
         client = self.client(worker_id)
         # The wire contract is stable and deliberately separate from deployment.
         if body is not None and path != "/bind" and not path.startswith("/setup/"):
@@ -292,14 +295,17 @@ class Coordinator:
                         body["investigation_deadline"] = body.pop("deadline", run.get("investigation_deadline"))
                         duration = run["plan"]["limits"]["duration_seconds"]
                         body["run_deadline"] = run["started_at"] + duration if duration and run.get("started_at") else None
+        if timeout:
+            return await client.request(method, path, data=body, timeout=timeout)
         return await client.request(method, path, data=body)
 
-    def save_scenario(self, raw, scenario_id=None):
+    def save_scenario(self, raw, scenario_id=None, **origin):
         plan = Plan.model_validate(raw).model_dump()
         scenario_id = scenario_id or uid("scenario_")
         existing = [s for s in self.store.list("scenarios") if s["id"] == scenario_id]
         revision = max((s["revision"] for s in existing), default=0) + 1
-        record = {"id": scenario_id, "revision": revision, "title": plan["title"], "created_at": time.time(), "plan": plan}
+        record = {"id": scenario_id, "revision": revision, "title": plan["title"], "created_at": time.time(), "plan": plan,
+                  **{k: origin[k] for k in ("source_run_id", "rerun_kind", "save_id") if k in origin}}
         self.store.put("scenarios", record, f"{scenario_id}:{revision}")
         return record
 
@@ -381,6 +387,9 @@ class Coordinator:
             run.update(api=PROVIDERS[provider_of(plan["model"])]["pricing"]["api"], billing="subscription")
             run["source_run_id"] = scenario.get("source_run_id")
             run["rerun_kind"] = scenario.get("rerun_kind")
+            if scenario.get("save_id"):
+                from .saves import restore_state
+                restore_state(run, self.store.require("saves", scenario["save_id"]))
             run["project_id"] = run["build"].get("project_id")
             with self.store.transaction() as db:
                 # Accepted/queued work owns the fixed global slot before any worker
@@ -434,6 +443,22 @@ class Coordinator:
         state["bound"] = True
         self.save_run(run)
         await self.request(state["worker_id"], "POST", "/bind", binding)
+        loaded = run.get("loaded_save")
+        if loaded and not state.get("restored"):
+            skipped = loaded["game_save"] == "none"
+            if not skipped:
+                save = self.store.require("saves", loaded["save_id"])
+                path = self.saves.archive_path(loaded["source_run_id"], loaded["save_id"])
+                blob = path.read_bytes() if path.is_file() else b""
+                if hashlib.sha256(blob).hexdigest() != save["game"]["sha256"]:
+                    raise ValueError("Saved game archive changed or is missing")
+                from .saves import CAPTURE_TIMEOUT_SECONDS
+                await self.request(state["worker_id"], "POST", "/saves/restore", {"epoch": state["epoch"],
+                    "archive_base64": base64.b64encode(blob).decode(), "sha256": save["game"]["sha256"],
+                    "identity": state["identity"], "transport": transport["mode"]}, timeout=CAPTURE_TIMEOUT_SECONDS)
+            self.store.event(run["id"], "save_restored", {"player_id": player["id"], "save_id": loaded["save_id"], "skipped": skipped})
+            state["restored"] = True
+            self.save_run(run)
         setup = run["plan"]["world_setup"]
         if setup["mode"] != "fresh" and not state.get("restored"):
             fixture = self.store.require("fixtures", setup["fixture_id"])

@@ -1,4 +1,5 @@
 """Contract tests use explicit desktop doubles; real-client checks are recorded separately."""
+import hashlib
 import asyncio
 import base64
 import io
@@ -17,7 +18,7 @@ from fastapi import HTTPException
 
 from ashad.worker_client import WorkerClient, WorkerError
 from worker.app import create_app
-from worker.models import Binding, BoundCommand, FixtureImport, Heartbeat, Launch, Pin, Stop
+from worker.models import Binding, BoundCommand, FixtureImport, Heartbeat, Launch, Pin, SaveCapture, SaveRestore, Stop
 from worker.runtime import Runtime, atomic_json
 
 
@@ -189,6 +190,85 @@ class WorkerContractTests(unittest.IsolatedAsyncioTestCase):
         telem["transport"] = "enet"
         atomic_json(self.worker.run_dir / "telemetry.json", telem)
         self.assertFalse(self.worker._capture_allowed())
+
+    def save_command(self):
+        return SaveCapture(**self.command().model_dump(), save_id="save_1")
+
+    def restore_command(self, capture, **overrides):
+        fields = dict(archive_base64=capture["archive_base64"], sha256=capture["sha256"], identity="identity-A", transport="enet")
+        return SaveRestore(**self.command().model_dump(), **{**fields, **overrides})
+
+    async def test_save_capture_confirmed_by_game(self):
+        (self.worker.game_dir / "world.save").write_text("world")
+        (self.worker.game_dir / "ashad-fixture.json").write_text("{}")
+        self.worker.game_bridge.request = AsyncMock(return_value={"status": "saved"})
+        result = await self.worker.capture_save(self.save_command())
+        self.worker.game_bridge.request.assert_awaited_with("save_game", {"epoch": self.worker.game_control_epoch, "save_id": "save_1"})
+        self.assertEqual(result["game_save"], "confirmed")
+        blob = base64.b64decode(result["archive_base64"])
+        with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+            self.assertEqual(archive.namelist(), ["world.save"])
+        self.assertEqual(result["sha256"], hashlib.sha256(blob).hexdigest())
+
+    async def test_save_capture_without_game_support_is_on_disk(self):
+        (self.worker.game_dir / "world.save").write_text("world")
+        self.worker.game_bridge.request = AsyncMock(return_value={"error": "unknown operation"})
+        result = await self.worker.capture_save(self.save_command())
+        self.assertEqual((result["game_save"], result["detail"]), ("on_disk", "unknown operation"))
+        self.worker.game_bridge.request = AsyncMock(side_effect=OSError("down"))
+        result = await self.worker.capture_save(self.save_command())
+        self.assertEqual((result["game_save"], result["detail"]), ("on_disk", "OSError"))
+        self.worker.game_bridge.request = AsyncMock()
+        self.worker.game = None
+        result = await self.worker.capture_save(self.save_command())
+        self.worker.game_bridge.request.assert_not_awaited()
+        self.assertEqual(result["game_save"], "on_disk")
+
+    async def test_save_capture_empty_dir_is_none(self):
+        result = await self.worker.capture_save(self.save_command())
+        self.assertEqual(result["game_save"], "none")
+        self.assertEqual(result["bytes"], 0)
+        self.assertIsNone(result["sha256"])
+
+    async def test_save_restore_roundtrip_and_refusals(self):
+        world = self.worker.game_dir / "world.save"
+        world.write_bytes(b"world\x00bytes")
+        capture = await self.worker.capture_save(self.save_command())
+        world.unlink()
+        self.worker.game = None
+        self.worker.lifecycle = "bound"
+        self.assertEqual(self.worker.restore_save(self.restore_command(capture))["sha256"], capture["sha256"])
+        self.assertEqual(world.read_bytes(), b"world\x00bytes")
+
+        def snapshot():
+            return {str(p.relative_to(self.worker.game_dir)): p.read_bytes() for p in self.worker.game_dir.rglob("*") if p.is_file()}
+
+        def refused(code, command):
+            before = snapshot()
+            with self.assertRaises(HTTPException) as caught:
+                self.worker.restore_save(command)
+            self.assertEqual(caught.exception.status_code, code)
+            self.assertEqual(snapshot(), before)
+
+        for path in self.worker.game_dir.iterdir():
+            path.unlink()
+        (self.worker.game_dir / "sentinel").write_bytes(b"keep")
+        self.worker.game = ProcessDouble()
+        refused(409, self.restore_command(capture))
+        self.worker.game = None
+        refused(422, self.restore_command(capture, identity="identity-B"))
+        refused(422, self.restore_command(capture, transport="steam"))
+        refused(409, self.restore_command(capture))
+        (self.worker.game_dir / "sentinel").unlink()
+        refused(422, self.restore_command(capture, sha256="0" * 64))
+        blob = io.BytesIO()
+        with zipfile.ZipFile(blob, "w") as archive:
+            archive.writestr("../x", "bad")
+        content = blob.getvalue()
+        bad = dict(archive_base64=base64.b64encode(content).decode(), sha256=hashlib.sha256(content).hexdigest())
+        refused(422, self.restore_command(capture, **bad))
+        self.assertEqual(snapshot(), {})
+        self.assertFalse((self.worker.run_dir / "x").exists())
 
     async def test_fixture_roundtrip_and_traversal_rejection(self):
         self.worker.game = None

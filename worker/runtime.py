@@ -22,10 +22,11 @@ from .desktop import SEGMENT_SECONDS, Desktop
 from .game_bridge import GameBridge
 from .independent_watchdog import kill_run_game, revoke_desktop
 from .models import GameAction
-from .models import Binding, BoundCommand, FixtureImport, Heartbeat, Launch, Pin, SteamVerify, Stop, safe_id, timestamp, utc_now
+from .models import Binding, BoundCommand, FixtureImport, Heartbeat, Launch, Pin, SaveCapture, SaveRestore, SteamVerify, Stop, safe_id, timestamp, utc_now
 
 
 CONTRACT_VERSION = "ashad-worker/1"
+MAX_SAVE_BYTES = 100 * 1024 * 1024
 EVIDENCE_ROOTS = {"frames", "pinned", "rolling", "game.log", "actions.jsonl", "events.jsonl", "observations.jsonl", "capture.log", "telemetry.json", "fixture-manifest.json", "binding.json", "build.json"}
 
 
@@ -49,6 +50,16 @@ def executable_allowed(executable: Path) -> bool:
 def game_environment(env: dict) -> dict:
     return {key: value for key, value in env.items() if key not in {
         "ASHAD_WORKER_TOKEN", "ASHAD_WORKER_TOKEN_FILE", "ASHAD_VNC_PASSWORD", "ASHAD_VNC_PASSWORD_FILE", "OPENAI_API_KEY"}}
+
+
+def _zip_game_dir(game_dir: Path) -> bytes:
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
+        for path in game_dir.rglob("*"):
+            if path.is_file() and not path.is_symlink() and path.name != "ashad-fixture.json":
+                archive.write(path, str(path.relative_to(game_dir)))
+        empty = not archive.namelist()
+    return b"" if empty else stream.getvalue()
 
 
 class Runtime:
@@ -892,6 +903,72 @@ class Runtime:
         content = stream.getvalue()
         return {"manifest": manifest, "sha256": hashlib.sha256(content).hexdigest(), "archive_base64": base64.b64encode(content).decode()}
 
+    def _unpack_archive(self, archive_base64: str, check=None) -> bytes:
+        if len(archive_base64) > 140_000_000:
+            raise HTTPException(413, "Fixture archive exceeds 100 MiB")
+        try:
+            blob = base64.b64decode(archive_base64, validate=True)
+            with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+                entries = archive.infolist()
+                if sum(entry.file_size for entry in entries) > 1024 * 1024 * 1024:
+                    raise ValueError("Unpacked fixture exceeds 1 GiB")
+                for entry in entries:
+                    path = (self.game_dir / entry.filename).resolve()
+                    if not path.is_relative_to(self.game_dir.resolve()) or "\\" in entry.filename or (entry.external_attr >> 16) & 0o170000 == 0o120000:
+                        raise ValueError("Fixture contains an unsafe path or symlink")
+                if check:
+                    check(archive)
+                archive.extractall(self.game_dir)
+        except (ValueError, zipfile.BadZipFile, KeyError) as exc:
+            raise HTTPException(422, str(exc)) from exc
+        return blob
+
+    async def capture_save(self, request: SaveCapture) -> dict:
+        async with self.state_lock:
+            self.check_binding(request)
+            running = self.game_running
+            epoch = self.game_control_epoch
+            game_dir = self.game_dir
+        status, detail = "on_disk", "Game is not running"
+        if running:
+            try:
+                result = await self.game_bridge.request("save_game", {"epoch": epoch, "save_id": request.save_id})
+                if result.get("status") == "saved":
+                    status, detail = "confirmed", ""
+                else:
+                    detail = str(result.get("reason") or result.get("error") or "Game did not confirm the save")[:300]
+            except (OSError, ValueError, asyncio.TimeoutError) as exc:
+                detail = type(exc).__name__
+        game_dir.mkdir(parents=True, exist_ok=True)
+        content = await asyncio.to_thread(_zip_game_dir, game_dir)
+        if content == b"":
+            status = "none"
+        if len(content) > MAX_SAVE_BYTES:
+            raise HTTPException(413, "Save archive exceeds 100 MiB")
+        sha = hashlib.sha256(content).hexdigest() if content else None
+        self._event("save_captured", {"save_id": request.save_id, "game_save": status, "sha256": sha, "bytes": len(content)})
+        return {"save_id": request.save_id, "game_save": status, "detail": detail, "sha256": sha, "bytes": len(content),
+            "archive_base64": base64.b64encode(content).decode()}
+
+    def restore_save(self, request: SaveRestore) -> dict:
+        self.check_binding(request)
+        if self.lifecycle != "bound" or self.game_running:
+            raise HTTPException(409, "A save can only be restored before the game starts")
+        if request.identity != self.binding.identity or request.transport != self.binding.transport:
+            raise HTTPException(422, "Save identity or transport does not match this player")
+        self.game_dir.mkdir(parents=True, exist_ok=True)
+        if any(self.game_dir.iterdir()):
+            raise HTTPException(409, "Run save directory is not empty; source fixtures and existing saves are never overwritten")
+        try:
+            blob = base64.b64decode(request.archive_base64, validate=True)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        if hashlib.sha256(blob).hexdigest() != request.sha256:
+            raise HTTPException(422, "Save archive checksum does not match")
+        self._unpack_archive(request.archive_base64)
+        self._event("save_restored", {"sha256": request.sha256})
+        return {"restored": True, "sha256": request.sha256}
+
     def import_fixture(self, request: FixtureImport) -> dict:
         self.check_binding(request)
         if self.lifecycle != "bound" or self.game_running:
@@ -911,24 +988,12 @@ class Runtime:
             raise HTTPException(422, "Cross-transport or changed-account fixtures require a separately validated converted package")
         if any(self.game_dir.iterdir()):
             raise HTTPException(409, "Run save directory is not empty; source fixtures and existing saves are never overwritten")
-        if len(request.archive_base64) > 140_000_000:
-            raise HTTPException(413, "Fixture archive exceeds 100 MiB")
-        try:
-            blob = base64.b64decode(request.archive_base64, validate=True)
-            with zipfile.ZipFile(io.BytesIO(blob)) as archive:
-                entries = archive.infolist()
-                if sum(entry.file_size for entry in entries) > 1024 * 1024 * 1024:
-                    raise ValueError("Unpacked fixture exceeds 1 GiB")
-                for entry in entries:
-                    path = (self.game_dir / entry.filename).resolve()
-                    if not path.is_relative_to(self.game_dir.resolve()) or "\\" in entry.filename or (entry.external_attr >> 16) & 0o170000 == 0o120000:
-                        raise ValueError("Fixture contains an unsafe path or symlink")
-                embedded = json.loads(archive.read("ashad-fixture.json")) if "ashad-fixture.json" in archive.namelist() else None
-                if embedded is not None and any(embedded.get(key) != manifest.get(key) for key in required):
-                    raise ValueError("Embedded fixture manifest does not match the approved manifest")
-                archive.extractall(self.game_dir)
-        except (ValueError, zipfile.BadZipFile, KeyError) as exc:
-            raise HTTPException(422, str(exc)) from exc
+        def check(archive: zipfile.ZipFile) -> None:
+            embedded = json.loads(archive.read("ashad-fixture.json")) if "ashad-fixture.json" in archive.namelist() else None
+            if embedded is not None and any(embedded.get(key) != manifest.get(key) for key in required):
+                raise ValueError("Embedded fixture manifest does not match the approved manifest")
+
+        blob = self._unpack_archive(request.archive_base64, check)
         atomic_json(self.run_dir / "fixture-manifest.json", manifest)
         self._event("fixture_restored", {"sha256": hashlib.sha256(blob).hexdigest(), "manifest": manifest})
         return {"restored": True, "manifest": manifest, "sha256": hashlib.sha256(blob).hexdigest()}

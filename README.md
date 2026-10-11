@@ -90,7 +90,9 @@ Configurations from earlier versions are converted once on upgrade to controls f
 
 **Steam limitation:** Steam is unavailable until fresh actual matching identity, real App ID and licence are proven. The current idle passive worker cannot supply that proof without application initialization, so copied account readiness or an old verification never enables it. ASHAD never substitutes App ID 480, ENet or offline transport. Supported owned Steam-start/integration work and live acceptance remain separate gates; ENet is an explicit user choice.
 
-Getting game controls does not launch a game. A new instance always uses fresh world and character setup; multiplayer planning, saved starts, seeds and advanced scenario editing are deferred. Existing desktops and Steam profiles are retained between runs.
+Getting game controls does not launch a game. A new instance always uses fresh world and character setup; multiplayer planning, seeds and advanced scenario editing are deferred. Existing desktops and Steam profiles are retained between runs.
+
+**Saves:** ⋯ → Save now saves a running instance. ASHAD also saves automatically before risky actions and when it records an issue example. Load (Actions tab → Saves) starts a new linked instance from that save once no other instance is running. Saves are deleted with their instance. The game should answer the bridge `save_game` request (`{epoch, save_id}` → `{"status": "saved"}`); otherwise a save holds the last save tree on disk and is labelled so.
 
 The primary goal is free text. New instances maintain an automatic **goal hierarchy** and a **currently chasing** goal. The planner works backward from the desired outcome through missing prerequisites, then the existing game-action loop pursues one achievable goal at a time. Completing a child does not automatically complete its parent.
 

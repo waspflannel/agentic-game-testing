@@ -9,7 +9,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse
 
-from .models import Binding, BoundCommand, FixtureImport, Heartbeat, Launch, Pin, SteamVerify, Stop
+from .models import Binding, BoundCommand, FixtureImport, Heartbeat, Launch, Pin, SaveCapture, SaveRestore, SteamVerify, Stop
 from .runtime import Runtime
 from .models import GameRequest
 from .prepare_probe import PrepareProbe, prepare_probe
@@ -139,6 +139,14 @@ def create_app(runtime: Runtime | None = None, token: str | None = None) -> Fast
     @app.post("/fixtures/import")
     async def import_fixture(body: FixtureImport):
         return service.import_fixture(body)
+
+    @app.post("/saves/capture")
+    async def capture_save(body: SaveCapture):
+        return await service.capture_save(body)
+
+    @app.post("/saves/restore")
+    async def restore_save(body: SaveRestore):
+        return service.restore_save(body)
 
     @app.post("/setup/steam/start")
     async def start_steam_setup():

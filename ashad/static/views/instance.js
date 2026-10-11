@@ -40,10 +40,10 @@ export function instanceState(run, owner) {
   if (run?.goal_recalculation?.status === 'planning' && isActiveRun(run)) return make('replanning', 'pending', 'Replanning', [], true, []);
   switch (run?.state) {
     case 'Queued': case 'Starting': return make('starting', 'pending', 'Starting', [], true, ['flag']);
-    case 'Running': return make('running', 'live', 'Running', ['pause', ...(launched ? ['takeover'] : [])], true, [...recalc, 'flag']);
-    case 'Paused': return make('paused', 'attention', 'Paused', ['resume', ...(launched ? ['takeover'] : [])], true, [...recalc, 'flag']);
+    case 'Running': return make('running', 'live', 'Running', ['pause', ...(launched ? ['takeover'] : [])], true, [...(launched ? ['save'] : []), ...recalc, 'flag']);
+    case 'Paused': return make('paused', 'attention', 'Paused', ['resume', ...(launched ? ['takeover'] : [])], true, [...(launched ? ['save'] : []), ...recalc, 'flag']);
     // Extend lives here, not under Running: the backend only extends an open investigation.
-    case 'Investigating': return make('investigating', 'attention', 'Needs review', ['resume', ...(launched ? ['takeover'] : [])], true, ['extend', ...recalc, 'flag'], { banner: true });
+    case 'Investigating': return make('investigating', 'attention', 'Needs review', ['resume', ...(launched ? ['takeover'] : [])], true, [...(launched ? ['save'] : []), 'extend', ...recalc, 'flag'], { banner: true });
     case 'Stopping': return make('stopping', 'pending', 'Stopping', [], false, [], { note: 'Waiting for teardown confirmation' });
     case 'Ended': return make('ended', 'muted', `Ended · ${humanize(run.ending_reason) || 'reason not recorded'}`, ['report', 'evidence'], false, ['flag']);
     default: return make('unknown', 'muted', 'Unknown', [], Boolean(owner), []);
@@ -145,7 +145,8 @@ export const threadSkeleton = () => `<div class="thread">`
   + panel('bot', `<div data-region="players"></div><div class="camera"><div class="camera-media" data-camera></div><div class="camera-overlay" data-region="overlay"></div></div>`)
   + panel('goals', `<div class="insp-body" data-region="goals"></div>`)
   + panel('world', `<div class="insp-body" data-region="world"></div>`)
-  + panel('actions', `<details class="insp-section"><summary class="insp-head">${icon('chevron-right', 'icon chevron')}Model usage</summary><div class="insp-body" data-region="usage"></div></details>`
+  + panel('actions', `<details class="insp-section" open><summary class="insp-head">${icon('chevron-right', 'icon chevron')}Saves</summary><div class="insp-body" data-region="saves"></div></details>`
+    + `<details class="insp-section"><summary class="insp-head">${icon('chevron-right', 'icon chevron')}Model usage</summary><div class="insp-body" data-region="usage"></div></details>`
     + `<section class="activity" aria-labelledby="activity-heading"><div class="activity-head"><h2 id="activity-heading" class="section-title">Activity</h2><div class="tl-tools" data-region="tl-tools"></div></div>`
     + `<div class="tl-top" data-region="tl-top"></div><div class="tl-pill-wrap" data-region="tl-pill"></div><ol class="timeline" data-timeline></ol><div class="tl-foot" data-region="tl-foot"></div></section>`)
   + `</div></div>`;
@@ -157,6 +158,7 @@ export const tabsHTML = active => `<div class="thread-tabs" role="tablist" aria-
   + `</div>`;
 
 const ACTIONS = {
+  save: { label: 'Save now', icon: 'arrow-down' },
   pause: { label: 'Pause', icon: 'pause', cls: 'btn-secondary' },
   takeover: { label: 'Take over', icon: 'hand', cls: 'btn-secondary' },
   reconcile: { label: 'Reconcile teardown', icon: 'refresh', cls: 'btn-primary' },
@@ -167,6 +169,35 @@ const ACTIONS = {
   flag: { label: 'Flag issue', icon: 'flag' },
   stop: { label: 'Stop', icon: 'stop', cls: 'btn-danger' },
 };
+
+const SAVE_STATE = { confirmed: 'Game saved', on_disk: 'Last game save on disk', none: 'No game save' };
+
+export function saveTrigger(save) {
+  const d = save.trigger_detail || {};
+  if (save.trigger === 'manual') return d.label ? `Manual: ${d.label}` : 'Manual';
+  if (save.trigger === 'risky_action') return d.why === 'after_failure' ? 'After a failed action' : `Before first ${d.verb} on ${humanize(d.target_kind).toLowerCase()}`;
+  if (save.trigger === 'issue') return `Issue: ${humanize(d.issue_type)}`;
+  return humanize(save.trigger);
+}
+
+// Every state is spelled out; a disabled Load carries its reason as a hint above the list.
+export function saveToast(save) {
+  const status = save?.game?.status;
+  if (status === 'confirmed') return 'Saved.';
+  if (status === 'on_disk') return 'Saved. The game did not confirm a fresh save, so the last game save on disk was kept.';
+  return 'Saved the bot state. No game save was found.';
+}
+
+export function savesHTML(saves, { slotFree, pending }) {
+  if (!saves.length) return `<p class="hint">No saves yet. ASHAD saves before risky actions and when it records an issue. Use Save now for your own.</p>`;
+  const rows = saves.map(save => {
+    const busy = pending.has('load-save:' + save.id);
+    return `<li class="save-row"><time data-ts="${esc(save.created_at)}"></time><span class="save-trigger">${esc(saveTrigger(save))}</span>`
+      + `<span class="save-state">${esc(SAVE_STATE[save.game?.status] || '')}</span>`
+      + `<button type="button" class="btn btn-secondary save-load" data-action="load-save" data-id="${esc(save.id)}" data-key="save-${esc(save.id)}"${!slotFree ? ' aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${icon(busy ? 'loader' : 'play', busy ? 'icon spin' : 'icon')}Load</button></li>`;
+  }).join('');
+  return (slotFree ? '' : `<p class="hint">Stop the running instance before loading a save.</p>`) + `<ol class="save-list">${rows}</ol>`;
+}
 
 const MODEL_CHANGE_STATES = new Set(['Queued', 'Starting', 'Running', 'Paused', 'Investigating']);
 
@@ -200,7 +231,8 @@ export function threadRegions(run, ctx) {
       + ids.map(id => `<option value="${esc(id)}"${id === player ? ' selected' : ''}>${esc((run.plan?.players || []).find(p => p.id === id)?.name || id)}</option>`).join('') + `</select></label>`
     : '';
 
-  return { head, banner, players, overlay: overlayHTML(run, status, cameraStatus), controls: controlsHTML(status, pending, error), tabs: tabsHTML(tab), instruction: instructionHTML(ui, pending) };
+  const saves = savesHTML(run.saves || [], { slotFree: !(data?.instance_slot?.owners || []).length, pending });
+  return { head, banner, players, saves, overlay: overlayHTML(run, status, cameraStatus), controls: controlsHTML(status, pending, error), tabs: tabsHTML(tab), instruction: instructionHTML(ui, pending) };
 }
 
 function overlayHTML(run, status, cameraStatus) {

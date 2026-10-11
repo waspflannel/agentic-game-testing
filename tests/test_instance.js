@@ -353,3 +353,9 @@ test('saveToast says what was actually saved', async () => {
   assert.match(saveToast({ game: { status: 'on_disk' } }), /last game save on disk/);
   assert.match(saveToast({ game: { status: 'none' } }), /No game save was found/);
 });
+
+test('issuesHTML keeps an opened hits list open across renders', async () => {
+  const { issuesHTML } = await load();
+  assert.ok(!issuesHTML(ISSUES, issueOpts()).includes('<details class="issue-hits" open'));
+  assert.ok(issuesHTML(ISSUES, issueOpts({ issueOpen: new Set(['issue_a']) })).includes('<details class="issue-hits" open data-issue="issue_a">'));
+});

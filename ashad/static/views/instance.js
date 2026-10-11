@@ -212,7 +212,7 @@ function hitSave(hit, saves, slotFree, pending) {
     + `<button type="button" class="btn btn-secondary save-load" data-action="load-save" data-id="${esc(save.id)}" data-key="issue-hit-${esc(hit.example_id)}"${!slotFree ? ' aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${icon(busy ? 'loader' : 'play', busy ? 'icon spin' : 'icon')}Load</button>`;
 }
 
-export function issuesHTML(issues, { saves, slotFree, pending, truncated }) {
+export function issuesHTML(issues, { saves, slotFree, pending, truncated, issueOpen = new Set() }) {
   if (!issues.length) return `<p class="hint">No issues recorded in this instance. ASHAD logs unsupported actions, crashes and game bugs here as they happen.</p>`;
   const rows = issues.map(issue => {
     const counts = [`${issue.hit_count} ${issue.hit_count === 1 ? 'time' : 'times'} in this instance`]
@@ -223,7 +223,7 @@ export function issuesHTML(issues, { saves, slotFree, pending, truncated }) {
     return `<li class="issue-row"><p class="issue-title"><span class="issue-type">${esc(ISSUE_TYPES[issue.type] || humanize(issue.type))}</span> <strong>${esc(issue.title)}</strong></p>`
       + `<p class="issue-meta">${esc(counts.join(' · '))} · last <time data-ts="${esc(issue.last_at)}"></time> · ${esc(humanize(issue.status))}</p>`
       + (issue.file ? `<p class="issue-file"><span>File</span> <code>${esc(issue.file)}</code></p>` : '')
-      + `<details class="issue-hits"><summary>Hits</summary><ol>${hits}</ol>${more}</details></li>`;
+      + `<details class="issue-hits"${issueOpen.has(issue.issue_id) ? ' open' : ''} data-issue="${esc(issue.issue_id)}"><summary data-key="issue-${esc(issue.issue_id)}">Hits</summary><ol>${hits}</ol>${more}</details></li>`;
   }).join('');
   return (slotFree ? '' : `<p class="hint">Stop the running instance before loading a save.</p>`)
     + `<ol class="issue-list">${rows}</ol>`
@@ -233,7 +233,7 @@ export function issuesHTML(issues, { saves, slotFree, pending, truncated }) {
 const MODEL_CHANGE_STATES = new Set(['Queued', 'Starting', 'Running', 'Paused', 'Investigating']);
 
 export function threadRegions(run, ctx) {
-  const { status, owner, data, ui, pending, error, cameraStatus, player, tab } = ctx;
+  const { status, owner, data, ui, pending, error, cameraStatus, player, tab, issueOpen } = ctx;
   const goal = runGoal(run);
   const agent = (data?.configurations || []).find(a => a.id === runConfigurationId(run)) || run.configuration || run.agent_profile;
   const model = run.model && modelLabel(data, run.model);
@@ -265,7 +265,7 @@ export function threadRegions(run, ctx) {
   const slotFree = !(data?.instance_slot?.owners || []).length;
   const saves = savesHTML(run.saves || [], { slotFree, pending });
   return { head, banner, players, saves,
-    issues: issuesHTML(run.issues || [], { saves: run.saves || [], slotFree, pending, truncated: run.issues_truncated }),
+    issues: issuesHTML(run.issues || [], { saves: run.saves || [], slotFree, pending, truncated: run.issues_truncated, issueOpen }),
     'issues-head': issuesHead(run.issues || []),
     overlay: overlayHTML(run, status, cameraStatus), controls: controlsHTML(status, pending, error), tabs: tabsHTML(tab), instruction: instructionHTML(ui, pending) };
 }

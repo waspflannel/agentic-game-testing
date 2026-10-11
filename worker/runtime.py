@@ -783,7 +783,7 @@ class Runtime:
             try:
                 name = signal.Signals(-rc).name
             except ValueError:
-                name = None
+                pass  # An unknown signal number keeps the raw exit code only.
         return {"exit_code": rc, "signal": name, "log_tail": self._game_log_tail()}
 
     def _game_log_tail(self) -> str | None:

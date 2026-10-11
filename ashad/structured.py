@@ -264,8 +264,12 @@ class StructuredPlayers:
         except Exception:
             LOG.exception("Could not record unsupported action for %s/%s", run_id, player_id)
 
+    def _recent_events(self, run_id):
+        """The last 120 ledger events: the window every issue example reads its context from."""
+        return self.store.events(run_id, after=max(0, self.store.count_events(run_id) - 120), limit=120)
+
     def _recent_decisions(self, run_id, player_id):
-        recent = self.store.events(run_id, after=max(0, self.store.count_events(run_id) - 120), limit=120)
+        recent = self._recent_events(run_id)
         player_events = [e for e in recent if e["payload"].get("player_id") == player_id
                          and e["kind"] in {"decision_selected", "action_result", "structured_tool_result"}]
         decisions = []
@@ -356,7 +360,7 @@ class StructuredPlayers:
             exit_code, signal, log_tail = (game_exit.get(k) for k in ("exit_code", "signal", "log_tail"))
             exit = f"signal:{signal}" if signal else f"code:{exit_code}" if exit_code is not None else None
             basis = {"kind": kind, "detector": detector, "exit": exit}
-            recent = self.store.events(run_id, after=max(0, self.store.count_events(run_id) - 120), limit=120)
+            recent = self._recent_events(run_id)
             intent = next((e for e in reversed(recent) if e["kind"] == "structured_action_intent"
                            and e["payload"].get("player_id") == player_id), None)
             last_action = None
@@ -386,12 +390,15 @@ class StructuredPlayers:
 
             def reject(reason):
                 self.store.event(run_id, "game_bug_report_rejected", {"player_id": player_id, "reason": reason})
+
             if report.get("follow_up_error"):
-                return reject("follow_up_failed")
+                reject("follow_up_failed")
+                return
             if report.get("symptom") == "not_a_bug":
-                return reject("not_a_bug")
+                reject("not_a_bug")
+                return
             action_id = report.get("related_action_id")
-            recent = self.store.events(run_id, after=max(0, self.store.count_events(run_id) - 120), limit=120)
+            recent = self._recent_events(run_id)
             intent = next((e for e in recent if e["kind"] == "structured_action_intent" and e["payload"].get("action_id") == action_id), None)
             result_event = next((e for e in reversed(recent) if e["kind"] == "action_result" and e["payload"].get("action_id") == action_id), None)
             completed = (result_event and (result_event["payload"].get("result") or {}).get("status") == "completed") or any(
@@ -405,7 +412,8 @@ class StructuredPlayers:
                     "status": "completed" if completed else result_event and (result_event["payload"].get("result") or {}).get("status"),
                     "intent_event_id": intent["id"], "result_event_id": result_event["id"] if result_event else None}
             if report["symptom"] == "wrong_result" and not (related and related["status"] == "completed"):
-                return reject("no_completed_action")
+                reject("no_completed_action")
+                return
             target = observed_entity(observation, report.get("target_id"))
             basis = {"symptom": report["symptom"], "expected": report["expected"], "observed": report["observed"],
                 "action_verb": related["verb"] if related else None, "target_kind": target.get("kind") or "none",

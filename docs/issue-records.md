@@ -142,7 +142,7 @@ After a report, the offer is hidden for that player while the game state signatu
 
 The signature is sha256 of `[type, basis]` with sorted keys. Basis keys by type are in the Issue fields section. For `unsupported_action`, `error_code` is the error code, or the HTTP status when there is no code. `source` is not part of the basis; it stays in each example, so the same missing action from two sources is one issue.
 
-`target_label` is normalized: case-folded, every digit replaced by `#`, whitespace collapsed, trimmed, cut to 60 characters. `Slot 12` and `slot 3` therefore group together.
+`target_label` is normalized: case-folded, every digit replaced by `#`, whitespace collapsed, trimmed, cut to 60 characters. `Slot 4` and `slot 7` therefore group together; each digit becomes its own `#`, so `slot 12` (`slot ##`) does not group with `slot 3` (`slot #`).
 
 Excluded: run, player, build, ids, positions and free text. The last action of a crash stays in the examples, so different actions do not split one crash. A recurrence after a fix or in another run or build groups with the original issue.
 

@@ -554,6 +554,7 @@ class Coordinator:
                 self.save_run(run)
                 reason = f"{player['name']} while {exc.monitoring_step}: {type(exc).__name__}: {exc}"
                 await self.investigate(run["id"], "infrastructure_failure", reason, players=[player["id"]])
+                # Report after investigate: its input hold bumps the generation once, so later ticks dedupe on the new one.
                 if crash := crash_of(exc, ps.get("worker_status") or {}):
                     await self.structured.report_crash(run["id"], player["id"], *crash, reason)
                 return

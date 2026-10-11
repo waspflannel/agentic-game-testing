@@ -1,4 +1,4 @@
-"""Crash and game_bug issue titles and example trimming; temporary data only."""
+"""Crash and game_bug issues: titles, trimming, detection, the bug follow-up and recording; fakes and temporary data only."""
 import asyncio
 import json
 import time

@@ -5,7 +5,7 @@ import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget,
 import { panelRegions, mergeEvents, latestObservation } from './views/inspector.js';
 import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discardSetup, tuneAgent, setupSkeleton, setupRegions, prepareDialogText, prepareDesktop, registerBuild, elapsed } from './views/setup.js';
 import { settingsSkeleton, accountSkeleton, accountRegions, accountBlocker, settleLogin, desktopsSkeleton, desktopsRegions, workerPayload, steamSkeleton, steamRegions, steamErrors,
-  limitsSkeleton, limitsRegions, limitsPayload, maintenanceSkeleton, maintenanceRegions, importPayload, importReviewHTML, suggestGroups, parseGroups, previewValid, isAbsolutePath, SECTIONS } from './views/settings.js';
+  limitsSkeleton, limitsRegions, limitsPayload, SECTIONS } from './views/settings.js';
 import { newUsageUi, usageSkeleton, usageRegions } from './views/usage.js';
 import { newOverview, readinessDue, overviewModel, overviewSkeleton, overviewRegions } from './views/project.js';
 import { PAGE, MAX_EVENTS, createTimeline, beginPage, applyPage, failPage, seedFromRun, applyLive, timelineCards, timelineRegions, syncCards, cardBody, rawJSON, eventIndex } from './views/timeline.js';
@@ -34,8 +34,7 @@ const state = {
   setups: new Map(),         // project ID ('' before step 1) -> setup state; long operations survive leaving the page
   settingsDirty: false,
   account: { checking: false, busy: false, error: '', login: null },  // login: { auth_url, login_id } only while sign-in is pending
-  settingsUi: { probing: new Set(), errors: new Map(), saving: false, saved: '', formError: '', steamBusy: new Map(), steamResults: new Map(), importError: '', imported: '',
-    migration: { groupsText: null, preview: null, previewing: false, applying: false, error: '', applied: '' } },
+  settingsUi: { probing: new Set(), errors: new Map(), saving: false, saved: '', formError: '', steamBusy: new Map(), steamResults: new Map() },
   overviews: new Map(),      // project ID -> overview state (selected build, readiness, chooser, prepare, retunes)
   usage: null,               // { loading, rows, error, at }; fetched on view open and Refresh only
   usageUi: newUsageUi(),
@@ -480,13 +479,9 @@ function renderSettings(view) {
   } else if (section === 'steam') {
     inner = steamSkeleton(state.data);
     regions = steamRegions(state.data, { busy: ui.steamBusy, results: ui.steamResults, formError: ui.formError, saved: ui.saved }, now);
-  } else if (section === 'limits') {
+  } else {
     inner = limitsSkeleton(state.data);
     regions = limitsRegions(state.data, ui);
-  } else {
-    ui.migration.groupsText ??= suggestGroups(state.data);
-    inner = maintenanceSkeleton(state.data, ui.migration.groupsText);
-    regions = maintenanceRegions(ui);
   }
   mount(view, key, settingsSkeleton(section, inner));
   patchRegions(view, regions);
@@ -629,16 +624,6 @@ async function settingsAction(action, target) {
     poll();
   } else if (action.startsWith('steam-')) {
     steamAction(action.slice(6), accountById(id));
-  } else if (action === 'migration-preview') {
-    const m = ui.migration;
-    const parsed = parseGroups(m.groupsText);
-    if (parsed.error) { m.error = parsed.error; return renderView(); }
-    Object.assign(m, { previewing: true, error: '', applied: '' });
-    renderView();
-    try { m.preview = { signature: parsed.signature, result: await api('/api/projects/migration/preview', { method: 'POST', body: { groups: parsed.groups } }) }; }
-    catch (error) { Object.assign(m, { error: error.message, preview: null }); }
-    m.previewing = false;
-    renderView();
   }
 }
 
@@ -697,39 +682,6 @@ async function settingsSubmit(form) {
     const { body, errors } = limitsPayload(values);
     if (!showErrors(form, errors)) return;
     await settingsSave(() => api('/api/settings', { method: 'POST', body }), 'Limits saved.');
-  } else if (kind === 'settings-import') {
-    const { body, errors } = importPayload(values);
-    ui.importError = ['confirmed', 'source_idle_confirmed', 'external_backup_confirmed'].some(k => errors[k]) ? 'Tick all three confirmations to import.' : '';
-    renderView();
-    if (!showErrors(form, errors) || ui.importError) return;
-    if (!await confirmDialog({ title: 'Import this workspace?', html: importReviewHTML(body), confirm: 'Import workspace', wide: true })) return;
-    ui.imported = '';
-    try {
-      await api('/api/workspace/import', { method: 'POST', body });
-      Object.assign(ui, { imported: 'Imported. Sign in to your AI providers again and re-check your desktops.', importError: '' });
-      state.settingsDirty = false;
-      syncDirty();
-    } catch (error) { ui.importError = error.message; }
-    renderView();
-    poll();
-  } else if (kind === 'settings-migration') {
-    const m = ui.migration;
-    const parsed = parseGroups(m.groupsText);
-    if (!previewValid(m, m.groupsText) || m.preview.result.blockers?.length || m.applying) return;
-    const errors = isAbsolutePath(values.backup_dir) ? {} : { backup_dir: 'Enter an absolute path to a new, empty backup folder.' };
-    if (!showErrors(form, errors)) return;
-    if (!values.confirmed) { m.error = 'Tick the confirmation to apply.'; return renderView(); }
-    Object.assign(m, { applying: true, error: '', applied: '' });
-    renderView();
-    try {
-      await api('/api/projects/migration/apply', { method: 'POST', body: { groups: parsed.groups, preview_token: m.preview.result.preview_token, backup_dir: values.backup_dir.trim(), confirmed: true } });
-      m.applied = 'Migration applied. Projects now group the assigned history.';
-      state.settingsDirty = false;
-      syncDirty();
-    } catch (error) { m.error = error.message; }
-    m.applying = false;
-    renderView();
-    poll();
   }
 }
 
@@ -1239,7 +1191,7 @@ document.addEventListener('click', async event => {
     onSetupAction(action, target, event);
   } else if (action.startsWith('ov-')) {
     onOverviewAction(action, target);
-  } else if (/^(account|claude|worker|steam|migration)-/.test(action)) {
+  } else if (/^(account|claude|worker|steam)-/.test(action)) {
     settingsAction(action, target);
   } else if (action === 'usage-refresh') {
     loadUsage();
@@ -1321,7 +1273,6 @@ document.addEventListener('input', event => {
       settingsForm.querySelector(`[data-error-for="${event.target.id}"]`).textContent = message;
       if (message) event.target.setAttribute('aria-invalid', 'true'); else event.target.removeAttribute('aria-invalid');
     }
-    if (event.target.name === 'groups') { state.settingsUi.migration.groupsText = event.target.value; renderView(); }
     return;
   }
   const field = event.target.dataset?.field;

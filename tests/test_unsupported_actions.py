@@ -229,7 +229,10 @@ async def test_agent_signal_writes_detailed_issue_file(environment, monkeypatch)
     assert ex["screenshot"]["pin_id"] == ex["example_id"] and ex["screenshot"]["status"] == "pinned"
     assert any(path == "/pin" and data["incident_id"] == ex["example_id"] for path, data in desktop.calls)
     recorded = [e for e in store.events(run["id"], limit=500) if e["kind"] == "unsupported_action_recorded"]
-    assert len(recorded) == 1 and recorded[0]["id"] in ex["evidence"]["event_ids"]
+    assert len(recorded) == 1
+    assert recorded[0]["payload"]["outcome"] == "kept"
+    assert recorded[0]["id"] not in ex["evidence"]["event_ids"]
+    assert recorded[0]["payload"]["issue_id"] == issue["issue_id"]
     desktop.screenshot.assert_not_called()
     assert store.require("runs", run["id"])["state"] == "Investigating"
 
@@ -263,6 +266,53 @@ async def test_no_candidates_records_drag_source(environment, monkeypatch):
     ex = issue["examples"][0]
     assert ex["source"] == "no_candidates"
     assert ex["wanted"]["verb"] == "ui_drag" and ex["wanted"]["blocker"] == "target_missing"
+
+
+@pytest.mark.asyncio
+async def test_same_missing_action_from_two_sources_is_one_issue(environment, monkeypatch):
+    store, coord, _, run, _ = await stuck_setup(environment, monkeypatch, slot(("ui_drag",)))
+    def first(payload):
+        question = payload["questions"][0]
+        pick = next(c["value"] for c in question["choices"] if c["description"].startswith("Slot 3"))
+        return answers(payload, {"target": pick})
+    coord.ai = OpenAI(store, backend=Backend(first))
+    await coord.player_turn(run["id"], "player-1")
+    coord.structured.last_decisions.clear()
+    store.put("runs", {**store.require("runs", run["id"]), "state": "Running"})  # The first hit parked the run.
+    def second(payload):
+        names = [q["name"] for q in payload["questions"]]
+        if names == ["target"]:
+            return answers(payload, {"target": payload["questions"][0]["choices"][-1]["value"]})
+        if "wanted_verb" in names:
+            return answers(payload, {"wanted_verb": "ui_drag", "wanted_target": "slot-3", "blocker": "target_missing"})
+        return answers(payload)
+    coord.ai = OpenAI(store, backend=Backend(second))
+    await coord.player_turn(run["id"], "player-1")
+    [issue] = issue_files(store)
+    assert issue["occurrences"] == 2 and len(issue["examples"]) == 2
+    assert {ex["source"] for ex in issue["examples"]} == {"no_candidates", "agent_signal"}
+
+
+@pytest.mark.asyncio
+async def test_failed_record_writes_no_recorded_event(environment, monkeypatch):
+    store, coord, _, run, _ = await stuck_setup(environment, monkeypatch)
+    monkeypatch.setattr(repair_tasks, "record_issue", lambda *a, **k: None)
+    coord.ai = OpenAI(store, backend=Backend(stuck))
+    await coord.player_turn(run["id"], "player-1")
+    assert not [e for e in store.events(run["id"], limit=500) if e["kind"] == "unsupported_action_recorded"]
+    assert store.require("runs", run["id"])["state"] == "Investigating"
+
+
+@pytest.mark.asyncio
+async def test_finish_clears_per_run_counters(environment, monkeypatch):
+    store, coord, _, run, _ = await stuck_setup(environment, monkeypatch)
+    structured = coord.structured
+    structured.loop_counts[(run["id"], "player-1")] = (0, "sig", 3)
+    structured.bug_reports[(run["id"], "player-1")] = "sig"
+    structured.crashes_recorded.add((run["id"], "player-1", 0, "game_exit"))
+    await coord.finish(run["id"], "user_stopped", terminate=True)
+    for container in (structured.loop_counts, structured.bug_reports, structured.crashes_recorded):
+        assert not [k for k in container if k[0] == run["id"]]
 
 
 @pytest.mark.asyncio

@@ -17,6 +17,7 @@ from . import repair_tasks, subgoals
 
 LOG = logging.getLogger(__name__)
 LOOP_BACKSTOP_DECISIONS = 6
+ISSUE_PREFIXES = {"unsupported_action": "uae_", "crash": "crash_", "game_bug": "bug_"}
 
 
 def meaningful_signature(observation):
@@ -69,6 +70,8 @@ class StructuredPlayers:
         self.generations = {}
         self.control_owners = {}
         self.loop_counts = {}
+        self.bug_reports = {}
+        self.crashes_recorded = set()
 
     def _forget_turn(self, key):
         self.waits.pop(key, None)
@@ -244,73 +247,106 @@ class StructuredPlayers:
         """Record one unsupported-action hit; never blocks or fails the turn."""
         try:
             run, ps = self.binding(run_id, player_id)
-            player = next(p for p in run["plan"]["players"] if p["id"] == player_id)
             target = observed_entity(observation, wanted.get("target_id"))
             wanted = {"tool": None, "verb": None, "target_id": None, "parameters": None, "blocker": None,
                       "controller": "agent", "follow_up_error": None, **wanted,
                       "target_kind": target.get("kind"), "target_label": target.get("label")}
-            basis = {"source": source, "tool": wanted["tool"], "verb": wanted["verb"], "blocker": wanted["blocker"],
+            basis = {"tool": wanted["tool"], "verb": wanted["verb"], "blocker": wanted["blocker"],
                      "target_kind": target.get("kind") or "none",
                      "target_label": repair_tasks.target_label(target.get("label")),
                      "error_code": (outcome or {}).get("error_code") or (outcome or {}).get("http_status")}
-            room = repair_tasks.issue_room(self.store, "unsupported_action", basis)
-            if room == "full":
-                self.store.event(run_id, "issue_cap_reached", {"player_id": player_id, "issue_type": "unsupported_action",
-                    "signature": repair_tasks.issue_signature("unsupported_action", basis)})
-                return
-            example_id = uid("uae_")
-            screenshot = {"observation_id": observation.get("observation_id"), "pin_id": example_id,
-                          "status": "unavailable", "frames": [],
-                          "retained_path_prefix": f"runs/{run_id}/workers/{player_id}/pinned/{example_id}/"}
-            if room == "keep":
-                try:
-                    pinned = await self.coordinator.request(ps["worker_id"], "POST", "/pin", {
-                        "epoch": ps["epoch"], "incident_id": example_id, "before_seconds": 10, "after_seconds": 0})
-                    screenshot.update(status="pinned", frames=list((pinned or {}).get("frames", [])))
-                except Exception:
-                    pass  # Status stays "unavailable"; a missing pin never blocks the record.
-            recent = self.store.events(run_id, after=max(0, self.store.count_events(run_id) - 120), limit=120)
-            player_events = [e for e in recent if e["payload"].get("player_id") == player_id
-                             and e["kind"] in {"decision_selected", "action_result", "structured_tool_result"}]
-            decisions = []
-            for event in player_events[-5:]:
-                text = json.dumps(event["payload"], ensure_ascii=False)
-                decisions.append({"event_id": event["id"], "kind": event["kind"], "at": event["timestamp"],
-                                  "payload": event["payload"] if len(text) <= 2000 else text[:2000]})
-            plan = run.get("subgoal_plan") if (run.get("subgoal_plan") or {}).get("player_id") == player_id else None
-            goal = subgoals.active_goal(plan) if plan else None
-            intent = {"primary_goal": plan["primary_goal"] if plan else player["goal"],
-                      "current_goal": {k: goal[k] for k in ("id", "objective", "completion")} if goal else None,
-                      "goal_path": [g["objective"] for g in subgoals.goal_path(plan)] if plan else [],
-                      "plan_reason": plan.get("reason") if plan else None}
             capabilities = {**capability_summary(observation), "target_advertised_actions": list(target.get("actions", []))}
-            recorded = self.store.event(run_id, "unsupported_action_recorded", {"player_id": player_id,
-                "issue_id": repair_tasks.issue_id("unsupported_action", basis), "example_id": example_id,
-                "source": source, "kept": room == "keep"})
-            root = self.store.run_dir(run_id)
             outcome_fields = None if outcome is None else {
                 k: (str(outcome.get(k))[:2000] if k in {"reason", "error"} and outcome.get(k) is not None else outcome.get(k))
                 for k in ("status", "reason", "error", "error_code", "http_status")}
-            telemetry = ps.get("telemetry") or {}
-            example = {"example_id": example_id, "at": datetime.now(timezone.utc).isoformat(), "run_id": run_id,
-                "player_id": player_id, "scenario_id": run.get("scenario_id"),
-                "scenario_revision": run.get("scenario_revision"), "model": run.get("model"),
-                "controller_version": run.get("controller_version"),
-                "build": {"id": run["build"].get("id"), "source_revision": run["build"].get("source_revision")},
-                "source": source, "intent": intent, "wanted": wanted, "outcome": outcome_fields,
-                "capabilities": capabilities, "recent_decisions": decisions,
-                "game_state": {"observation_id": observation.get("observation_id"),
-                    "observation": prompt_observation(observation, max_chars=20000),
-                    "telemetry": {"completed_quests": telemetry.get("completed_quests"), "diagnostics": telemetry.get("diagnostics")},
-                    "progress": run.get("progress")},
-                "screenshot": screenshot,
-                "evidence": {"run_dir": str(root), "ledger": str(root / "ledger.jsonl"), "report": str(root / "report.md"),
-                             "event_ids": [*event_ids, recorded["id"]]},
-                "truncated": []}
-            repair_tasks.record_issue(self.store, "unsupported_action", basis, example)
-            repair_tasks.publish_issues(self.store)
+            await self._record(run, ps, player_id, "unsupported_action", basis, source, observation,
+                {"wanted": wanted, "outcome": outcome_fields, "capabilities": capabilities}, event_ids=event_ids)
         except Exception:
             LOG.exception("Could not record unsupported action for %s/%s", run_id, player_id)
+
+    def _recent_decisions(self, run_id, player_id):
+        recent = self.store.events(run_id, after=max(0, self.store.count_events(run_id) - 120), limit=120)
+        player_events = [e for e in recent if e["payload"].get("player_id") == player_id
+                         and e["kind"] in {"decision_selected", "action_result", "structured_tool_result"}]
+        decisions = []
+        for event in player_events[-5:]:
+            text = json.dumps(event["payload"], ensure_ascii=False)
+            decisions.append({"event_id": event["id"], "kind": event["kind"], "at": event["timestamp"],
+                              "payload": event["payload"] if len(text) <= 2000 else text[:2000]})
+        return decisions
+
+    def _intent(self, run, player_id):
+        player = next(p for p in run["plan"]["players"] if p["id"] == player_id)
+        plan = run.get("subgoal_plan") if (run.get("subgoal_plan") or {}).get("player_id") == player_id else None
+        goal = subgoals.active_goal(plan) if plan else None
+        return {"primary_goal": plan["primary_goal"] if plan else player["goal"],
+                "current_goal": {k: goal[k] for k in ("id", "objective", "completion")} if goal else None,
+                "goal_path": [g["objective"] for g in subgoals.goal_path(plan)] if plan else [],
+                "plan_reason": plan.get("reason") if plan else None}
+
+    async def _pin(self, ps, run_id, player_id, example_id, observation, *, skip):
+        screenshot = {"observation_id": observation.get("observation_id"), "pin_id": example_id,
+                      "status": "unavailable", "frames": [],
+                      "retained_path_prefix": f"runs/{run_id}/workers/{player_id}/pinned/{example_id}/"}
+        if not skip:
+            try:
+                pinned = await self.coordinator.request(ps["worker_id"], "POST", "/pin", {
+                    "epoch": ps["epoch"], "incident_id": example_id, "before_seconds": 10, "after_seconds": 0})
+                screenshot.update(status="pinned", frames=list((pinned or {}).get("frames", [])))
+            except Exception:
+                pass  # Status stays "unavailable"; a missing pin never blocks the record.
+        return screenshot
+
+    def _example(self, run, ps, player_id, example_id, source, observation, screenshot, event_ids):
+        root = self.store.run_dir(run["id"])
+        telemetry = ps.get("telemetry") or {}
+        return {"example_id": example_id, "at": datetime.now(timezone.utc).isoformat(), "run_id": run["id"],
+            "player_id": player_id, "scenario_id": run.get("scenario_id"),
+            "scenario_revision": run.get("scenario_revision"), "model": run.get("model"),
+            "controller_version": run.get("controller_version"),
+            "build": {"id": run["build"].get("id"), "source_revision": run["build"].get("source_revision")},
+            "source": source, "intent": self._intent(run, player_id),
+            "recent_decisions": self._recent_decisions(run["id"], player_id),
+            "game_state": {"observation_id": observation.get("observation_id"),
+                "observation": prompt_observation(observation, max_chars=20000),
+                "telemetry": {"completed_quests": telemetry.get("completed_quests"), "diagnostics": telemetry.get("diagnostics")},
+                "progress": run.get("progress")},
+            "screenshot": screenshot,
+            "evidence": {"run_dir": str(root), "ledger": str(root / "ledger.jsonl"), "report": str(root / "report.md"),
+                         "event_ids": list(event_ids)},
+            "truncated": []}
+
+    async def _record(self, run, ps, player_id, issue_type, basis, source, observation, sections, *, event_ids=(), skip_pin=False):
+        """Write one issue example of any type; returns the outcome, or None when recording failed."""
+        try:
+            run_id = run["id"]
+            room = repair_tasks.issue_room(self.store, issue_type, basis)
+            if room == "full":
+                self.store.event(run_id, "issue_cap_reached", {"player_id": player_id, "issue_type": issue_type,
+                    "signature": repair_tasks.issue_signature(issue_type, basis)})
+                return "full"
+            example_id = uid(ISSUE_PREFIXES[issue_type])
+            screenshot = await self._pin(ps, run_id, player_id, example_id, observation, skip=skip_pin or room != "keep")
+            example = {**self._example(run, ps, player_id, example_id, source, observation, screenshot, event_ids), **sections}
+            outcome = repair_tasks.record_issue(self.store, issue_type, basis, example)
+            if outcome in {"kept", "counted"}:
+                self.store.event(run_id, f"{issue_type}_recorded", {"player_id": player_id,
+                    "issue_id": repair_tasks.issue_id(issue_type, basis), "example_id": example_id,
+                    "source": source, "kept": outcome == "kept", "outcome": outcome})
+            elif outcome == "full":
+                self.store.event(run_id, "issue_cap_reached", {"player_id": player_id, "issue_type": issue_type,
+                    "signature": repair_tasks.issue_signature(issue_type, basis)})
+            repair_tasks.publish_issues(self.store)
+            return outcome
+        except Exception:
+            LOG.exception("Could not record %s issue for %s/%s", issue_type, run["id"], player_id)
+            return None
+
+    def forget_run(self, run_id):
+        for counters in (self.loop_counts, self.bug_reports):
+            for key in [k for k in counters if k[0] == run_id]:
+                del counters[key]
+        self.crashes_recorded -= {e for e in self.crashes_recorded if e[0] == run_id}
 
     async def _loop_backstop(self, run_id, player_id, generation, signature, observation, result):
         """Unchanged state across several dispatched decisions means the agent is stuck without saying so."""
@@ -462,6 +498,7 @@ class StructuredPlayers:
             self.pending.pop(key, None)
             self._forget_turn(key)
             self.loop_counts.pop(key, None)
+            self.bug_reports.pop(key, None)
             self.generations[key] = generation
         def current():
             live = self.store.require("runs", run_id)

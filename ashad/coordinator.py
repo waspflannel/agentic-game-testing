@@ -1298,6 +1298,7 @@ class Coordinator:
             ps["generation"] += 1
         self.save_run(run)
         await self.cancel_players(run_id)
+        self.structured.forget_run(run_id)
         run = self.store.require("runs", run_id)  # Retain cancellation outcomes written by the stopped tasks.
         event = self.store.event(run_id, "stopping", {"reason": reason, "terminate": terminate, "save": "not_promised" if terminate else "bounded_graceful_attempt"})
         record_task(self.store, run_id, "stop", limitation or reason, key="stop", category=reason, event_id=event["id"])

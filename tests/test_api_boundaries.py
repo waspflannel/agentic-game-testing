@@ -463,4 +463,65 @@ def test_configuration_cannot_be_deleted_through_the_api(tmp_path):
         assert file.exists()
         assert store.get("configurations", "a1") is not None
         assert store.command("tuning", "t1") is not None
-        app.state.store.close()
+
+
+def test_build_only_readiness_is_ready_when_either_provider_is(tmp_path):
+    app = offline_app(tmp_path)
+    store = app.state.store
+    store.put("projects", {"id": "project", "name": "Same game"})
+    store.put("builds", {"id": "build", "project_id": "project"})
+    ready = {"configured": True, "status": "ready", "message": "Ready"}
+    signed_out = {"configured": False, "status": "configuration_required",
+                  "message": "Sign in with ChatGPT in AI Settings to use your Codex subscription."}
+    with TestClient(app) as client:
+        app.state.ai.validate = AsyncMock(side_effect=lambda model: ready if model == CLAUDE_MODEL else signed_out)
+        provider = client.get("/api/projects/project/readiness?build_id=build").json()["provider"]
+        assert provider["ready"] is True and provider["model"] == CLAUDE_MODEL
+        assert {c.args[0] for c in app.state.ai.validate.await_args_list} == {MODEL, CLAUDE_MODEL}
+        app.state.ai.validate = AsyncMock(side_effect=lambda model: signed_out)
+        provider = client.get("/api/projects/project/readiness?build_id=build").json()["provider"]
+        assert provider["ready"] is False and provider["message"] == "Set up AI in Settings › Account."
+        assert provider["model"] == MODEL and provider["providers"] == []
+
+
+@pytest.mark.parametrize("ready_models, expected", [
+    ({CLAUDE_MODEL}, ["claude"]), ({MODEL}, ["codex"]), ({MODEL, CLAUDE_MODEL}, ["claude", "codex"])])
+def test_readiness_lists_the_ready_providers(tmp_path, ready_models, expected):
+    app = offline_app(tmp_path)
+    app.state.store.put("projects", {"id": "project", "name": "Same game"})
+    app.state.store.put("builds", {"id": "build", "project_id": "project"})
+    ready = {"configured": True, "status": "ready", "message": "Ready"}
+    signed_out = {"configured": False, "status": "configuration_required", "message": "Signed out"}
+    app.state.ai.validate = AsyncMock(side_effect=lambda model: ready if model in ready_models else signed_out)
+    with TestClient(app) as client:
+        assert client.get("/api/projects/project/readiness?build_id=build").json()["provider"]["providers"] == expected
+        assert client.get("/api/projects/project/readiness?build_id=build&model=sonnet").json()["provider"]["providers"] == (
+            ["claude"] if CLAUDE_MODEL in ready_models else [])
+
+
+@pytest.mark.parametrize("method, path", [("post", "/api/agents/controls"), ("get", "/api/agents/controls/x"),
+                                          ("get", "/api/agents/x/controls"), ("delete", "/api/agents/x")])
+def test_old_agent_routes_are_gone(tmp_path, method, path):
+    with TestClient(offline_app(tmp_path)) as client:
+        kwargs = {"json": {}} if method == "post" else {}
+        assert getattr(client, method)(path, headers=HEADERS, **kwargs).status_code in {404, 405}
+
+
+def test_instance_request_with_agent_id_is_422(tmp_path):
+    with TestClient(offline_app(tmp_path)) as client:
+        response = client.post("/api/instances", json={"agent_id": "a1", "primary_goal": "Explore", "request_id": "old-key"}, headers=HEADERS)
+        assert response.status_code == 422
+
+
+def test_configuration_rename_runs_at_startup_idempotently(tmp_path):
+    from ashad.store import Store
+    seeded = Store(tmp_path)
+    seeded.put("configurations", {"id": "a1", "name": "Old", "controls_version": 1})
+    seeded.db.execute("UPDATE records SET kind='agents'")
+    seeded.close()
+    for _ in range(2):
+        app = offline_app(tmp_path)
+        try:
+            assert [r["id"] for r in app.state.store.list("configurations")] == ["a1"] and app.state.store.list("agents") == []
+        finally:
+            app.state.store.close()

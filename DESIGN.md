@@ -57,3 +57,4 @@ Get controls meter: one `<progress class="progress">` with real `batches_done / 
 ## Changelog
 - 2026-10-11: DESIGN.md created from app.css :root; model menu added (feat/model-menu).
 - 2026-10-11: setup step 4 'Get controls' batch meter; overview 'Project configurations'; instance Blocked banner.
+- 2026-10-11: project configurations can no longer be deleted; the instance Blocked banner is removed and retired rows offer 'Get controls again…' (fix/remove-config-delete).

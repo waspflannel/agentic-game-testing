@@ -9,6 +9,9 @@ from .store import uid
 from .structured import OWN_ACTION_KINDS, observed_entity
 
 RISKY_SAVE_MIN_SECONDS = 15
+# The worker may wait up to 8 s on the game's save_game reply and then zips the save tree,
+# so the default 8 s worker read timeout would drop saves the worker completed.
+CAPTURE_TIMEOUT_SECONDS = 30
 KEEP_RISKY = 20
 KEEP_MANUAL = 10
 MAX_PINNED = 30
@@ -37,7 +40,8 @@ class Saves:
             run, ps = self.coordinator.structured.binding(run_id, player_id)
             save_id = uid("save_")
             result = await self.coordinator.request(ps["worker_id"], "POST", "/saves/capture",
-                                                    {"epoch": ps["epoch"], "save_id": save_id})
+                                                    {"epoch": ps["epoch"], "save_id": save_id},
+                                                    timeout=CAPTURE_TIMEOUT_SECONDS)
             if result["game_save"] != "none":
                 blob = base64.b64decode(result["archive_base64"])
                 if hashlib.sha256(blob).hexdigest() != result["sha256"]:

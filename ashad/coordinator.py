@@ -276,7 +276,7 @@ class Coordinator:
         self.clients[worker_id] = WorkerClient(worker["url"], token, timeout=8)
         return self.clients[worker_id]
 
-    async def request(self, worker_id, method, path, body=None):
+    async def request(self, worker_id, method, path, body=None, timeout=None):
         client = self.client(worker_id)
         # The wire contract is stable and deliberately separate from deployment.
         if body is not None and path != "/bind" and not path.startswith("/setup/"):
@@ -295,6 +295,8 @@ class Coordinator:
                         body["investigation_deadline"] = body.pop("deadline", run.get("investigation_deadline"))
                         duration = run["plan"]["limits"]["duration_seconds"]
                         body["run_deadline"] = run["started_at"] + duration if duration and run.get("started_at") else None
+        if timeout:
+            return await client.request(method, path, data=body, timeout=timeout)
         return await client.request(method, path, data=body)
 
     def save_scenario(self, raw, scenario_id=None, **origin):

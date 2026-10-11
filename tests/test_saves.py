@@ -258,6 +258,23 @@ async def test_capture_failure_never_blocks_action(environment, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_capture_waits_longer_than_the_game_save_budget(environment, monkeypatch):
+    env = await running(environment, monkeypatch)
+    timeouts = []
+    inner = env.desktop.request
+
+    async def request(method, path, *, data=None, **kwargs):
+        if path == "/saves/capture":
+            timeouts.append(kwargs.get("timeout"))
+        return await inner(method, path, data=data, **kwargs)
+
+    monkeypatch.setattr(env.desktop, "request", request)
+    assert await env.coord.saves.capture(env.rid, PLAYER, "manual", {})
+    # The worker spends up to 2 + 2 + 4 s on the game bridge before zipping the save tree.
+    assert timeouts and timeouts[0] > 8
+
+
+@pytest.mark.asyncio
 async def test_control_change_during_save_cancels_action(environment, monkeypatch):
     store = environment[0]
 

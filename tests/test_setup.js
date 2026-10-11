@@ -180,9 +180,9 @@ test('setup markup escapes names and build labels, including the done view', asy
   assert.doesNotMatch(html, /<img/);
 });
 
-test('the readiness provider row names the connected providers, not a model', async () => {
+test('the readiness AI provider row names the connected providers, not a model', async () => {
   const { readinessHTML } = await load();
-  const detail = provider => readinessHTML({ result: { provider } }, 0).match(/Provider and model<\/span><span class="check-detail">([^<]*)</)[1];
+  const detail = provider => readinessHTML({ result: { provider } }, 0).match(/AI provider<\/span><span class="check-detail">([^<]*)</)[1];
   assert.equal(detail({ ready: true, model: 'sonnet', providers: ['claude'] }), 'Claude set');
   assert.equal(detail({ ready: true, model: 'gpt-6-luna', providers: ['codex'] }), 'Codex set');
   assert.equal(detail({ ready: true, providers: ['claude', 'codex'] }), 'Claude and Codex set');

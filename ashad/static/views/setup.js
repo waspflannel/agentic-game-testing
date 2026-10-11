@@ -138,7 +138,7 @@ export function readinessHTML(record, now) {
     + `<span class="check-text"><span>${esc(label)}</span><span class="check-detail">${esc(detail)}</span></span></li>`;
   const envs = r.environments || [];
   const rows = [
-    row(r.provider?.ready === true, 'Provider and model', r.provider?.ready ? providersSetText(r.provider.providers) : r.provider?.message || 'Not available'),
+    row(r.provider?.ready === true, 'AI provider', r.provider?.ready ? providersSetText(r.provider.providers) : r.provider?.message || 'Not available'),
     row(r.build_validation?.ready === true, 'Build validation', r.build_validation?.reason || 'Not validated'),
     ...(envs.length ? envs.map(e => row(e.ready === true, e.name || e.id, e.ready ? 'Ready' : e.reason || 'Not ready'))
       : [row(false, 'Desktops', r.build_validation?.ready ? 'No desktop is registered. Prepare one, or add one under Settings › Desktops.' : 'Checked once the build validates')]),

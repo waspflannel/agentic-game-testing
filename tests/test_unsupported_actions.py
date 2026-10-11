@@ -52,7 +52,7 @@ def example(**overrides):
 
 
 def basis(**overrides):
-    return {"source": "agent_signal", "tool": "perform_action", "verb": "ui_drag", "blocker": "action_missing",
+    return {"tool": "perform_action", "verb": "ui_drag", "blocker": "action_missing",
             "target_kind": "inventory_slot", "target_label": "slot #", "error_code": None, **overrides}
 
 
@@ -346,9 +346,9 @@ async def test_issues_survive_run_deletion(environment, monkeypatch):
 
 
 def test_issue_title_reads_for_other_verb_and_missing_target():
-    assert issue_title(basis()) == "Agent could not ui_drag on slot # (agent_signal)"
-    assert issue_title(basis(verb="other", target_kind="none", target_label="")) == \
-        "Agent could not perform an action this interface does not offer (agent_signal)"
+    assert issue_title("unsupported_action", basis()) == "Agent could not ui_drag on slot #"
+    assert issue_title("unsupported_action", basis(verb="other", target_kind="none", target_label="")) == \
+        "Agent could not perform an action this interface does not offer"
 
 
 def test_oversized_wanted_parameters_are_trimmed():

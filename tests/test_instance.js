@@ -324,7 +324,7 @@ test('issuesHTML hit save states', async () => {
   const { issuesHTML } = await load();
   const html = issuesHTML(ISSUES, issueOpts());
   assert.equal(html.split('data-action="load-save"').length - 1, 1);
-  assert.ok(html.includes('data-id="s1"') && html.includes('data-key="issue-hit-ua_1"'));
+  assert.ok(html.includes('data-id="s1"') && html.includes('data-key="issue-hit-issue_a-1000"'));
   for (const text of ['Save no longer kept', 'No save before this hit', 'Example kept', 'Counted only']) assert.ok(html.includes(text), text);
 });
 
@@ -358,4 +358,17 @@ test('issuesHTML keeps an opened hits list open across renders', async () => {
   const { issuesHTML } = await load();
   assert.ok(!issuesHTML(ISSUES, issueOpts()).includes('<details class="issue-hits" open'));
   assert.ok(issuesHTML(ISSUES, issueOpts({ issueOpen: new Set(['issue_a']) })).includes('<details class="issue-hits" open data-issue="issue_a">'));
+});
+
+test('issuesHTML only asks to stop the instance when a hit can load, and keys each hit uniquely', async () => {
+  const { issuesHTML } = await load();
+  const noSaves = [{ ...ISSUES[0], hits: ISSUES[0].hits.map(h => ({ ...h, save_before: null })) }];
+  assert.ok(!issuesHTML(noSaves, issueOpts({ slotFree: false })).includes('Stop the running instance'));
+  assert.ok(issuesHTML(ISSUES, issueOpts({ slotFree: false })).includes('Stop the running instance before loading a save.'));
+  const counted = [{ ...ISSUES[0], hits: [
+    { at: 1000, example_id: null, source: 'worker_rejected', kept: false, save_before: 's1' },
+    { at: 900, example_id: null, source: 'worker_rejected', kept: false, save_before: 's1' }] }];
+  const keys = [...issuesHTML(counted, issueOpts()).matchAll(/data-key="(issue-hit-[^"]+)"/g)].map(m => m[1]);
+  assert.equal(keys.length, 2);
+  assert.equal(new Set(keys).size, 2);
 });

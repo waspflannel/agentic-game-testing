@@ -203,13 +203,13 @@ export function savesHTML(saves, { slotFree, pending }) {
 
 export const issuesHead = issues => (issues.length ? `Issues · ${issues.length}` : 'Issues');
 
-function hitSave(hit, saves, slotFree, pending) {
+function hitSave(issueId, hit, saves, slotFree, pending) {
   if (!hit.save_before) return `<span class="issue-save">No save before this hit</span>`;
   const save = saves.find(s => s.id === hit.save_before);
   if (!save) return `<span class="issue-save">Save no longer kept</span>`;
   const busy = pending.has('load-save:' + save.id);
   return `<span class="issue-save">Save before · <time data-ts="${esc(save.created_at)}"></time></span>`
-    + `<button type="button" class="btn btn-secondary save-load" data-action="load-save" data-id="${esc(save.id)}" data-key="issue-hit-${esc(hit.example_id)}"${!slotFree ? ' aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${icon(busy ? 'loader' : 'play', busy ? 'icon spin' : 'icon')}Load</button>`;
+    + `<button type="button" class="btn btn-secondary save-load" data-action="load-save" data-id="${esc(save.id)}" data-key="issue-hit-${esc(issueId)}-${esc(hit.at)}"${!slotFree ? ' aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${icon(busy ? 'loader' : 'play', busy ? 'icon spin' : 'icon')}Load</button>`;
 }
 
 export function issuesHTML(issues, { saves, slotFree, pending, truncated, issueOpen = new Set() }) {
@@ -218,14 +218,15 @@ export function issuesHTML(issues, { saves, slotFree, pending, truncated, issueO
     const counts = [`${issue.hit_count} ${issue.hit_count === 1 ? 'time' : 'times'} in this instance`]
       .concat(issue.occurrences_total != null && issue.occurrences_total !== issue.hit_count ? [`${issue.occurrences_total} in all instances`] : []);
     const hits = issue.hits.map(hit => `<li class="issue-hit"><time data-ts="${esc(hit.at)}"></time><span>${esc(humanize(hit.source))}</span>`
-      + `<span>${hit.kept ? 'Example kept' : 'Counted only'}</span>${hitSave(hit, saves, slotFree, pending)}</li>`).join('');
+      + `<span>${hit.kept ? 'Example kept' : 'Counted only'}</span>${hitSave(issue.issue_id, hit, saves, slotFree, pending)}</li>`).join('');
     const more = issue.hit_count > issue.hits.length ? `<p class="hint">Showing the newest ${issue.hits.length} of ${issue.hit_count} hits</p>` : '';
     return `<li class="issue-row"><p class="issue-title"><span class="issue-type">${esc(ISSUE_TYPES[issue.type] || humanize(issue.type))}</span> <strong>${esc(issue.title)}</strong></p>`
       + `<p class="issue-meta">${esc(counts.join(' · '))} · last <time data-ts="${esc(issue.last_at)}"></time> · ${esc(humanize(issue.status))}</p>`
       + (issue.file ? `<p class="issue-file"><span>File</span> <code>${esc(issue.file)}</code></p>` : '')
       + `<details class="issue-hits"${issueOpen.has(issue.issue_id) ? ' open' : ''} data-issue="${esc(issue.issue_id)}"><summary data-key="issue-${esc(issue.issue_id)}">Hits</summary><ol>${hits}</ol>${more}</details></li>`;
   }).join('');
-  return (slotFree ? '' : `<p class="hint">Stop the running instance before loading a save.</p>`)
+  const loadable = issues.some(issue => issue.hits.some(hit => saves.some(s => s.id === hit.save_before)));
+  return (slotFree || !loadable ? '' : `<p class="hint">Stop the running instance before loading a save.</p>`)
     + `<ol class="issue-list">${rows}</ol>`
     + (truncated ? `<p class="hint">Only the newest 500 issue events were read.</p>` : '');
 }

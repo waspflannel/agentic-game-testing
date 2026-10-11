@@ -165,7 +165,8 @@ class Plan(Contract):
         if isinstance(value, dict) and "agent_id" in value:
             if "configuration_id" in value:
                 raise ValueError("Use configuration_id, not agent_id.")
-            return {**{key: item for key, item in value.items() if key != "agent_id"}, "configuration_id": value["agent_id"]}
+            value = dict(value)
+            value["configuration_id"] = value.pop("agent_id")
         return value
 
     @model_validator(mode="after")

@@ -94,7 +94,7 @@ export function legacyNewTarget(configurationId, data) {
 
 // The project configuration id of a stored run. Old runs keep agent_id, on the run or on its plan.
 export function runConfigurationId(run) {
-  return run?.configuration_id || run?.agent_id || run?.plan?.configuration_id || run?.plan?.agent_id || undefined;
+  return run?.configuration_id || run?.agent_id || run?.plan?.configuration_id || run?.plan?.agent_id;
 }
 
 export function ago(seconds, now = Date.now() / 1000) {

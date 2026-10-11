@@ -150,6 +150,23 @@ def record_issue(store, issue_type, basis, example):
         return None
 
 
+def set_issue_status(store, issue_id, status, *, loop_id, attempt_id, fix=None):
+    "The only writer of issue status; the file is regenerated from the store."
+    with store.transaction():
+        issue = store.get("issues", issue_id)
+        if issue is None:
+            return None
+        issue["status_history"] = [*issue["status_history"], {"at": time.time(), "from": issue["status"], "to": status,
+                                                              "loop_id": loop_id, "attempt_id": attempt_id}][-50:]
+        issue["status"] = status
+        if isinstance(fix, dict):
+            issue["fix"] = {**(issue["fix"] or {}), **fix}
+        issue["revision"] += 1
+        store.put("issues", issue)
+    publish_issues(store)
+    return issue
+
+
 def issue_filename(record):
     return f"{record['type']}__{record['signature'][:16]}.json"
 

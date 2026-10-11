@@ -20,7 +20,7 @@ The SQLite record kind `issues` is the source of truth; the file is rendered fro
 | `type` | `"unsupported_action"` |
 | `issue_id` | `"issue_" + signature[:16]` |
 | `signature`, `signature_basis` | sha256 of `[type, basis]`; basis keys `source, tool, verb, blocker, target_kind, target_label, error_code` |
-| `title` | `"Agent could not <verb or act> on <target_label or target_kind> (<source>)"` |
+| `title` | `"Agent could not <verb> on <target_label or target_kind> (<source>)"`; verb `other` reads "perform an action this interface does not offer", and the "on …" part is left out when there is no target |
 | `status` | `"open"` (reserved: `triaged`, `fixing`, `fixed`, `wont_fix`) |
 | `status_history`, `fix` | `[]`, `null` |
 | `untrusted_text` | fixed warning string |

@@ -9,7 +9,7 @@ import pytest
 from ashad import repair_tasks
 from ashad.ai import GAME_VERBS, OpenAI, ProviderError, capability_summary
 from ashad.codex_backend import CodexError
-from ashad.repair_tasks import (_size, issue_directory, issue_room, publish_issues, publish_pending, record_issue,
+from ashad.repair_tasks import (_size, issue_directory, issue_title, shrink_example, issue_room, publish_issues, publish_pending, record_issue,
                                 target_label)
 from ashad.models import Plan
 from ashad.store import Store
@@ -343,3 +343,16 @@ async def test_issues_survive_run_deletion(environment, monkeypatch):
         coord._forget_run_records(store.require("runs", run["id"]))
     assert len(store.list("issues")) == 1
     assert len(list(issue_directory(store).glob("*.json"))) == 1
+
+
+def test_issue_title_reads_for_other_verb_and_missing_target():
+    assert issue_title(basis()) == "Agent could not ui_drag on slot # (agent_signal)"
+    assert issue_title(basis(verb="other", target_kind="none", target_label="")) == \
+        "Agent could not perform an action this interface does not offer (agent_signal)"
+
+
+def test_oversized_wanted_parameters_are_trimmed():
+    big = example(wanted={**example()["wanted"], "parameters": {"text": "x" * 70000}})
+    small = shrink_example(big)
+    assert _size(small) <= repair_tasks.MAX_EXAMPLE_BYTES and small["wanted"]["parameters"] is None
+    assert "wanted.parameters" in small["truncated"]

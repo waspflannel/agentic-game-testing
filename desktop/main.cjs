@@ -69,7 +69,7 @@ function launchController() {
   if (!fs.existsSync(python)) throw new Error('Private Python runtime is missing. Rebuild with npm run prepare:runtime, or reinstall the complete ASHAD package. Global Python is not used.');
   const dataRoot = path.join(app.getPath('userData'), 'controller');
   fs.mkdirSync(dataRoot, { recursive: true });
-  config = rules.launchConfig(dataRoot);
+  config = rules.launchConfig(dataRoot, app.isPackaged ? null : path.join(__dirname, '..'));
   controller = spawn(python, ['-I', '-B', '-X', 'utf8', '-m', 'ashad', '--desktop'], {
     cwd: resources, env: rules.childEnvironment(process.env), windowsHide: true,
     stdio: ['pipe', 'pipe', 'pipe'],
@@ -190,6 +190,23 @@ async function requestQuit() {
   } finally { quitting = false; }
 }
 
+async function restartForFix() {
+  if (quitting || !ready) return;
+  quitting = true;
+  try {
+    const result = await ownerRequest('/_desktop/shutdown', { stop_runs: false, cancel_operations: false, expected_run_ids: [] }, 0);
+    if (result?.drained !== true) return;
+    drainConfirmed = true;
+    if (controllerRunning()) await once(controller, 'exit');
+    await require('./prepare.cjs').prepare();
+    app.relaunch();
+    app.exit(0);
+  } catch (error) {
+    await showError('Fix restart failed', safeMessage(error.message) +
+      '\n\nRun npm --prefix desktop run prepare:runtime, then start ASHAD again. The fix loop continues on the next start.');
+  } finally { quitting = false; }
+}
+
 async function chooseBuild(kind) {
   if (!['manifest', 'folder'].includes(kind)) throw new Error('Build chooser kind must be manifest or folder.');
   const result = await dialog.showOpenDialog(window, { title: kind === 'folder' ? 'Choose a supported build folder' : 'Choose manifest.json',
@@ -240,7 +257,7 @@ async function openViewer(url) {
 
 async function openApprovedLink(url) {
   try {
-    if (rules.loginUrl(url)) await shell.openExternal(url);
+    if (rules.loginUrl(url) || rules.fixPrUrl(url)) await shell.openExternal(url);
     else await openViewer(url);
   } catch (error) { await showError('Link blocked', safeMessage(error.message)); }
 }
@@ -321,6 +338,14 @@ else {
       origin = await launchController();
       await waitUntilReady();
       ready = true;
+      if (!app.isPackaged) {
+        setInterval(async () => {
+          try {
+            const status = rules.validatedStatus(await ownerRequest('/_desktop/status'));
+            if (status.restart_for_fix) await restartForFix();
+          } catch {}
+        }, 5000).unref();
+      }
       await window.loadURL(origin + '/');
     } catch (error) {
       startupFailure = true;

@@ -815,6 +815,18 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
     async def reconcile(run_id: str):
         return await coordinator.reconcile(run_id)
 
+    @app.delete("/api/runs/{run_id}")
+    async def delete_run(run_id: str):
+        if operations_active():
+            raise ValueError("Wait for the current operation to finish before deleting.")
+        return await coordinator.delete_run(run_id)
+
+    @app.delete("/api/projects/{project_id}")
+    async def delete_project(project_id: str):
+        if operations_active():
+            raise ValueError("Wait for the current operation to finish before deleting.")
+        return await coordinator.delete_project(project_id)
+
     @app.delete("/api/{kind}/{record_id}")
     async def delete_catalog(kind: str, record_id: str):
         if kind not in {"builds", "workers", "accounts"}:

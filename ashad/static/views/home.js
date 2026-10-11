@@ -1,5 +1,5 @@
 // Empty workspace and the new-instance composer (spec §8.1, §8.2). Markup and the start flow are pure; app.js owns the DOM.
-import { esc, icon, href, newId, modelLabel, providerModels, ApiError } from '../core.js';
+import { esc, icon, href, newId, modelLabel, providerModels, modelMenuHTML, ApiError } from '../core.js';
 
 const enc = encodeURIComponent;
 const chipDot = tone => `<span class="dot dot-${tone}" aria-hidden="true"></span>`;
@@ -115,8 +115,7 @@ export function composerRegions(m, draft) {
 
   const agentChip = `<label class="chip chip-select" title="${esc(m.agentOptions.find(o => o.id === m.agent.id)?.title || '')}">${icon('bot')}<span class="sr-only">Agent</span>`
     + `<select data-field="agent" data-key="c-agent" aria-label="Agent configuration">${m.agentOptions.map(o => `<option value="${esc(o.id)}"${o.id === m.agent.id ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>`;
-  const modelChip = `<label class="chip chip-select">${icon('sliders')}<span class="sr-only">Model</span><select data-field="model" data-key="c-model" aria-label="Model">`
-    + `${m.modelOptions.map(o => `<option value="${esc(o.id)}"${o.id === m.model ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>`;
+  const modelChip = modelMenuHTML({ key: 'c-model', field: 'model', options: m.modelOptions, selected: m.model, defaultModel: m.agent?.model });
   const transportChip = `<label class="chip chip-select"${m.steam.enabled ? '' : ` title="${esc(m.steam.reason)}"`}>${icon('network')}<span class="sr-only">Transport</span>`
     + `<select data-field="transport" data-key="c-transport" aria-label="Transport" aria-describedby="composer-steam-note">`
     + `<option value="enet"${draft.transport === 'enet' ? ' selected' : ''}>ENet</option>`

@@ -198,18 +198,22 @@ test('the dirty-draft bridge sends only booleans and skips repeats', async () =>
   dirtyBridge(() => ({ setDirtyDraft: () => Promise.reject(new Error('rejected')) }))(true);
 });
 
-test('composer offers only the agent provider models and defaults to the agent model', async () => {
+test('composer model menu offers only the agent provider models, selects and marks the agent model as Default', async () => {
   const { composerModel, composerRegions, newDraft } = await load();
   const draft = { ...newDraft(), agentId: 'a' };
   const bar = composerRegions(composerModel(data(), 'p', draft, null), draft).bar;
-  const select = bar.match(/<select data-field="model"[^>]*>(.*?)<\/select>/)[1];
-  assert.deepEqual([...select.matchAll(/value="([^"]+)"/g)].map(x => x[1]), ['gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-astra']);
-  assert.doesNotMatch(select, /sonnet|opus|haiku/);
-  assert.match(select, /<option value="gpt-6-astra" selected>/);
+  assert.doesNotMatch(bar, /<select data-field="model"/);
+  const options = [...bar.matchAll(/<button [^>]*role="option"[^>]*>.*?<\/button>/g)].map(x => x[0]);
+  assert.deepEqual(options.map(o => o.match(/data-value="([^"]+)"/)[1]), ['gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-astra']);
+  assert.doesNotMatch(bar, /sonnet|opus|haiku/);
+  const astra = options.find(o => o.includes('data-value="gpt-6-astra"'));
+  assert.match(astra, /aria-selected="true"/);
+  assert.match(astra, /model-default">Default</);
+  assert.match(bar, /<span class="chip-text">GPT-6 Astra<\/span>/);
   const other = { ...draft, model: 'opus' };
   const bar2 = composerRegions(composerModel(data(), 'p', other, null), other).bar;
-  assert.match(bar2, /<option value="gpt-6-astra" selected>/);
-  assert.doesNotMatch(bar2, /value="opus"/);
+  assert.match(bar2, /aria-selected="true"[^>]*data-value="gpt-6-astra"/);
+  assert.doesNotMatch(bar2, /opus/);
 });
 
 test('Start sends the chosen model and a changed model is a changed payload', async () => {

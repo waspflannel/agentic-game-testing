@@ -222,22 +222,25 @@ test('the header has no inspector toggle', async () => {
   assert.match(regions.tabs, /role="tablist"/);
 });
 
-test('header shows a same-provider model select for a live run and a plain chip for an ended run', async () => {
+test('header shows a same-provider model menu for a live run and a plain chip for an ended run', async () => {
   const { instanceState, threadRegions } = await load();
   const data = { model_options: [
     { id: 'gpt-6-sol', label: 'GPT-6 Sol', provider: 'codex' }, { id: 'gpt-6-astra', label: 'GPT-6 Astra', provider: 'codex' },
     { id: 'sonnet', label: 'Claude Sonnet', provider: 'claude' }, { id: 'opus', label: 'Claude Opus', provider: 'claude' },
   ] };
   const head = r => threadRegions(r, { status: instanceState(r), data, ui: {}, pending: new Set(), cameraStatus: 'offline', player: 'p1', tab: 'bot' }).head;
-  const live = head(run('Running'));
-  const meta = live.match(/<div class="thread-meta">(.*?)<\/div><button/s)[1];
+  const live = head(run('Running', { agent_profile: { model: 'gpt-6-sol' } }));
+  const meta = live.match(/<div class="thread-meta">(.*?)<button type="button" class="icon-btn meta-more"/s)[1];
   assert.match(meta, /data-field="run-model"/);
-  assert.deepEqual([...meta.matchAll(/<option value="([^"]+)"/g)].map(x => x[1]), ['gpt-6-sol', 'gpt-6-astra']);
-  assert.match(meta, /<option value="gpt-6-astra" selected>/);
+  assert.deepEqual([...meta.matchAll(/data-value="([^"]+)"/g)].map(x => x[1]), ['gpt-6-sol', 'gpt-6-astra']);
+  assert.match(meta, /aria-selected="true"[^>]*data-value="gpt-6-astra"/);
+  assert.match(meta, /data-value="gpt-6-sol"><span class="model-option-label">GPT-6 Sol<\/span><span class="model-default">Default<\/span>/);
+  assert.equal(meta.match(/model-default/g).length, 1);
   const pop = live.match(/id="meta-pop"[^>]*>(.*)<\/div>$/s)[1];
-  assert.doesNotMatch(pop, /<select/);
+  assert.doesNotMatch(pop, /<select|role="listbox"|model-trigger/);
   assert.match(pop, /GPT-6 Astra/);
   const ended = head(run('Ended'));
-  assert.doesNotMatch(ended, /data-field="run-model"/);
+  assert.doesNotMatch(ended, /data-field="run-model"|model-trigger/);
   assert.match(ended, /<span class="chip-text">GPT-6 Astra<\/span>/);
+  assert.doesNotMatch(head(run('Running')), /model-default/);
 });

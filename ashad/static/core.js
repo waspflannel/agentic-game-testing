@@ -110,6 +110,32 @@ export const providerModels = (data, model) => {
   return options.filter(m => m.provider === provider);
 };
 
+// One model picker: a chip that opens a listbox popover. Rows mark the selected model and the configuration's tuned default.
+export function modelMenuHTML({ key, field, options, selected, defaultModel }) {
+  const menuId = `${key}-menu`;
+  const label = options.find(o => o.id === selected)?.label || selected;
+  const rows = options.map(o => {
+    const isSelected = o.id === selected;
+    return `<button type="button" role="option" aria-selected="${isSelected}" tabindex="-1" class="menu-item model-option" data-action="pick-model" data-field="${field}" data-value="${esc(o.id)}">`
+      + `<span class="model-option-label">${esc(o.label)}</span>${o.id === defaultModel ? '<span class="model-default">Default</span>' : ''}`
+      + `${isSelected ? icon('check', 'icon model-check') : ''}</button>`;
+  }).join('');
+  return `<button type="button" class="chip model-trigger" popovertarget="${menuId}" aria-haspopup="listbox" data-key="${key}">`
+    + `${icon('sliders')}<span class="sr-only">Model: </span><span class="chip-text">${esc(label)}</span>${icon('chevron-down', 'icon model-chevron')}</button>`
+    + `<div id="${menuId}" popover class="popover menu model-menu" role="listbox" aria-label="Model">${rows}</div>`;
+}
+
+// Listbox focus movement: ArrowUp/ArrowDown clamp at the ends; Home/End jump. Returns -1 for any other key.
+export function nextOptionIndex(key, index, count) {
+  switch (key) {
+    case 'ArrowDown': return Math.min(index + 1, count - 1);
+    case 'ArrowUp': return Math.max(index - 1, 0);
+    case 'Home': return 0;
+    case 'End': return count - 1;
+    default: return -1;
+  }
+}
+
 export const badge = ({ tone, label }) => `<span class="badge badge-${tone}"><span class="dot dot-${tone}" aria-hidden="true"></span>${esc(label)}</span>`;
 
 // §12 drawers: below a breakpoint a pane moves into a modal <dialog> (focus trap, Esc) and goes back to the layout

@@ -12,7 +12,11 @@ const data = (extra = {}) => ({
   projects: [{ id: 'p', name: 'Agronauts' }],
   builds: [{ id: 'b', name: '0.3.1', project_id: 'p' }],
   agents: [{ id: 'a', name: 'Scout', build_id: 'b', project_id: 'p', model: 'gpt-6-astra', status: 'ready' }],
-  model_options: [{ id: 'gpt-6-astra', label: 'GPT-6 Astra' }],
+  model_options: [
+    { id: 'gpt-6-luna', label: 'GPT-6 Luna', provider: 'codex' }, { id: 'gpt-6-sol', label: 'GPT-6 Sol', provider: 'codex' },
+    { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', provider: 'codex' }, { id: 'gpt-6-astra', label: 'GPT-6 Astra', provider: 'codex' },
+    { id: 'sonnet', label: 'Claude Sonnet', provider: 'claude' }, { id: 'opus', label: 'Claude Opus', provider: 'claude' }, { id: 'haiku', label: 'Claude Haiku', provider: 'claude' },
+  ],
   workers: [{ id: 'w' }], accounts: [], runs: [],
   ai: { status: 'ready' }, instance_slot: { available: true, owners: [] }, ...extra,
 });
@@ -40,7 +44,7 @@ test('a 409 keeps goal, transport and request ID and links the owning instance',
   assert.equal(result.kind, 'conflict');
   assert.deepEqual([draft.goal, draft.transport, draft.requestId], ['Craft a pickaxe', 'enet', 'req-1']);
   draft.result = result;
-  const html = composerRegions(composerModel(data(), 'p', draft, { key: 'p|b|a', result: ready }), draft).status;
+  const html = composerRegions(composerModel(data(), 'p', draft, { key: 'p|b|a|gpt-6-astra', result: ready }), draft).status;
   assert.match(html, /href="#\/i\/r-owner"/);
   assert.match(html, /Your goal is kept/);
   await startInstance(draft, 'p', f.api);
@@ -110,7 +114,7 @@ test('a changed goal after an accepted start is not silently resubmitted', async
 
 test('a changed goal after a never-launched start goes out under a new ID', async () => {
   const { startInstance } = await load();
-  const f = fakeApi({ '/api/instances/requests/': { status: 'prepared' }, '/api/instances': async (u, init) => (init.body.primary_goal === 'Second' ? { id: 'r2' } : Promise.reject(new TypeError('lost'))) });
+  const f = fakeApi({ '/api/instances/requests/': { status: 'unknown' }, '/api/instances': async (u, init) => (init.body.primary_goal === 'Second' ? { id: 'r2' } : Promise.reject(new TypeError('lost'))) });
   const draft = await draftWith('First');
   await startInstance(draft, 'p', f.api);
   draft.goal = 'Second';
@@ -123,14 +127,14 @@ test('Steam never enables from stale account rows or App ID 480', async () => {
   const { composerModel, composerRegions } = await load();
   const stale = data({ accounts: [{ id: 'acct', readiness: 'ready', steam_id: '7656', app_id: 480, worker_id: 'w' }] });
   const draft = { ...(await (await load()).newDraft()), agentId: 'a', transport: 'steam', goal: 'g' };
-  for (const readiness of [null, { key: 'p|b|a', loading: true }, { key: 'p|b|a', result: ready }, { key: 'p|other|a', result: { ...ready, steam: { ready: true } } }]) {
+  for (const readiness of [null, { key: 'p|b|a|gpt-6-astra', loading: true }, { key: 'p|b|a|gpt-6-astra', result: ready }, { key: 'p|other|a|gpt-6-astra', result: { ...ready, steam: { ready: true } } }]) {
     const m = composerModel(stale, 'p', draft, readiness);
     assert.equal(m.steam.enabled, false);
     assert.equal(m.canStart, false);
     assert.match(m.blockers.join(' '), /No ENet fallback/);
     assert.match(composerRegions(m, draft).bar, /<option value="steam" selected disabled>Steam \(unavailable\)<\/option>/);
   }
-  const fresh = composerModel(stale, 'p', draft, { key: 'p|b|a', result: { ...ready, steam: { ready: true } } });
+  const fresh = composerModel(stale, 'p', draft, { key: 'p|b|a|gpt-6-astra', result: { ...ready, steam: { ready: true } } });
   assert.equal(fresh.steam.enabled, true, 'only a fresh probe for this build enables Steam');
   assert.equal(fresh.canStart, true);
 });
@@ -138,12 +142,12 @@ test('Steam never enables from stale account rows or App ID 480', async () => {
 test('disabled Start always says why', async () => {
   const { composerModel, newDraft } = await load();
   const draft = { ...newDraft(), agentId: 'a' };
-  const reasons = (d, readiness = { key: 'p|b|a', result: ready }) => composerModel(d, 'p', draft, readiness).blockers.join(' | ');
+  const reasons = (d, readiness = { key: 'p|b|a|gpt-6-astra', result: ready }) => composerModel(d, 'p', draft, readiness).blockers.join(' | ');
   assert.equal(reasons(data()), '');
   assert.match(reasons(data({ ai: { status: 'not_validated' } })), /No AI provider is connected/);
   assert.match(reasons(data({ instance_slot: { available: false, owners: [{ run_id: 'r' }], blocked_reason: 'One instance already owns the global slot' } })), /already owns the global slot/);
-  assert.match(reasons(data(), { key: 'p|b|a', result: { ...ready, ready: false, environments: [{ ready: false, reason: 'Docker is not running' }] } }), /Desktop not ready: Docker is not running/);
-  assert.match(reasons(data(), { key: 'p|b|a', loading: true }), /Checking desktop readiness/);
+  assert.match(reasons(data(), { key: 'p|b|a|gpt-6-astra', result: { ...ready, ready: false, environments: [{ ready: false, reason: 'Docker is not running' }] } }), /Desktop not ready: Docker is not running/);
+  assert.match(reasons(data(), { key: 'p|b|a|gpt-6-astra', loading: true }), /Checking desktop readiness/);
 });
 
 test('long agent and build names stay on one composer row', async () => {
@@ -151,7 +155,7 @@ test('long agent and build names stay on one composer row', async () => {
   const long = 'Agronauts DEMO - Decisions and corrected input scaling';
   const d = data({ builds: [{ id: 'b', name: long, project_id: 'p' }], agents: [{ ...data().agents[0], name: `${long} agent` }] });
   const draft = { ...newDraft(), agentId: 'a' };
-  const r = composerRegions(composerModel(d, 'p', draft, { key: 'p|b|a', result: ready }), draft);
+  const r = composerRegions(composerModel(d, 'p', draft, { key: 'p|b|a|gpt-6-astra', result: ready }), draft);
   assert.match(r.bar, /<option value="a" selected>Agronauts DEMO - Decisions and corrected input scaling agent<\/option>/, 'the chip shows the name; the model is in the summary');
   assert.match(r.bar, /<label class="chip chip-select" title="Agronauts DEMO[^"]* agent · GPT-6 Astra">/);
   assert.match(r.bar, /<span class="composer-summary" title="GPT-6 Astra · build Agronauts DEMO[^"]*· Fresh world">/);
@@ -192,4 +196,35 @@ test('the dirty-draft bridge sends only booleans and skips repeats', async () =>
   assert.ok(sent.every(v => typeof v === 'boolean'));
   dirtyBridge(() => undefined)(true);  // No bridge outside the desktop app.
   dirtyBridge(() => ({ setDirtyDraft: () => Promise.reject(new Error('rejected')) }))(true);
+});
+
+test('composer offers only the agent provider models and defaults to the agent model', async () => {
+  const { composerModel, composerRegions, newDraft } = await load();
+  const draft = { ...newDraft(), agentId: 'a' };
+  const bar = composerRegions(composerModel(data(), 'p', draft, null), draft).bar;
+  const select = bar.match(/<select data-field="model"[^>]*>(.*?)<\/select>/)[1];
+  assert.deepEqual([...select.matchAll(/value="([^"]+)"/g)].map(x => x[1]), ['gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-astra']);
+  assert.doesNotMatch(select, /sonnet|opus|haiku/);
+  assert.match(select, /<option value="gpt-6-astra" selected>/);
+  const other = { ...draft, model: 'opus' };
+  const bar2 = composerRegions(composerModel(data(), 'p', other, null), other).bar;
+  assert.match(bar2, /<option value="gpt-6-astra" selected>/);
+  assert.doesNotMatch(bar2, /value="opus"/);
+});
+
+test('Start sends the chosen model and a changed model is a changed payload', async () => {
+  const { startInstance } = await load();
+  const f = fakeApi({
+    '/api/instances/requests/': { status: 'unknown' },
+    '/api/instances': async (u, init) => (init.body.model === 'gpt-6-luna' ? { id: 'r2' } : Promise.reject(new TypeError('lost'))),
+  });
+  const draft = await draftWith('Goal');
+  draft.model = 'gpt-6-sol';
+  await startInstance(draft, 'p', f.api);
+  assert.equal(f.posts()[0].body.model, 'gpt-6-sol');
+  draft.model = 'gpt-6-luna';
+  assert.equal((await startInstance(draft, 'p', f.api)).kind, 'accepted');
+  const [first, second] = f.posts();
+  assert.equal(second.body.model, 'gpt-6-luna');
+  assert.notEqual(first.body.request_id, second.body.request_id);
 });

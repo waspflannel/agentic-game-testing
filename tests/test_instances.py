@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 from ashad.agent_profiles import AgentProfiles
 from ashad.instances import InstanceRequest, Instances
 from ashad.models import MODEL
-from test_controller import environment  # noqa: F401
+from test_controller import FakeClaudeBackend, environment  # noqa: F401
 from test_ui_http import app_at
 
 
@@ -43,6 +43,8 @@ async def test_fresh_instance_freezes_profile_and_deduplicates_start(environment
     assert store.require("runs", run["id"])["agent_profile"]["instructions"] != profile["instructions"]
     with pytest.raises(ValueError, match="different instance"):
         await instances.start(request.model_copy(update={"primary_goal": "Another objective"}))
+    with pytest.raises(ValueError, match="different instance"):
+        await instances.start(request.model_copy(update={"model": "gpt-6-sol"}))
     with pytest.raises(ValueError, match="One active instance"):
         await instances.start(request.model_copy(update={"request_id": "start-two"}))
     assert len(store.list("runs")) == 1
@@ -50,6 +52,48 @@ async def test_fresh_instance_freezes_profile_and_deduplicates_start(environment
     second = await instances.start(request.model_copy(update={"request_id": "start-two"}))
     assert second["id"] != run["id"] and second["project_id"] == "project-1"
     assert second["plan"]["world_setup"]["mode"] == "fresh"
+
+
+@pytest.mark.asyncio
+async def test_instance_model_defaults_to_profile_and_accepts_same_provider_override(environment, profile):
+    store, coordinator, _, _ = environment
+    instances = Instances(coordinator)
+    run = await instances.start(InstanceRequest(agent_id=profile["id"], primary_goal="Explore", request_id="model-default"))
+    assert run["model"] == MODEL
+    assert "model" not in store.command("instance", "model-default")["request"]
+    await coordinator.finish(run["id"], "user_stopped")
+    second = await instances.start(InstanceRequest(agent_id=profile["id"], primary_goal="Explore", request_id="model-override", model="gpt-6-sol"))
+    assert second["model"] == second["plan"]["model"] == "gpt-6-sol"
+    assert second["agent_profile"]["model"] == MODEL
+    assert second["api"] == "codex"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("model", ["sonnet", "nope"])
+async def test_instance_rejects_other_provider_or_unknown_model_without_side_effects(environment, profile, model):
+    store, coordinator, _, _ = environment
+    with pytest.raises(ValueError, match="Choose a Codex model"):
+        await Instances(coordinator).start(InstanceRequest(agent_id=profile["id"], primary_goal="Explore", request_id="bad-model", model=model))
+    assert store.list("scenarios") == []
+    assert store.command("instance", "bad-model") is None
+
+
+@pytest.mark.asyncio
+async def test_launch_requires_profile_provider_not_model(environment, profile):
+    store, coordinator, _, _ = environment
+    run = await Instances(coordinator).start(InstanceRequest(agent_id=profile["id"], primary_goal="Explore", request_id="launch-base"))
+    await coordinator.finish(run["id"], "user_stopped")
+    plan = copy.deepcopy(run["plan"])
+    plan["model"] = "gpt-6-sol"
+    scenario = coordinator.save_scenario(plan)
+    launched = await coordinator.launch(scenario["id"], scenario["revision"], "launch-codex")
+    assert launched["model"] == "gpt-6-sol"
+    await coordinator.finish(launched["id"], "user_stopped")
+    coordinator.ai.claude_backend = FakeClaudeBackend()
+    plan["model"] = "sonnet"
+    scenario = coordinator.save_scenario(plan)
+    with pytest.raises(ValueError, match="provider must match"):
+        await coordinator.launch(scenario["id"], scenario["revision"], "launch-claude")
 
 
 @pytest.mark.asyncio

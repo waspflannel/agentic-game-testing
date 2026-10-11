@@ -221,3 +221,23 @@ test('the header has no inspector toggle', async () => {
   assert.doesNotMatch(regions.head, /toggle-?inspector|Ctrl\+I/i);
   assert.match(regions.tabs, /role="tablist"/);
 });
+
+test('header shows a same-provider model select for a live run and a plain chip for an ended run', async () => {
+  const { instanceState, threadRegions } = await load();
+  const data = { model_options: [
+    { id: 'gpt-6-sol', label: 'GPT-6 Sol', provider: 'codex' }, { id: 'gpt-6-astra', label: 'GPT-6 Astra', provider: 'codex' },
+    { id: 'sonnet', label: 'Claude Sonnet', provider: 'claude' }, { id: 'opus', label: 'Claude Opus', provider: 'claude' },
+  ] };
+  const head = r => threadRegions(r, { status: instanceState(r), data, ui: {}, pending: new Set(), cameraStatus: 'offline', player: 'p1', tab: 'bot' }).head;
+  const live = head(run('Running'));
+  const meta = live.match(/<div class="thread-meta">(.*?)<\/div><button/s)[1];
+  assert.match(meta, /data-field="run-model"/);
+  assert.deepEqual([...meta.matchAll(/<option value="([^"]+)"/g)].map(x => x[1]), ['gpt-6-sol', 'gpt-6-astra']);
+  assert.match(meta, /<option value="gpt-6-astra" selected>/);
+  const pop = live.match(/id="meta-pop"[^>]*>(.*)<\/div>$/s)[1];
+  assert.doesNotMatch(pop, /<select/);
+  assert.match(pop, /GPT-6 Astra/);
+  const ended = head(run('Ended'));
+  assert.doesNotMatch(ended, /data-field="run-model"/);
+  assert.match(ended, /<span class="chip-text">GPT-6 Astra<\/span>/);
+});

@@ -2,7 +2,7 @@
 
 ASHAD runs a game-playing bot in an isolated desktop. Tune a reusable agent profile from the pinned game's controls, then start a fresh instance with that agent and one primary goal using ENet. Steam remains unavailable without fresh licensed-identity proof; see the limitation below. The bot receives its saved instructions and filtered JSON game state, chooses an action, and checks the next observation.
 
-**Tuning writes instructions; it does not train model weights.** A profile records the selected model and build. Each run freezes its profile so later tuning cannot silently change a running bot.
+**Tuning writes instructions; it does not train model weights.** A profile records its tuned model, which is the default, and its build. Each run freezes its profile so later tuning cannot silently change a running bot.
 
 Tuning saves each completed source batch, so retrying a failed setup reuses matching notes for the same model, source and prompt version. Oversized notes or manuals receive one compression retry; both requests count toward usage. An agent is saved only after its complete manual passes validation.
 
@@ -59,7 +59,7 @@ sudo chown root:root desktop/output/linux-unpacked/chrome-sandbox && sudo chmod 
 
 Use **Settings → AI connection → Sign in with ChatGPT** and finish the official browser sign-in. ASHAD uses its own managed Codex connection, separate from desktop-app and global CLI sign-in. There is no API-key fallback or manual token copying. Pause or stop active work before changing accounts.
 
-Profile tuning and bot decisions require account access to the selected model. Model selection belongs to agent setup; ASHAD does not silently substitute a different model. Settings, saved records and local diagnostics remain available while signed out.
+Profile tuning and bot decisions require account access to the selected model. The profile's tuned model is the default; an instance can use another model of the same provider only when you choose it, and ASHAD does not silently substitute a different model. Settings, saved records and local diagnostics remain available while signed out.
 
 **Usage & capacity** retains token totals, cost estimates, hardware measurements, session capacity and desktop availability. Equivalent API-price estimates are comparison values, not ChatGPT subscription charges or spending limits. Missing usage remains marked incomplete; historical charges retain their original meaning.
 
@@ -68,7 +68,7 @@ Profile tuning and bot decisions require account access to the selected model. M
 1. Install Claude Code 2.1.280 or later with Anthropic's native installer. ASHAD looks only in the installer's default location (`%USERPROFILE%\.local\bin\claude.exe`, or `~/.local/bin/claude` on Linux).
 2. In a terminal run `claude setup-token`, finish the browser step and copy the printed token.
 3. Use **Settings → Account → Claude**, paste the token and Save. The token goes to the OS credential store, never to ASHAD's database or logs. Remove deletes it.
-4. Pick Claude Sonnet (default), Opus or Haiku in **Projects + → Setup new game agent**. The model is frozen per profile.
+4. Pick Claude Sonnet (default), Opus or Haiku in **Projects + → Setup new game agent**. The profile records this as its tuned model; each instance may pick another Claude model at start and change it while live.
 5. Terms: this is personal, local use of your own subscription through the unmodified Claude CLI. Read https://code.claude.com/docs/en/legal-and-compliance. Products built for other people should use API keys; ASHAD has no API-key fallback. Do not share a build containing a token or run it for other people's subscriptions.
 
 ## Project ownership and retained history
@@ -80,7 +80,7 @@ Optional **Import existing workspace…** requires an empty owned target, a stop
 ## Tune an agent, then run it
 
 1. Complete **Projects +** setup: choose the pinned build, inspect a compatible desktop, select the model and explicitly tune a named profile. The selected provider uses source/control evidence; tuning performs inference but does not launch a game. Review the saved instructions.
-2. Open the project's **New instance**, select a saved profile and enter the primary goal. Its build/model are fixed by the profile. Check readiness without inference/gameplay if needed.
+2. Open the project's **New instance**, select a saved profile and enter the primary goal. Its build is fixed by the profile. The model defaults to the profile's tuned model; pick another model of the same provider at start, or change it from the instance header while the instance is live (it applies from the next decision). The controls manual stays the one tuned with the profile's model. Check readiness without inference/gameplay if needed.
 3. Explicitly **Start instance**. ASHAD freshly revalidates authentication, exact supported build pins and actual idle desktop/render/capture/input capabilities, then accepts one host bot in a fresh world. Failed/blocked drafts never auto-launch. Lost replies reconcile the same request; restoring prepared inputs asks first and still requires another Start click.
 4. Follow the live view. Pause, resume, stop, or take over if the bot needs help. Each instance retains its own run ID and evidence.
 

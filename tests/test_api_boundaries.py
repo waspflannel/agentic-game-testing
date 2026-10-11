@@ -387,3 +387,18 @@ def test_project_with_an_active_instance_cannot_be_deleted(tmp_path):
         refused = client.delete(f"/api/projects/{pid}", headers=HEADERS)
         assert refused.status_code == 422 and "Stop its active instance" in refused.json()["detail"]
         assert store.get("projects", pid) and store.get("builds", "b1") and store.get("runs", "r1")
+
+
+def test_readiness_accepts_same_provider_model_only(tmp_path):
+    app = offline_app(tmp_path)
+    store = app.state.store
+    store.put("projects", {"id": "project", "name": "Game"})
+    store.put("builds", {"id": "build", "project_id": "project", "name": "Fixture"})
+    store.put("agents", {"id": "agent", "build_id": "build", "project_id": "project", "model": "gpt-6-luna"})
+    app.state.ai.validate = AsyncMock(return_value={"configured": True, "status": "ready", "message": "Ready"})
+    url = "/api/projects/project/readiness?build_id=build"
+    with TestClient(app) as client:
+        chosen = client.get(f"{url}&agent_id=agent&model=gpt-6-sol")
+        assert chosen.status_code == 200 and chosen.json()["provider"]["model"] == "gpt-6-sol"
+        assert client.get(f"{url}&agent_id=agent&model=sonnet").status_code == 422
+        assert client.get(f"{url}&model=gpt-6-sol").status_code == 422

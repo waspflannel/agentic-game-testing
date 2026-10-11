@@ -473,6 +473,7 @@ def test_event_trigger_timing(trigger, value, state, expected):
 @pytest.mark.parametrize("command,options", [
     ("unknown", {}), ("resume", {}), ("extend", {"seconds": -1}),
     ("manual_event", {"event_id": "missing"}), ("goal", {"player_id": "missing", "goal": "new"}),
+    ("model", {"model": "sonnet"}), ("model", {"model": "nope"}), ("model", {}), ("model", {"model": MODEL}),
 ])
 async def test_rejected_control_does_not_record_an_intervention(environment, command, options):
     store, coordinator, _, _ = environment
@@ -484,6 +485,46 @@ async def test_rejected_control_does_not_record_an_intervention(environment, com
     assert store.require("runs", run["id"]) == before
     assert store.count_events(run["id"]) == events
     assert store.command(run["id"], "rejected-command") is None
+
+
+@pytest.mark.asyncio
+async def test_model_command_switches_model_and_keeps_tuned_copies(environment):
+    store, coordinator, _, _ = environment
+    run = await new_run(environment)
+    generations = {pid: ps["generation"] for pid, ps in run["players"].items()}
+    await coordinator.control(run["id"], "model", command_id="m1", model="gpt-6-sol")
+    reloaded = store.require("runs", run["id"])
+    assert reloaded["model"] == reloaded["plan"]["model"] == "gpt-6-sol"
+    assert reloaded["approved_plan"]["model"] == MODEL
+    assert all(ps["generation"] == generations[pid] + 1 for pid, ps in reloaded["players"].items())
+    last = reloaded["interventions"][-1]
+    assert last["command"] == "model" and last["model"] == "gpt-6-sol" and last["previous_model"] == MODEL
+    assert any(e["kind"] == "model_changed" and e["payload"] == {"from": MODEL, "to": "gpt-6-sol"} for e in store.events(run["id"]))
+    count = len(reloaded["interventions"])
+    await coordinator.control(run["id"], "model", command_id="m1", model="gpt-6-sol")
+    assert len(store.require("runs", run["id"])["interventions"]) == count
+
+
+@pytest.mark.asyncio
+async def test_model_command_rejected_when_provider_not_ready(environment):
+    store, coordinator, _, _ = environment
+    run = await new_run(environment)
+    before = store.require("runs", run["id"])
+    coordinator.ai.backend.ready = False
+    with pytest.raises(ValueError):
+        await coordinator.control(run["id"], "model", command_id="m2", model="gpt-6-sol")
+    assert store.require("runs", run["id"]) == before
+    assert store.command(run["id"], "m2") is None
+
+
+@pytest.mark.asyncio
+async def test_model_command_rejected_after_stopping(environment):
+    store, coordinator, _, _ = environment
+    run = await new_run(environment)
+    run["state"] = "Stopping"
+    store.put("runs", run)
+    with pytest.raises(ValueError, match="only while the instance is live"):
+        await coordinator.control(run["id"], "model", command_id="m3", model="gpt-6-sol")
 
 
 @pytest.mark.asyncio

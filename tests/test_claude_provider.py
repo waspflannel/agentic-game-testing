@@ -164,6 +164,10 @@ async def test_sonnet_profile_run_records_claude_api(environment):
     assert run["api"] == "claude" and run["billing"] == "subscription"
     assert run["model"] == "sonnet"
     await coordinator.control(run["id"], "pause", command_id="pause-sonnet")
+    await coordinator.control(run["id"], "model", command_id="model-opus", model="opus")
     await coordinator.control(run["id"], "resume", command_id="resume-sonnet")
-    assert store.get("settings", "ai_status_claude")["model"] == "sonnet"
-    assert store.require("runs", run["id"])["api"] == "claude"
+    assert store.get("settings", "ai_status_claude")["model"] == "opus"
+    changed = store.require("runs", run["id"])
+    assert changed["model"] == "opus" and changed["api"] == "claude"
+    await coordinator.ai.decisions("evidence", QUESTIONS, run_id=run["id"])
+    assert coordinator.ai.claude_backend.requests[-1]["model"] == "opus"

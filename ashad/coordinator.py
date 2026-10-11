@@ -10,7 +10,7 @@ from pathlib import Path
 import shutil
 import time
 import uuid
-from .models import Plan, MODEL, PROVIDERS, provider_of, CONTROLLER_VERSION, ACTIVE_STATES, TERMINAL_QUEST
+from .models import Plan, MODEL, PROVIDERS, provider_of, CONTROLLER_VERSION, ACTIVE_STATES, TERMINAL_QUEST, SUPPORTED_MODELS
 from .reports import generate_report
 from .repair_tasks import record_task, publish_pending
 from .store import uid
@@ -18,6 +18,8 @@ from . import subgoals
 from .subgoals import new_plan
 from .validation import validate_plan
 from .workspace_environment import inspect_environment, validate_build
+
+MODEL_CHANGE_STATES = {"Queued", "Starting", "Running", "Paused", "Investigating"}
 
 
 def event_due(run, event, state, now):
@@ -1076,7 +1078,7 @@ class Coordinator:
                 raise ValueError("Run has ended; create a rerun")
             # Rejected commands are not interventions. Resolve their targets and
             # validate options before recording intent or sending worker input.
-            if command not in {"stop", "terminate", "pause", "resume", "extend", "manual_event", "goal", "takeover", "takeover_finish"}:
+            if command not in {"stop", "terminate", "pause", "resume", "extend", "manual_event", "goal", "model", "takeover", "takeover_finish"}:
                 raise ValueError("Unknown lifecycle command")
             recalculating = run.get("goal_recalculation", {}).get("status") == "planning"
             if recalculating and command not in {"stop", "terminate", "pause"}:
@@ -1123,6 +1125,20 @@ class Coordinator:
                 player = next((p for p in run["plan"]["players"] if p["id"] == options.get("player_id")), None)
                 if not player or not options.get("goal"):
                     raise ValueError("Goal intervention requires player and goal")
+            if command == "model":
+                model = options.get("model")
+                current = run.get("model") or run["plan"].get("model", MODEL)
+                label = PROVIDERS[provider_of(current)]["label"]
+                if model not in SUPPORTED_MODELS or provider_of(model) != provider_of(current):
+                    raise ValueError(f"Choose a {label} model for this instance.")
+                if model == current:
+                    raise ValueError(f"This instance already uses {model}.")
+                if run["state"] not in MODEL_CHANGE_STATES:
+                    raise ValueError("Change the model only while the instance is live.")
+                status = await self.ai.validate(model)
+                if status.get("status") != "ready" or status.get("configured") is not True:
+                    raise ValueError(status.get("message") or "Connect the AI provider for this model first.")
+                options["previous_model"] = current
             intervention = {"command": command, "reason": reason, "timestamp": time.time(), "command_id": command_id, **options}
             run["interventions"].append(intervention)
             self.save_run(run)
@@ -1155,6 +1171,12 @@ class Coordinator:
                 run["players"][player["id"]]["generation"] += 1
                 self.save_run(run)
                 self.store.event(run_id, "goal_changed", {"player_id": player["id"], "goal": player["goal"]})
+            elif command == "model":
+                run["model"] = run["plan"]["model"] = options["model"]
+                for ps in run["players"].values():
+                    ps["generation"] += 1
+                self.save_run(run)
+                self.store.event(run_id, "model_changed", {"from": options["previous_model"], "to": options["model"]})
             self.store.command(run_id, command_id, {"acknowledged": True, "command": command})
             generate_report(self.store, run_id)
             return self.store.require("runs", run_id)

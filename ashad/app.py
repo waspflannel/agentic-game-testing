@@ -21,6 +21,7 @@ from .codex_backend import CodexError
 from .coordinator import Coordinator, InstanceConflict
 from .credentials import Credentials
 from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, provider_of, AI_API, ACTIVE_STATES, RecalculateGoalsRequest, ManualSaveRequest
+from . import repair_tasks
 from .repository import Repository, sha256_file
 from .reports import generate_report
 from .game_controls import BUSY, MODEL_NOT_ALLOWED, SIGN_IN_WAIT, GameControls, migrate_configuration_names, migrate_tuned_configurations
@@ -453,6 +454,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             recent = run["events"][-100:]
             page["recent_100_older_count"] = store.count_events(run_id, before=recent[0]["seq"]) if recent else 0
         run["events_page"] = page
+        run["issues"], run["issues_truncated"] = await asyncio.to_thread(repair_tasks.run_issues, store, run_id)
         if run["state"] in {"Investigating", "Paused"} and not run.get("pause"):
             latest = store.latest_event(run_id, "investigation_started") if run["state"] == "Investigating" else None
             if latest and run["state"] == "Investigating":

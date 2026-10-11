@@ -8,7 +8,7 @@ An issue file is one grouped, versioned JSON record of a problem the agent hit, 
 - `crash`: the game or its environment died or hung.
 - `game_bug`: the game contradicted itself, rendered wrongly or did not respond after an offered action.
 
-Stage 2 still only writes these files and sets `open`; nothing reads them, fixes them or reruns anything.
+Stage 2 still only writes these files and sets `open`. The instance page reads them: each instance lists its own hits from its ledger. Nothing fixes them or reruns anything yet.
 
 ## Location
 
@@ -30,7 +30,7 @@ The SQLite record kind `issues` is the source of truth; the file is rendered fro
 | `status` | `"open"` (reserved: `triaged`, `fixing`, `fixed`, `wont_fix`) |
 | `status_history`, `fix` | `[]`, `null` |
 | `untrusted_text` | fixed warning string |
-| `first_seen`, `last_seen` | `{at, run_id, example_id, build_id, source_revision}` |
+| `first_seen`, `last_seen` | `{at, run_id, example_id, build_id, source_revision, save_before}` |
 | `occurrences` | every hit |
 | `runs`, `builds` | distinct ids, at most 50 / 20 |
 | `examples_kept`, `examples_dropped` | integers |
@@ -68,7 +68,7 @@ Every example has these common fields:
 | `screenshot` | `{observation_id, pin_id, status: pinned or unavailable, frames, retained_path_prefix}` |
 | `evidence` | `{run_dir, ledger, report, event_ids}` |
 | `truncated` | names of trimmed sections |
-| `saves` | `{before, at_issue}` save ids, each possibly `null`; present only on kept examples |
+| `saves` | `{before, at_issue}` save ids, each possibly `null`; present only on kept examples. Counted hits are not stored, but their `saves.before` reaches `last_seen.save_before` and the ledger event. |
 
 On top of the common fields, each type adds its own sections:
 
@@ -167,9 +167,15 @@ Each is written to the run ledger after the record is stored, never before, so t
 
 | Event | Payload |
 |---|---|
-| `unsupported_action_recorded`, `crash_recorded`, `game_bug_recorded` | `{player_id, issue_id, example_id, source, kept, outcome}`; `outcome` is `kept` or `counted`, and nothing is written for a failed record |
+| `unsupported_action_recorded`, `crash_recorded`, `game_bug_recorded` | `{player_id, issue_id, example_id, source, kept, outcome, save_before}` (`save_before` is a save id or null); `outcome` is `kept` or `counted`, and nothing is written for a failed record |
 | `issue_cap_reached` | `{player_id, issue_type, signature}` |
 | `game_bug_report_rejected` | `{player_id, reason}` |
+
+## Per-instance history
+
+An instance's issues are its `<type>_recorded` ledger events grouped by `issue_id`. The newest 500 events are read and 20 hits are shown per issue. `save_before` is the newest save of that run before the hit. `GET /api/runs/{run_id}` returns them as `issues` and `issues_truncated`.
+
+Deleting the instance removes its history, not the issue files. Counted hits' saves are unpinned and can be pruned by save retention, and the page then says "Save no longer kept".
 
 ## Run behavior
 
@@ -204,3 +210,4 @@ Files written before stage 2 for `unsupported_action` have a basis that includes
 - The store rewrites the file whenever the issue changes, and rewrites a deleted file on the next change. Set `status` instead of deleting.
 - `triaged`, `fixing`, `fixed` and `wont_fix` are reserved. Stage 2 never sets them; `status` is always `open`.
 - Resume from `saves.before` with `POST /api/saves/{id}/load` (body `{request_id}`). Saves are deleted with their instance, so the id can dangle.
+- Resume from the hit's `save_before` (`GET /api/runs/{run_id}` → `issues[].hits[]`) or from a kept example's `saves.before`.

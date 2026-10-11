@@ -24,6 +24,9 @@ MAX_ISSUES = 500
 MAX_EXAMPLE_BYTES = 65536
 MAX_RUNS = 50
 MAX_BUILDS = 20
+RUN_ISSUE_EVENTS = 500
+RUN_ISSUE_HITS_SHOWN = 20
+ISSUE_EVENT_KINDS = ("unsupported_action_recorded", "crash_recorded", "game_bug_recorded")
 CRASH_TITLES = {"game_exit": "Game process exited", "game_hang": "Game stopped responding",
                 "worker_lost": "Game worker was lost", "desktop_lost": "Game desktop was lost"}
 
@@ -112,7 +115,8 @@ def record_issue(store, issue_type, basis, example):
             key = "issue_" + signature[:16]
             issue = store.get("issues", key)
             seen = {"at": example["at"], "run_id": example["run_id"], "example_id": example["example_id"],
-                    "build_id": example["build"]["id"], "source_revision": example["build"]["source_revision"]}
+                    "build_id": example["build"]["id"], "source_revision": example["build"]["source_revision"],
+                    "save_before": (example.get("saves") or {}).get("before")}
             if issue is None:
                 with store.lock:
                     total = store.db.execute("SELECT COUNT(*) FROM records WHERE kind='issues'").fetchone()[0]
@@ -146,6 +150,10 @@ def record_issue(store, issue_type, basis, example):
         return None
 
 
+def issue_filename(record):
+    return f"{record['type']}__{record['signature'][:16]}.json"
+
+
 def publish_issues(store):
     """Write every issue whose revision differs from the last published one."""
     with store.lock:
@@ -164,7 +172,7 @@ def publish_issues(store):
                 stream.write(json.dumps(body, indent=2, ensure_ascii=False) + "\n")
                 stream.flush()
                 os.fsync(stream.fileno())
-            temporary.replace(directory / f"{record['type']}__{record['signature'][:16]}.json")
+            temporary.replace(directory / issue_filename(record))
             temporary = None
             with store.transaction():
                 latest = store.get("issues", row_id)
@@ -175,6 +183,32 @@ def publish_issues(store):
             if temporary:
                 with suppress(OSError):
                     temporary.unlink(missing_ok=True)
+
+
+def run_issues(store, run_id):
+    """This run's issue hits, from its <type>_recorded ledger events, joined to the grouped records."""
+    events = store.events_of_kinds(run_id, ISSUE_EVENT_KINDS, RUN_ISSUE_EVENTS + 1)
+    truncated = len(events) > RUN_ISSUE_EVENTS
+    groups = {}
+    for event in events[:RUN_ISSUE_EVENTS]:
+        payload = event["payload"]
+        groups.setdefault(payload["issue_id"], (event["kind"], []))[1].append({
+            "at": event["timestamp"], "example_id": payload.get("example_id"), "player_id": payload.get("player_id"),
+            "source": payload.get("source"), "kept": payload.get("kept"), "save_before": payload.get("save_before")})
+    # Events are newest first, so dict order already puts the issue with the latest hit first.
+    issues = []
+    for issue_id, (kind, hits) in groups.items():
+        record = store.get("issues", issue_id)
+        issues.append({
+            "issue_id": issue_id,
+            "type": record["type"] if record else kind.removesuffix("_recorded"),
+            "title": record["title"] if record else issue_id,
+            "status": record["status"] if record else "unknown",
+            "occurrences_total": record["occurrences"] if record else None,
+            "file": str(issue_directory(store) / issue_filename(record)) if record else None,
+            "hit_count": len(hits), "first_at": hits[-1]["at"], "last_at": hits[0]["at"],
+            "hits": hits[:RUN_ISSUE_HITS_SHOWN]})
+    return issues, truncated
 
 
 def record_task(store, run_id, trigger, reason, *, key, category, event_id=None):

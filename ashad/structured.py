@@ -337,9 +337,10 @@ class StructuredPlayers:
                     "signature": repair_tasks.issue_signature(issue_type, basis)})
                 return "full"
             example_id = uid(ISSUE_PREFIXES[issue_type])
+            before = self.coordinator.saves.latest(run_id)
+            before_id = before and before["id"]
             screenshot = await self._pin(ps, run_id, player_id, example_id, observation, skip=skip_pin or room != "keep")
             if room == "keep":
-                before = self.coordinator.saves.latest(run_id)
                 if self.coordinator.saves.pinned_full(run_id):
                     at_issue = None
                     self.store.event(run_id, "save_skipped", {"player_id": player_id, "reason": "pinned_cap"})
@@ -347,13 +348,15 @@ class StructuredPlayers:
                     at_issue = await self.coordinator.saves.capture(run_id, player_id, "issue", {"issue_id": repair_tasks.issue_id(issue_type, basis), "issue_type": issue_type, "example_id": example_id})
                     if before:
                         self.coordinator.saves.pin(before["id"])
-                sections = {**sections, "saves": {"before": before and before["id"], "at_issue": at_issue and at_issue["id"]}}
+                sections = {**sections, "saves": {"before": before_id, "at_issue": at_issue and at_issue["id"]}}
+            else:
+                sections = {**sections, "saves": {"before": before_id, "at_issue": None}}
             example = {**self._example(run, ps, player_id, example_id, source, observation, screenshot, event_ids), **sections}
             outcome = repair_tasks.record_issue(self.store, issue_type, basis, example)
             if outcome in {"kept", "counted"}:
                 self.store.event(run_id, f"{issue_type}_recorded", {"player_id": player_id,
                     "issue_id": repair_tasks.issue_id(issue_type, basis), "example_id": example_id,
-                    "source": source, "kept": outcome == "kept", "outcome": outcome})
+                    "source": source, "kept": outcome == "kept", "outcome": outcome, "save_before": before_id})
             elif outcome == "full":
                 self.store.event(run_id, "issue_cap_reached", {"player_id": player_id, "issue_type": issue_type,
                     "signature": repair_tasks.issue_signature(issue_type, basis)})

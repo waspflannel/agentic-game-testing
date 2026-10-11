@@ -22,7 +22,7 @@ const state = {
   route: parseRoute(location.hash),
   failures: 0,
   polling: false,
-  ui: { expanded: new Map(), showAll: new Set(), lastProject: null, goalOpen: new Set() },
+  ui: { expanded: new Map(), showAll: new Set(), lastProject: null, goalOpen: new Set(), issueOpen: new Set() },
   drafts: new Map(),   // projectId -> composer draft
   readiness: null,     // { key, loading, result, error } for the open composer; probed on view open only
   isCurrent: () => true,
@@ -797,8 +797,9 @@ function renderThread(view) {
   state.camera.sync(cameraTarget(run, player, document.hidden || t.tab !== 'bot'));  // The MJPEG stream runs only while Bot view is shown.
   const pending = new Set(mine().filter(([, c]) => c.pending).map(([k]) => k.slice(run.id.length + 1)));
   const error = mine().find(([, c]) => c.error)?.[1].error;
-  patchRegions(view, threadRegions(run, { status, owner, data: state.data, ui: t, pending, error, cameraStatus: state.camera.status, player, tab: t.tab }));
+  patchRegions(view, threadRegions(run, { status, owner, data: state.data, ui: t, pending, error, cameraStatus: state.camera.status, player, tab: t.tab, issueOpen: state.ui.issueOpen }));
   updateTimes(view.querySelector('[data-region="saves"]'));
+  updateTimes(view.querySelector('[data-region="issues"]'));
   for (const panel of view.querySelectorAll('.thread-panel')) panel.hidden = panel.id !== `panel-${t.tab}`;
   const reason = view.querySelector('#resume-reason');
   if (reason && reason.value !== t.instructionText) reason.value = t.instructionText;
@@ -1403,6 +1404,7 @@ document.addEventListener('toggle', event => {
   const el = event.target;
   if (el.matches?.('.tl-card > details')) fillBody(el.parentElement);
   else if (el.dataset?.goal) el.open ? state.ui.goalOpen.add(el.dataset.goal) : state.ui.goalOpen.delete(el.dataset.goal);
+  else if (el.dataset?.issue) el.open ? state.ui.issueOpen.add(el.dataset.issue) : state.ui.issueOpen.delete(el.dataset.issue);
 }, true);
 $('#view').addEventListener('scroll', () => {
   const tl = state.thread.tl;

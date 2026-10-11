@@ -181,6 +181,13 @@ class Store:
             row = self.db.execute("SELECT data FROM events WHERE run_id=? AND json_extract(data, '$.kind')=? ORDER BY seq DESC LIMIT 1", (run_id, kind)).fetchone()
         return json.loads(row[0]) if row else None
 
+    def events_of_kinds(self, run_id, kinds, limit):
+        marks = ",".join("?" * len(kinds))
+        with self.lock:
+            rows = self.db.execute(f"SELECT data FROM events WHERE run_id=? AND json_extract(data, '$.kind') IN ({marks}) "
+                                   "ORDER BY seq DESC LIMIT ?", (run_id, *kinds, limit)).fetchall()
+        return [json.loads(row[0]) for row in rows]
+
     def count_events(self, run_id, *, before=None, after=None):
         """Count ledger rows, with exclusive sequence bounds, never search matches."""
         query = "SELECT COUNT(*) FROM events WHERE run_id=?"

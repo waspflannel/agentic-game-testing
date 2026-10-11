@@ -291,7 +291,7 @@ test('fix menu shows why Manual and Auto are disabled when the fixer is not read
   assert.match(status({ ...draft, fix: 'manual' }), /<p class="note">Put jr on PATH\.<\/p>/);
   assert.doesNotMatch(status(draft), /Put jr on PATH/);
   const waiting = composerRegions(composerModel(data(), 'p', draft, null), draft).bar;
-  assert.match(waiting, /<p>Checking the fixer…<\/p>/);
+  assert.doesNotMatch(waiting, /menu-footer/);  // a single reason shows on Manual and Auto only, not repeated in a footer
   assert.match(fixOptions(waiting).auto, /aria-disabled="true"[\s\S]*Checking the fixer…/);
 });
 

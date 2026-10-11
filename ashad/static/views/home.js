@@ -114,7 +114,8 @@ function fixMenuHTML(fixer, fix) {
   return menuHTML({
     key: 'c-fix', field: 'fix', action: 'pick-fix', label: 'Fixes', iconName: 'wrench', selected: fix || 'off',
     options: [{ id: 'off', label: 'Off', chipLabel: 'Fixes off' }, gated('manual', 'Manual', 'You merge each fix PR'), gated('auto', 'Auto', 'ASHAD merges, checks and reverts')],
-    footer: blocked ? fixer.reasons.map(r => `<p>${esc(r)}</p>`).join('') : '',
+    // One reason already shows on Manual and Auto; a footer only adds the full list when there are several.
+    footer: blocked && fixer.reasons.length > 1 ? fixer.reasons.map(r => `<p>${esc(r)}</p>`).join('') : '',
   });
 }
 

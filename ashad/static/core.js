@@ -132,8 +132,8 @@ export function menuHTML({ key, field, action, label, srPrefix = '', iconName, o
   const describedBy = footer ? ` aria-describedby="${key}-note"` : '';
   const trigger = `<button type="button" class="chip model-trigger" popovertarget="${menuId}" aria-haspopup="listbox" data-key="${key}"${describedBy}>`
     + `${icon(iconName)}${srPrefix ? `<span class="sr-only">${srPrefix}</span>` : ''}<span class="chip-text">${esc(current?.chipLabel || current?.label || selected)}</span>${icon('chevron-down', 'icon model-chevron')}</button>`;
-  if (!footer) return `${trigger}<div id="${menuId}" popover class="popover menu model-menu" role="listbox" aria-label="${label}">${rows}</div>`;
-  return `${trigger}<div id="${menuId}" popover class="popover menu model-menu"><div class="menu-list" role="listbox" aria-label="${label}">${rows}</div>`
+  if (!footer) return `${trigger}<div id="${menuId}" popover class="popover menu model-menu" role="listbox" aria-label="${esc(label)}">${rows}</div>`;
+  return `${trigger}<div id="${menuId}" popover class="popover menu model-menu"><div class="menu-list" role="listbox" aria-label="${esc(label)}">${rows}</div>`
     + `<div class="menu-footer" id="${key}-note">${footer}</div></div>`;
 }
 

@@ -1,4 +1,4 @@
-import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, createDrawer, patchHTML, dirtyBridge, runGoal, ago, modelLabel, since } from './core.js';
+import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, createDrawer, patchHTML, dirtyBridge, runGoal, ago, modelLabel, since, nextOptionIndex } from './core.js';
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
 import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, draftModel, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
 import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions, defaultTab, nextTab } from './views/instance.js';
@@ -1168,6 +1168,18 @@ function toggleSidebar() {
   syncNavToggle();
 }
 
+// Both model menus route here; the logic is what the native selects' change handlers did.
+function chooseModel(field, model) {
+  if (field === 'run-model') {
+    const run = threadRun();
+    if (model === run.model) return;
+    command(`model:${model}`, control(run, 'model', { model }), `Model set to ${modelLabel(state.data, model)}. Applies from the next decision.`);
+    return;
+  }
+  draftFor(composerProject(state.route, state.data)).model = model;
+  renderView();
+}
+
 document.addEventListener('click', async event => {
   const row = event.target.closest('.tl-row');
   if (row) selectCard(row.closest('.tl-card').dataset.card);  // The native toggle still opens the body.
@@ -1204,6 +1216,11 @@ document.addEventListener('click', async event => {
   } else if (action === 'ctl') {
     target.closest('[popover]')?.hidePopover();
     if (target.getAttribute('aria-disabled') !== 'true') onControl(target.dataset.ctl);
+  } else if (action === 'pick-model') {
+    const menu = target.closest('[popover]');
+    menu.hidePopover();
+    document.querySelector(`[popovertarget="${menu.id}"]`)?.focus();  // patchHTML then keeps focus on the re-rendered trigger.
+    chooseModel(target.dataset.field, target.dataset.value);
   } else if (action === 'thread-tab') {
     setTab(target.dataset.tab);
   } else if (action === 'instruction-cancel') {
@@ -1246,6 +1263,11 @@ document.addEventListener('keydown', event => {
     event.preventDefault();
     event.target.form.requestSubmit();
   }
+  if (event.target.classList?.contains('model-option')) {
+    const options = [...event.target.parentElement.querySelectorAll('.model-option')];
+    const next = nextOptionIndex(event.key, options.indexOf(event.target), options.length);
+    if (next >= 0) { event.preventDefault(); options[next].focus(); }
+  }
   if (event.target.getAttribute?.('role') === 'tab' && !event.ctrlKey && !event.altKey && !event.metaKey) {
     const tab = nextTab(state.thread.tab, event.key);
     if (!tab) return;
@@ -1254,6 +1276,11 @@ document.addEventListener('keydown', event => {
     $(`#tab-${tab}`)?.focus();  // Selection follows focus.
   }
 });
+
+// Opening a model menu focuses the selected model; `toggle` does not bubble, so listen in the capture phase.
+document.addEventListener('toggle', event => {
+  if (event.newState === 'open' && event.target.classList?.contains('model-menu')) event.target.querySelector('[aria-selected="true"]')?.focus();
+}, true);
 
 // Composer fields update the in-memory draft; the textarea itself is never re-rendered.
 document.addEventListener('input', event => {
@@ -1298,12 +1325,6 @@ document.addEventListener('input', event => {
 document.addEventListener('change', event => {
   const field = event.target.dataset?.field;
   if (field === 'player') { state.thread.player = event.target.value; renderView(); return; }
-  if (field === 'run-model') {
-    const run = threadRun();
-    const model = event.target.value;
-    command(`model:${model}`, control(run, 'model', { model }), `Model set to ${modelLabel(state.data, model)}. Applies from the next decision.`);
-    return;
-  }
   if (field === 'ov-build') {
     overviewFor(state.route.id).buildId = event.target.value;  // A chosen build is checked at once; that is the user's request, not a poll.
     renderView();
@@ -1323,7 +1344,7 @@ document.addEventListener('change', event => {
     return;
   }
   const projectId = composerProject(state.route, state.data);
-  if (!projectId || !['agent', 'transport', 'project', 'model'].includes(field)) return;
+  if (!projectId || !['agent', 'transport', 'project'].includes(field)) return;
   if (field === 'project') { location.hash = href('p', event.target.value, 'new'); return; }
   const draft = draftFor(projectId);
   if (field === 'agent') Object.assign(draft, { agentId: event.target.value, model: '' });

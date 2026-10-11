@@ -1168,7 +1168,7 @@ function toggleSidebar() {
   syncNavToggle();
 }
 
-// Both model menus route here; the logic is what the native selects' change handlers did.
+// Both model menus route here: the composer updates its draft (renderView re-probes readiness); the header sends a model control unless the run already uses that model.
 function chooseModel(field, model) {
   if (field === 'run-model') {
     const run = threadRun();

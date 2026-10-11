@@ -20,7 +20,7 @@ from .claude_backend import ClaudeError
 from .codex_backend import CodexError
 from .coordinator import Coordinator, InstanceConflict
 from .credentials import Credentials
-from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, AI_API, ACTIVE_STATES, RecalculateGoalsRequest
+from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, provider_of, AI_API, ACTIVE_STATES, RecalculateGoalsRequest
 from .repository import Repository, sha256_file
 from .reports import generate_report
 from .game_controls import BUSY, MODEL_NOT_ALLOWED, SIGN_IN_WAIT, GameControls, migrate_configuration_names, migrate_tuned_configurations
@@ -302,10 +302,12 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             build_validation["reason"] = str(exc)
         if model:
             provider = await provider_check(Plan(model=model).model)
+            provider["providers"] = [provider_of(provider["model"])] if provider["ready"] else []
         else:  # No model chosen yet: either connected subscription is enough.
             checks = await asyncio.gather(provider_check(MODEL), provider_check(CLAUDE_MODEL))
-            provider = next((check for check in checks if check["ready"]),
-                            {**checks[0], "message": "Set up AI in Settings › Account."})
+            ready = [check for check in checks if check["ready"]]
+            providers = sorted(provider_of(check["model"]) for check in ready)  # fixed order: claude, codex
+            provider = {**(ready[0] if ready else {**checks[0], "message": "Set up AI in Settings › Account."}), "providers": providers}
         environments = []
         if build_validation["ready"]:
             occupied = {lease["resource_id"] for lease in store.leases() if lease["kind"] == "worker"}

@@ -410,6 +410,7 @@ def test_readiness_accepts_any_supported_model_with_or_without_configuration(tmp
         chosen = client.get(f"{url}&configuration_id=agent&model=sonnet")
         assert chosen.status_code == 200 and chosen.json()["provider"]["model"] == "sonnet"
         validate.assert_awaited_once_with("sonnet")
+        assert chosen.json()["provider"]["providers"] == ["claude"]
         validate.reset_mock()
         assert client.get(f"{url}&model=gpt-6-sol").status_code == 200
         validate.assert_awaited_once_with("gpt-6-sol")
@@ -520,7 +521,22 @@ def test_build_only_readiness_is_ready_when_either_provider_is(tmp_path):
         app.state.ai.validate = AsyncMock(side_effect=lambda model: signed_out)
         provider = client.get("/api/projects/project/readiness?build_id=build").json()["provider"]
         assert provider["ready"] is False and provider["message"] == "Set up AI in Settings › Account."
-        assert provider["model"] == MODEL
+        assert provider["model"] == MODEL and provider["providers"] == []
+
+
+@pytest.mark.parametrize("ready_models, expected", [
+    ({CLAUDE_MODEL}, ["claude"]), ({MODEL}, ["codex"]), ({MODEL, CLAUDE_MODEL}, ["claude", "codex"])])
+def test_readiness_lists_the_ready_providers(tmp_path, ready_models, expected):
+    app = offline_app(tmp_path)
+    app.state.store.put("projects", {"id": "project", "name": "Same game"})
+    app.state.store.put("builds", {"id": "build", "project_id": "project"})
+    ready = {"configured": True, "status": "ready", "message": "Ready"}
+    signed_out = {"configured": False, "status": "configuration_required", "message": "Signed out"}
+    app.state.ai.validate = AsyncMock(side_effect=lambda model: ready if model in ready_models else signed_out)
+    with TestClient(app) as client:
+        assert client.get("/api/projects/project/readiness?build_id=build").json()["provider"]["providers"] == expected
+        assert client.get("/api/projects/project/readiness?build_id=build&model=sonnet").json()["provider"]["providers"] == (
+            ["claude"] if CLAUDE_MODEL in ready_models else [])
 
 
 @pytest.mark.parametrize("method, path", [("post", "/api/agents/controls"), ("get", "/api/agents/controls/x"),

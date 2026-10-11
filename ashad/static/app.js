@@ -742,7 +742,7 @@ async function viewControls(id) {
   const agent = (state.data.agents || []).find(a => a.id === id);
   try {
     const c = await api(`/api/agents/${enc(id)}/controls`);
-    const by = c.generated_by?.method === 'legacy_tuning' ? `Converted from tuning with ${modelLabel(state.data, c.generated_by.model)}` : 'Gathered by Claude Sonnet';
+    const by = c.generated_by?.method === 'legacy_tuning' ? `Converted from an earlier configuration written by ${modelLabel(state.data, c.generated_by.model)}` : 'Gathered by Claude Sonnet';
     openDialog({ title: agent?.name || id, confirm: null, cancel: 'Close', wide: true,
       html: `<p>${esc(by)}</p><pre class="instructions" tabindex="0">${esc(c.controls)}</pre>` });
   } catch (error) { toast(error.message, 'error'); }

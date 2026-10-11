@@ -162,6 +162,19 @@ async def test_follow_up_failure_keeps_needs_instructions(tmp_path):
     assert caught.value.report == {"source": "agent_signal", "follow_up_error": "rate_limited"}
 
 
+@pytest.mark.asyncio
+async def test_invalid_follow_up_keeps_needs_instructions(tmp_path):
+    turn = context()
+    turn["observation"]["entities"].append({"id": "none", "version": 1, "label": "Unnamed", "actions": []})
+    backend = Backend(lambda payload: answers(payload, {"target": payload["questions"][0]["choices"][-1]["value"]}))
+    store = Store(tmp_path)
+    store.put("runs", {"id": "run-1", "plan": Plan().model_dump()})
+    with pytest.raises(ProviderError) as caught:
+        await OpenAI(store, backend=backend).player_turn(turn, AsyncMock(), lambda: True, "run-1")
+    store.close()
+    assert caught.value.status == "decision_needs_instructions"
+    assert caught.value.report == {"source": "agent_signal", "follow_up_error": "invalid_follow_up"}
+
 def test_capability_summary_lists_tools_and_candidates():
     summary = capability_summary(context()["observation"])
     assert summary["game_verbs"] == list(GAME_VERBS)

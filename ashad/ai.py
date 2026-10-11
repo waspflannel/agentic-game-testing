@@ -361,8 +361,8 @@ class OpenAI:
                 ("parameter_missing", "The action exists but needs an unavailable parameter"), ("unclear", "Unclear what is missing")])]
         try:
             answers = await self.decisions(evidence, questions, purpose="unsupported_report", run_id=run_id)
-        except ProviderError as exc:
-            return {"source": "agent_signal", "follow_up_error": exc.status}
+        except (ProviderError, ValueError) as exc:  # ValueError: e.g. an entity id "none" collides with the no-target choice.
+            return {"source": "agent_signal", "follow_up_error": getattr(exc, "status", "invalid_follow_up")}
         target = answers["wanted_target"]["choice"]
         return {"source": "agent_signal", "wanted_verb": answers["wanted_verb"]["choice"],
                 "wanted_target_id": None if target == "none" else target, "blocker": answers["blocker"]["choice"]}

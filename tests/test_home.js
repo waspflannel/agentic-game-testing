@@ -114,7 +114,7 @@ test('a changed goal after an accepted start is not silently resubmitted', async
 
 test('a changed goal after a never-launched start goes out under a new ID', async () => {
   const { startInstance } = await load();
-  const f = fakeApi({ '/api/instances/requests/': { status: 'prepared' }, '/api/instances': async (u, init) => (init.body.primary_goal === 'Second' ? { id: 'r2' } : Promise.reject(new TypeError('lost'))) });
+  const f = fakeApi({ '/api/instances/requests/': { status: 'unknown' }, '/api/instances': async (u, init) => (init.body.primary_goal === 'Second' ? { id: 'r2' } : Promise.reject(new TypeError('lost'))) });
   const draft = await draftWith('First');
   await startInstance(draft, 'p', f.api);
   draft.goal = 'Second';
@@ -215,7 +215,7 @@ test('composer offers only the agent provider models and defaults to the agent m
 test('Start sends the chosen model and a changed model is a changed payload', async () => {
   const { startInstance } = await load();
   const f = fakeApi({
-    '/api/instances/requests/': { status: 'prepared' },
+    '/api/instances/requests/': { status: 'unknown' },
     '/api/instances': async (u, init) => (init.body.model === 'gpt-6-luna' ? { id: 'r2' } : Promise.reject(new TypeError('lost'))),
   });
   const draft = await draftWith('Goal');

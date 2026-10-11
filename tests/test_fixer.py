@@ -6,6 +6,7 @@ import io
 import json
 import os
 import secrets
+import shutil
 import signal
 import sys
 import time
@@ -290,6 +291,7 @@ async def test_desktop_status_hides_fixing_owner_and_flags_restart(environment, 
     env.store.put("loops", {**restart, "phase": "restart_required"})
     busy = fixer_.create_loop("auto")
     env.store.put("loops", {**busy, "phase": "fixing"})
+    env.store.put("loops", {**env.store.require("loops", busy["id"]), "attempts": [stub_attempt(1, "issue_x", result=None)]})
     sleeper = asyncio.create_task(asyncio.sleep(60))
     fixer_.tasks[busy["id"]] = sleeper
     quit, _, server = lifecycle(environment)
@@ -300,6 +302,8 @@ async def test_desktop_status_hides_fixing_owner_and_flags_restart(environment, 
         result = await quit.shutdown(stop_runs=False, cancel_operations=True, expected_run_ids=[])
         assert result["drained"] is True and server.should_exit
         assert env.store.require("runs", env.rid)["state"] == "Fixing"
+        interrupted = env.store.require("loops", busy["id"])  # B3: quitting interrupts the running step; recover() decides what is next
+        assert (interrupted["phase"], interrupted["attempts"][0]["result"], interrupted["consecutive_failures"]) == ("fixing", "interrupted", 1)
     finally:
         sleeper.cancel()
         await asyncio.gather(sleeper, return_exceptions=True)
@@ -342,6 +346,7 @@ class Cycle:
         self.porcelain, self.branch, self.pull_rc = "", "main", 0
         self.merged = set()  # PR numbers merged on "GitHub"
         self.test_runs = 0
+        self.ls_remote_rc = 2  # `git ls-remote --exit-code`: 0 when the revert branch is on the remote, 2 when it is not
 
     def user_merges(self, number):
         self.merged.add(number)
@@ -352,7 +357,7 @@ class Cycle:
             (("git", "remote", "get-url"), (0, fixer.REPO_URLS[0] + "\n")), (("git", "diff"), self.on_diff),
             (("git", "rev-list"), self.on_parents), (("git", "status"), self.on_status),
             (("git", "rev-parse"), self.on_branch), (("git", "pull"), self.on_pull), (("git", "worktree", "add"), self.on_worktree),
-            (("git", "worktree", "remove"), (0, "")), (("git", "fetch"), (0, "")), (("git", "checkout"), (0, "")),
+            (("git", "worktree", "remove"), self.on_worktree_remove), (("git", "ls-remote"), self.on_ls_remote), (("git", "fetch"), (0, "")), (("git", "checkout"), (0, "")),
             (("git", "revert"), (0, "")), (("git", "push"), (0, "")),
             (("jr", "ship"), self.on_jr), (("scripts/test.sh",), self.on_tests),
             (("gh", "pr", "list"), self.on_list), (("gh", "pr", "view"), self.on_view), (("gh", "pr", "merge"), self.on_merge),
@@ -380,8 +385,17 @@ class Cycle:
         return self.pull_rc, ""
 
     async def on_worktree(self, call):
+        if os.path.exists(call.argv[-2]):
+            return 128, "already exists"  # like git
         os.makedirs(call.argv[-2])
         return 0, ""
+
+    async def on_worktree_remove(self, call):
+        shutil.rmtree(call.argv[-1], ignore_errors=True)
+        return 0, ""
+
+    async def on_ls_remote(self, call):
+        return self.ls_remote_rc, ""
 
     async def on_jr(self, call):
         if self.jr_gate:
@@ -482,7 +496,7 @@ class World:
         """After `restart_required`: relaunch the controller, recover, and wait for the loop to move on."""
         assert self.loop()["phase"] == "restart_required"
         self.restart()
-        await self.coord.fixer.recover()
+        await self.coord.recover()
         await self.settle()
 
     async def verifying(self):
@@ -619,7 +633,7 @@ async def test_auto_full_cycle_merges_applies_and_verifies(environment, monkeypa
         assert world.fx.restart_for_fix() == world.loop_id
         # (5) a new Coordinator with runtime bytes equal to the checkout recovers and loads the save with the same loop_id
         world.restart()
-        await world.coord.fixer.recover()
+        await world.coord.recover()
         await world.settle()
         loop = world.loop()
         assert loop["phase"] == "verifying"
@@ -1347,5 +1361,406 @@ def test_recover_without_checkout_runs_no_command(tmp_path):
     loop = instance.create_loop("auto")
     attempt = stub_attempt(1, "issue_x", merge_sha="9" * 40, result=None)
     instance.store.put("loops", {**loop, "phase": "restart_required", "attempts": [attempt], "current_run_id": None})
-    asyncio.run(instance.recover())
+
+    async def recover():
+        await instance.recover()
+        await asyncio.gather(*instance.tasks.values())
+
+    asyncio.run(recover())
     assert shell.calls == [] and instance.store.get("loops", loop["id"])["needs_you"]["reason"] == "restart_needed"
+
+
+# ---- cancel, quit and recovery ----------------------------------------------------------------------------------------
+
+class Hold:
+    """A shell handler that signals it was entered, then sleeps until cancelled; `cancelled` records the CancelledError."""
+
+    def __init__(self):
+        self.started, self.cancelled = asyncio.Event(), []
+
+    async def __call__(self, call):
+        self.started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            self.cancelled.append(call.argv[0])
+            raise
+
+
+async def hold_until_started(world, prefix, trigger=None):
+    """Make the first call matching `prefix` hang, start the loop's work with `trigger` and wait until it is inside that call."""
+    hold = Hold()
+    world.shell.script.insert(0, (prefix, hold))
+    result = (trigger or (lambda: act(world.env)))()
+    if asyncio.iscoroutine(result):
+        await result
+    await asyncio.wait_for(hold.started.wait(), 20)
+    return hold
+
+
+async def crash(world, hold, prefix):
+    """A hard stop at the held call: the driver task dies without cleanup and the phase stays, as after a killed controller."""
+    task = world.fx.tasks[world.loop_id]
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert hold.cancelled
+    world.shell.script.remove((prefix, hold))
+
+
+async def recovered(world):
+    """A new controller over the same store runs the real Coordinator.recover and the loop's recovery task finishes or parks."""
+    for task in list(world.fx.tasks.values()):
+        task.cancel()
+    await asyncio.gather(*world.fx.tasks.values(), return_exceptions=True)
+    world.restart()
+    await world.coord.recover()
+    await world.settle()
+
+
+CANCEL_PHASES = {"fixing": 0, "gating": 1, "merging": 1, "needs_you": 1, "restart_required": 0, "verifying": 0}  # phase -> PRs closed
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", list(CANCEL_PHASES))
+async def test_cancel_always_works(phase, environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile, mode="manual" if phase == "needs_you" else "auto") as world:
+        hold = None
+        if phase in ("fixing", "gating", "merging"):
+            prefix = {"fixing": ("jr", "ship"), "gating": ("scripts/test.sh",), "merging": ("gh", "pr", "merge")}[phase]
+            hold = await hold_until_started(world, prefix)
+            await world.until(lambda l: l["phase"] == phase)
+        elif phase == "needs_you":
+            await world.hit()
+            await command(world, "dispatch", "c-dispatch")
+            assert world.loop()["needs_you"]["reason"] == "review_pr"
+        elif phase == "restart_required":
+            await world.hit()
+        else:
+            await world.verifying()
+        assert world.loop()["phase"] == ("verifying" if phase == "verifying" else phase)
+        removes = len(world.calls("git", "worktree", "remove"))
+        summary = await asyncio.wait_for(world.fx.command(world.loop_id, "cancel", "c1"), 20)
+        loop = world.loop()
+        assert summary["phase"] == loop["phase"] == "ended" and loop["needs_you"] is None and loop["cancel_notes"] == []
+        assert hold is None or hold.cancelled == [hold_name(phase)]
+        assert world.fx.tasks[world.loop_id].done() and world.fx.in_flight() == []
+        assert len(world.calls("gh", "pr", "close")) == CANCEL_PHASES[phase]
+        assert all(flag_value(argv, "--comment") == "Cancelled in ASHAD." for argv in world.calls("gh", "pr", "close"))
+        if phase not in ("restart_required", "verifying"):  # in those the apply step already removed the worktree
+            assert len(world.calls("git", "worktree", "remove")) == removes + 1
+        assert not fixer.Path(loop["attempts"][0]["worktree"]).exists()
+        if phase == "verifying":
+            assert world.store.require("runs", loop["verify"]["run_id"])["state"] == "Running"  # the check run keeps going
+            assert world.store.require("runs", world.env.rid)["ending_reason"] == "fix_applied"
+        else:
+            fixing = world.store.require("runs", world.env.rid)
+            assert (fixing["state"], fixing["ending_reason"]) == ("Ended", "fix_cancelled")
+        assert loop["attempts"][0]["result"] == "cancelled" and loop["consecutive_failures"] == 0
+        assert world.issue()["status"] == "open"
+        assert world.calls("git", "revert") == [] and world.calls("gh", "pr", "create") == []
+        assert len(world.calls("gh", "pr", "merge")) == (1 if phase in ("merging", "restart_required", "verifying") else 0)
+        assert events(world.env, "fix_cancelled", loop["current_run_id"])
+        calls = len(world.shell.calls)
+        again = await world.fx.command(world.loop_id, "cancel", "c1")
+        assert again["phase"] == "ended" and len(world.shell.calls) == calls
+
+
+def hold_name(phase):
+    return "scripts/test.sh" if phase == "gating" else "gh" if phase == "merging" else "jr"
+
+
+@pytest.mark.asyncio
+async def test_cancel_keeps_going_after_a_failed_step(environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
+        hold = await hold_until_started(world, ("gh", "pr", "merge"))
+        await world.until(lambda l: l["phase"] == "merging")
+
+        async def broken(call):
+            raise RuntimeError("secret path /home/x token")
+        world.shell.script.insert(0, (("gh", "pr", "view"), broken))
+        await asyncio.wait_for(world.fx.command(world.loop_id, "cancel", "c1"), 20)
+        loop = world.loop()
+        assert loop["phase"] == "ended" and loop["cancel_notes"] == ["Cancel step failed: close the fix PR."]
+        assert "secret" not in json.dumps(loop) and hold.cancelled
+        assert world.store.require("runs", world.env.rid)["ending_reason"] == "fix_cancelled" and world.issue()["status"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_cancel_closes_an_unfinished_revert_pr_but_never_reverts_again(environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
+        world.cycle.jr = [DONE]
+        vid = await world.verifying()
+        hold = await hold_until_started(world, ("gh", "pr", "merge", "8"),
+                                        lambda: world.direct_hit(run_id=vid, basis_=world.issue()["signature_basis"]))
+        await world.until(lambda l: l["phase"] == "reverting" and l["attempts"][0]["revert"]["pr"])
+        await asyncio.wait_for(world.fx.command(world.loop_id, "cancel", "c1"), 20)
+        [close] = world.calls("gh", "pr", "close")
+        assert close[3] == "8" and hold.cancelled and len(world.calls("git", "revert")) == 1
+        loop = world.loop()
+        assert loop["phase"] == "ended" and loop["attempts"][0]["result"] == "verify_failed" and loop["attempts"][0]["revert"]["merge_sha"] is None
+        assert not fixer.Path(loop["attempts"][0]["revert"]["worktree"]).exists()
+
+
+@pytest.mark.asyncio
+async def test_cancel_prunes_old_attempt_directories(environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile, mode="manual") as world:
+        await world.hit()
+        root = world.store.root / "fixer"
+        for n in range(fixer.KEEP_ATTEMPT_DIRS + 3):
+            old = root / f"fix_old{n:03d}"
+            old.mkdir(parents=True)
+            os.utime(old, (1000 + n, 1000 + n))
+        await world.fx.command(world.loop_id, "cancel", "c1")
+        left = sorted(path.name for path in root.glob("fix_*"))
+        assert len(left) == fixer.KEEP_ATTEMPT_DIRS and "fix_old000" not in left and "fix_old002" not in left
+
+
+@pytest.mark.asyncio
+async def test_recover_fixing_with_pr_found_continues_the_gate(environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
+        prefix = ("jr", "ship")
+        hold = await hold_until_started(world, prefix)
+        await crash(world, hold, prefix)
+        assert world.loop()["phase"] == "fixing" and world.loop()["attempts"][0]["result"] is None
+        await recovered(world)
+        loop = world.loop()
+        assert loop["phase"] == "restart_required" and len(loop["attempts"]) == 1 and loop["attempts"][0]["pr"]["number"] == 7
+        assert len(world.calls("jr", "ship")) == 1 and len(world.calls("gh", "pr", "merge")) == 1
+        assert loop["consecutive_failures"] == 0 and loop["attempts"][0]["merge_sha"] == world.cycle.merge
+
+
+@pytest.mark.asyncio
+async def test_recover_fixing_without_pr_is_interrupted_and_counted_once(environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
+        world.cycle.pr_exists, world.cycle.jr = False, [USAGE]
+        prefix = ("jr", "ship")
+        hold = await hold_until_started(world, prefix)
+        await crash(world, hold, prefix)
+        await recovered(world)
+        loop = world.loop()
+        assert [a["result"] for a in loop["attempts"]] == ["interrupted", "usage_limit"] and loop["consecutive_failures"] == 1
+        assert loop["needs_you"]["reason"] == "usage_limit" and world.calls("gh", "pr", "merge") == []
+
+
+@pytest.mark.asyncio
+async def test_recover_fixing_before_any_attempt_resumes_the_start(environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile, mode="manual") as world:
+        await world.hit()
+        loop = world.loop()
+        loop.update(phase="fixing", needs_you=None)  # killed between the stop and the first attempt
+        world.store.put("loops", loop)
+        set_issue_status(world.store, world.issue()["id"], "open", loop_id=world.loop_id, attempt_id=None)
+        await recovered(world)
+        assert world.loop()["needs_you"]["reason"] == "dispatch" and world.issue()["status"] == "fixing" and world.shell.calls == []
+
+
+@pytest.mark.asyncio
+async def test_recover_gating_runs_the_gate_again_once(environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
+        prefix = ("scripts/test.sh",)
+        hold = await hold_until_started(world, prefix)
+        await crash(world, hold, prefix)
+        assert world.loop()["phase"] == "gating"
+        await recovered(world)
+        assert world.loop()["phase"] == "restart_required" and len(world.calls("gh", "pr", "merge")) == 1
+        assert len(world.calls("jr", "ship")) == 1
+
+
+MERGE_RECOVERY = [  # id, PR merged on GitHub, head sha on GitHub changed, merges after recovery, attempt result, phase
+    ("merged", True, False, 1, None, "restart_required"),
+    ("open_same_head", False, False, 2, None, "restart_required"),
+    ("open_other_head", False, True, 1, "merge_failed", "needs_you")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case", MERGE_RECOVERY, ids=[case[0] for case in MERGE_RECOVERY])
+async def test_recover_merging_reads_the_pr_before_merging(case, environment, monkeypatch, tmp_path, profile):
+    _, merged, other_head, merges, result, phase = case
+    async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
+        world.cycle.jr = [DONE, USAGE]
+        prefix = ("gh", "pr", "merge")
+        hold = await hold_until_started(world, prefix)
+        await crash(world, hold, prefix)
+        assert world.loop()["phase"] == "merging"
+        if merged:
+            world.cycle.user_merges(7)
+        if other_head:
+            world.cycle.head = "9" * 40
+        await recovered(world)
+        loop = world.loop()
+        assert len(world.calls("gh", "pr", "merge")) == merges and loop["attempts"][0]["result"] == result
+        assert loop["phase"] == phase if result is None else loop["needs_you"]["reason"] == "usage_limit"
+        if result is None:
+            assert loop["attempts"][0]["merge_sha"] == world.cycle.merge and loop["consecutive_failures"] == 0
+        else:
+            assert len(world.calls("gh", "pr", "close")) == 1 and loop["consecutive_failures"] == 1 and len(loop["attempts"]) == 2
+        assert all(argv[-1] == "a" * 40 for argv in world.calls("gh", "pr", "merge"))  # the same --match-head-commit every time
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("worktree_left", [True, False], ids=["worktree_left", "worktree_removed"])
+async def test_recover_applying_repeats_only_the_apply(worktree_left, environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
+        prefix = ("git", "pull")
+        hold = await hold_until_started(world, prefix)
+        await crash(world, hold, prefix)
+        assert world.loop()["phase"] == "applying"
+        if not worktree_left:
+            shutil.rmtree(world.loop()["attempts"][0]["worktree"])  # killed after the worktree was removed: D15 already passed
+        tests = len(world.calls("scripts/test.sh"))
+        await recovered(world)
+        assert world.loop()["phase"] == "restart_required" and len(world.calls("gh", "pr", "merge")) == 1
+        assert len(world.calls("scripts/test.sh")) == tests + (1 if worktree_left else 0)
+        assert world.loop()["attempts"][0]["result"] is None and len(world.calls("git", "pull")) == 2
+
+
+async def revert_crash(world, prefix):
+    """Auto, verifying, the issue recurs: the revert starts and the controller dies inside the call matching `prefix`."""
+    world.cycle.jr = [DONE]
+    vid = await world.verifying()
+    hold = await hold_until_started(world, prefix, lambda: world.direct_hit(run_id=vid, basis_=world.issue()["signature_basis"]))
+    await crash(world, hold, prefix)
+    assert world.loop()["phase"] == "reverting"
+    return world.loop()["attempts"][0]["revert"]
+
+
+@pytest.mark.asyncio
+async def test_recover_reverting_with_a_merged_revert_pr_does_not_revert_again(environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
+        revert = await revert_crash(world, ("gh", "pr", "merge", "8"))
+        assert revert["pr"]["number"] == 8
+        world.cycle.user_merges(8)
+        await recovered(world)
+        loop = world.loop()
+        assert loop["phase"] == "restart_required" and loop["attempts"][0]["revert"]["merge_sha"] == world.cycle.revert_merge
+        assert len(world.calls("git", "revert")) == 1 and len(world.calls("gh", "pr", "create")) == 1
+        assert len(world.calls("gh", "pr", "merge")) == 2 and len(world.calls("git", "push")) == 1
+
+
+@pytest.mark.asyncio
+async def test_recover_reverting_with_an_open_revert_pr_gates_and_merges_it_once(environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
+        await revert_crash(world, ("gh", "pr", "merge", "8"))
+        await recovered(world)
+        assert world.loop()["phase"] == "restart_required" and len(world.calls("git", "revert")) == 1
+        assert [argv[3] for argv in world.calls("gh", "pr", "merge")] == ["7", "8", "8"]
+        assert {argv[-1] for argv in world.calls("gh", "pr", "merge") if argv[3] == "8"} == {world.cycle.revert_head}
+
+
+@pytest.mark.asyncio
+async def test_recover_reverting_without_pr_but_branch_pushed_creates_the_pr_only(environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
+        revert = await revert_crash(world, ("gh", "pr", "create"))
+        assert revert["pr"] is None
+        world.cycle.ls_remote_rc = 0
+        await recovered(world)
+        loop = world.loop()
+        assert loop["phase"] == "restart_required" and loop["attempts"][0]["revert"]["pr"]["number"] == 8
+        assert len(world.calls("git", "revert")) == 1 and len(world.calls("git", "push")) == 1 and len(world.calls("gh", "pr", "create")) == 2
+        [ls] = world.calls("git", "ls-remote")
+        assert ls[3:] == ["ls-remote", "--exit-code", "--heads", "origin", revert["branch"]]
+        titles = {flag_value(argv, "--title") for argv in world.calls("gh", "pr", "create")}
+        assert len(titles) == 1 and len({flag_value(argv, "--body") for argv in world.calls("gh", "pr", "create")}) == 1
+
+
+@pytest.mark.asyncio
+async def test_recover_reverting_without_pr_or_branch_restarts_from_the_worktree(environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
+        revert = await revert_crash(world, ("git", "push"))
+        assert fixer.Path(revert["worktree"]).exists()
+        start = len(world.shell.calls)
+        await recovered(world)
+        loop = world.loop()
+        assert loop["phase"] == "restart_required" and loop["attempts"][0]["revert"]["pr"]["number"] == 8
+        in_order(world, ("git", "worktree", "remove", "--force", revert["worktree"]), ("git", "worktree", "add", "--detach", revert["worktree"]),
+                 start=start)  # the stale revert worktree went first
+        assert len(world.calls("git", "revert")) == 2 and len(world.calls("git", "push")) == 2 and len(world.calls("gh", "pr", "create")) == 1
+        assert loop["attempts"][0]["revert"]["branch"] == revert["branch"]
+
+
+@pytest.mark.asyncio
+async def test_recover_reverting_before_the_revert_record_exists(environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
+        world.cycle.jr = [DONE]
+        vid = await world.verifying()
+        loop = world.loop()
+        loop["attempts"][0].update(result="verify_failed")
+        loop.update(phase="reverting", verify=None)  # the phase was saved, the process died before _revert wrote its record
+        world.store.put("loops", loop)
+        world.set_run(vid, state="Fixing")
+        await recovered(world)
+        loop = world.loop()
+        assert loop["phase"] == "restart_required" and loop["attempts"][0]["revert"]["reason"] == "verify_failed"
+        assert len(world.calls("git", "revert")) == 1
+
+
+@pytest.mark.asyncio
+async def test_recover_reverting_with_a_closed_revert_pr_needs_you(environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
+        await revert_crash(world, ("gh", "pr", "merge", "8"))
+
+        async def closed(call):
+            return 0, json.dumps({"state": "CLOSED", "mergeCommit": None, "headRefOid": world.cycle.revert_head})
+        world.shell.script.insert(0, (("gh", "pr", "view", "8"), closed))
+        await recovered(world)
+        loop = world.loop()
+        assert (loop["phase"], loop["needs_you"]["reason"]) == ("needs_you", "revert_failed") and len(world.calls("git", "revert")) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("start", ["restart_required", "verifying"])
+async def test_recover_restart_and_verifying_launch_one_check_run(start, environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
+        await world.hit()
+        assert world.loop()["phase"] == "restart_required"
+        await recovered(world)
+        first = world.loop()["verify"]["run_id"]
+        if start == "restart_required":  # killed after the launch, before the phase was saved
+            world.store.put("loops", {**world.loop(), "phase": "restart_required", "verify": None})
+        else:
+            world.store.put("loops", {**world.loop(), "verify": None})
+        await recovered(world)
+        await world.until(lambda l: l["verify"])
+        loop = world.loop()
+        assert loop["phase"] == "verifying" and loop["verify"]["run_id"] == first
+        assert [r["id"] for r in world.store.list("runs") if r.get("rerun_kind") == "save_load"] == [first]
+        await recovered(world)  # a loop that is already watching just keeps watching
+        assert world.loop()["verify"]["run_id"] == first and len(world.store.list("runs")) == 2
+        assert world.fx.tasks[world.loop_id].done() is False
+
+
+async def start_and_quit(world, mode):
+    """The fixer is inside jr when the app quits; returns the quit loop."""
+    world.cycle.jr_gate = asyncio.Event()
+    if mode == "manual":
+        await world.hit()
+        await world.fx.command(world.loop_id, "dispatch", "c-dispatch")
+        await world.until(lambda l: l["phase"] == "fixing")
+    else:
+        await act(world.env)
+    await world.until(lambda l: l["phase"] == "fixing" and l["attempts"])
+    while not world.calls("jr", "ship"):
+        await asyncio.sleep(0.02)
+    await world.fx.cancel_processes()
+    return world.loop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["auto", "manual"])
+async def test_quit_interrupts_running_fixer(mode, environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile, mode=mode) as world:
+        loop = await start_and_quit(world, mode)
+        assert loop["phase"] == "fixing" and loop["attempts"][0]["result"] == "interrupted" and loop["consecutive_failures"] == 1
+        assert world.fx.tasks[world.loop_id].done() and world.fx.in_flight() == [] and loop["attempts"][0]["ended_at"]
+        world.cycle.jr_gate, world.cycle.pr_exists, world.cycle.jr = None, False, [USAGE]
+        world.restart()
+        await world.coord.recover()  # the real Coordinator.recover calls the fixer last
+        await world.settle()
+        loop = world.loop()
+        assert loop["attempts"][0]["result"] == "interrupted" and loop["consecutive_failures"] == 1
+        if mode == "auto":
+            assert [a["result"] for a in loop["attempts"]] == ["interrupted", "usage_limit"] and loop["attempts"][1]["n"] == 2
+            assert loop["needs_you"]["reason"] == "usage_limit"
+        else:
+            assert len(loop["attempts"]) == 1 and (loop["phase"], loop["needs_you"]["reason"]) == ("needs_you", "attempt_failed")
+        assert world.calls("gh", "pr", "merge") == []

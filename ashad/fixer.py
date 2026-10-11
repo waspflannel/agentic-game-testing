@@ -20,6 +20,7 @@ import time
 import keyring.errors
 
 from .claude_backend import TOKEN_REFERENCE
+from .models import ACTIVE_STATES
 from .repair_tasks import set_issue_status
 from .store import uid
 
@@ -458,8 +459,9 @@ class Fixer:
 
     def _close_attempt(self, loop, result):
         attempt = loop["attempts"][-1]
+        counted = result in COUNTED_RESULTS and attempt["result"] != result  # re-closing an interrupted attempt counts once
         attempt.update(result=result, ended_at=time.time())
-        if result in COUNTED_RESULTS:
+        if counted:
             loop["consecutive_failures"] += 1
 
     def _verify_failed(self, loop, run_id):
@@ -526,10 +528,14 @@ class Fixer:
             await follow_up()
 
     async def _start_fix(self, loop_id, run_id):
-        if not await self._stop_run(loop_id, run_id):
-            return
+        if await self._stop_run(loop_id, run_id):
+            await self._after_stop(loop_id)
+
+    async def _after_stop(self, loop_id):
+        """The half of _start_fix after the run is stopped; recovery resumes here."""
         loop = self.store.require("loops", loop_id)
-        set_issue_status(self.store, loop["issue"]["issue_id"], "fixing", loop_id=loop_id, attempt_id=None, fix={"loop_id": loop_id})
+        if (self.store.get("issues", loop["issue"]["issue_id"]) or {}).get("status") != "fixing":
+            set_issue_status(self.store, loop["issue"]["issue_id"], "fixing", loop_id=loop_id, attempt_id=None, fix={"loop_id": loop_id})
         if loop["issue"]["save_id"] is None:
             self._needs_you(loop_id, "no_save")
         elif loop["mode"] == "manual":
@@ -732,10 +738,12 @@ class Fixer:
         loop = self._update(loop_id, phase="applying", needs_you=None)
         attempt, unit = self._current(loop)[1], self._unit(loop, kind)
         sha, worktree, checkout = unit["merge_sha"], unit["worktree"], str(self.checkout_root)
-        code, _ = await self._run(["git", "-C", worktree, "checkout", "--detach", sha], cwd=worktree)
-        if code == 0:  # D15: test exactly what was merged
-            code, _ = await self._run(["scripts/test.sh"], cwd=worktree, timeout=GATE_TIMEOUT_SECONDS,
-                                      log_path=self._attempt_dir(attempt["id"]) / "post_merge.log")
+        code = 0
+        if Path(worktree).exists():  # a missing worktree was removed at the end of an earlier apply, after D15 passed
+            code, _ = await self._run(["git", "-C", worktree, "checkout", "--detach", sha], cwd=worktree)
+            if code == 0:  # D15: test exactly what was merged
+                code, _ = await self._run(["scripts/test.sh"], cwd=worktree, timeout=GATE_TIMEOUT_SECONDS,
+                                          log_path=self._attempt_dir(attempt["id"]) / "post_merge.log")
         if code != 0:
             if kind == "revert":
                 return self._needs_you(loop_id, "revert_failed", sha=sha)
@@ -886,14 +894,21 @@ class Fixer:
             return await failed()
         if (await self._run(git + ["push", "origin", f"HEAD:refs/heads/{revert['branch']}"], cwd=wt))[0] != 0:
             return await failed()
+        await self._open_revert_pr(loop_id)
+
+    async def _open_revert_pr(self, loop_id):
+        """`gh pr create` for the pushed revert branch, then the lookup (also finds a PR a crashed run already created) and the gate."""
+        loop = self.store.require("loops", loop_id)
+        attempt = self._current(loop)[1]
+        revert = attempt["revert"]
         issue = self.store.get("issues", attempt["issue_id"]) or {}
         title = f"Revert fix(agent): {_one_line(issue.get('title', ''), 150)} [ashad-revert {attempt['id']}]"
         body = f"Reverts PR #{attempt['pr']['number']} (merge {attempt['merge_sha']}). Reason: {revert['reason']}. Opened by ASHAD."
-        created, _ = await self._run(["gh", "pr", "create", "--repo", FIX_REPO, "--base", BASE_BRANCH, "--head", revert["branch"],
-                                      "--title", title, "--body", body], cwd=checkout)
-        pr = await self._find_pr(revert["branch"]) if created == 0 else None
+        await self._run(["gh", "pr", "create", "--repo", FIX_REPO, "--base", BASE_BRANCH, "--head", revert["branch"],
+                         "--title", title, "--body", body], cwd=self.checkout_root)
+        pr = await self._find_pr(revert["branch"])
         if not pr:
-            return await failed()
+            return self._needs_you(loop_id, "revert_failed", sha=attempt["merge_sha"])
         self._update_unit(loop_id, "revert", pr={"number": pr["number"], "url": pr["url"], "head_sha": pr["headRefOid"]})
         await self._gate(loop_id, "revert")
 
@@ -960,8 +975,80 @@ class Fixer:
             return await self._confirm_merge(loop_id, kind, merged)
         await self._apply(loop_id, kind)
 
+    async def _pr_state(self, number):
+        """(state, merge commit, head sha) from `gh pr view`; all None when the answer is unreadable."""
+        code, text = await self._run(["gh", "pr", "view", str(number), "--repo", FIX_REPO, "--json", "state,mergeCommit,headRefOid"],
+                                     cwd=self.checkout_root)
+        try:
+            view = json.loads(text) if code == 0 else {}
+            return view.get("state"), (view.get("mergeCommit") or {}).get("oid"), view.get("headRefOid")
+        except (ValueError, AttributeError):
+            return None, None, None
+
     async def _cancel(self, loop_id):
-        raise NotImplementedError("Task 4b")
+        """Cancel always works: stop the driver, close unmerged PRs, clean up, free the issue. Never reverts, never stops a verifying run."""
+        task = self.tasks.get(loop_id)
+        if task and not task.done() and task is not asyncio.current_task():
+            task.cancel()
+            await asyncio.wait({task}, timeout=15)
+        notes = []
+
+        async def step(name, work):
+            try:
+                await work()
+            except Exception:
+                LOG.exception("Fixer cancel step failed: %s", name)
+                notes.append(f"Cancel step failed: {name}.")
+
+        loop = self.store.require("loops", loop_id)
+        open_prs = []  # (name, number) of the PRs that were never merged
+        if loop["attempts"] and not loop["attempts"][-1]["merge_sha"] and loop["attempts"][-1]["pr"]:
+            open_prs.append(("close the fix PR", loop["attempts"][-1]["pr"]["number"]))
+        for attempt in loop["attempts"]:
+            revert = attempt["revert"]
+            if revert and not revert["merge_sha"] and revert["pr"]:
+                open_prs.append(("close the revert PR", revert["pr"]["number"]))
+
+        def closer(number):
+            async def close():
+                state = (await self._pr_state(number))[0]
+                if state is None:
+                    raise RuntimeError("PR state unreadable")
+                if state == "OPEN" and (await self._run(["gh", "pr", "close", str(number), "--repo", FIX_REPO, "--comment", "Cancelled in ASHAD."],
+                                                        cwd=self.checkout_root))[0] != 0:
+                    raise RuntimeError("PR close failed")
+            return close
+
+        async def clean():
+            for attempt in loop["attempts"]:
+                for path in (attempt["worktree"], (attempt["revert"] or {}).get("worktree")):
+                    if path and Path(path).exists():
+                        await self._remove_worktree(path)
+            kept = sorted((p for p in (self.store.root / "fixer").glob("fix_*") if p.is_dir()), key=lambda p: p.stat().st_mtime, reverse=True)
+            for old in kept[KEEP_ATTEMPT_DIRS:]:
+                shutil.rmtree(old, ignore_errors=True)
+
+        async def end_fixing_run():
+            if loop["fixing_run_id"]:
+                self._end_fixing_run(loop["fixing_run_id"], "fix_cancelled")
+
+        async def free_issue():
+            if loop["issue"] and (self.store.get("issues", loop["issue"]["issue_id"]) or {}).get("status") == "fixing":
+                set_issue_status(self.store, loop["issue"]["issue_id"], "open", loop_id=loop_id,
+                                 attempt_id=loop["attempts"][-1]["id"] if loop["attempts"] else None)
+
+        for name, number in open_prs:
+            await step(name, closer(number))
+        await step("remove worktrees", clean)
+        await step("end the fixing run", end_fixing_run)
+        await step("reopen the issue", free_issue)
+        loop = self.store.require("loops", loop_id)
+        loop["cancel_notes"].extend(notes)
+        if loop["attempts"] and loop["attempts"][-1]["result"] is None:
+            loop["attempts"][-1].update(result="cancelled", ended_at=time.time())  # D19: not a fixer failure
+        loop.update(phase="ended", needs_you=None)
+        self.store.put("loops", loop)
+        self._event(loop, "fix_cancelled", notes=len(notes))
 
     def summary(self, loop):
         loop = copy.deepcopy(loop)
@@ -1013,12 +1100,101 @@ class Fixer:
         return "\n".join(lines)
 
     async def cancel_processes(self):
-        return None
+        """Quit: stop every running fixer step. The phase stays for recover(); the attempt is marked interrupted (D19)."""
+        for loop_id, task in list(self.tasks.items()):
+            loop = self.store.get("loops", loop_id)
+            if task.done() or not loop or loop["phase"] not in ACTIVE_PHASES:
+                continue
+            task.cancel()
+            await asyncio.wait({task}, timeout=15)
+            loop = self.store.get("loops", loop_id)
+            if loop and loop["attempts"] and loop["attempts"][-1]["result"] is None and self._current(loop)[0] == "fix":
+                self._close_attempt(loop, "interrupted")  # an in-flight revert is left alone
+                self.store.put("loops", loop)
 
     async def recover(self):
+        """Start one recovery task per open loop; nothing external runs inline, so controller start is never blocked."""
         for loop in self.store.list("loops"):
-            if loop["phase"] == "restart_required":
-                await self._resume_restart(loop)
+            task = self.tasks.get(loop["id"])
+            if loop["phase"] != "ended" and not (task and not task.done()):
+                self._spawn(loop["id"], self._recover_loop(loop["id"]))
+
+    def _resume_attempt(self, loop_id):
+        """Un-interrupt the attempt a resumed step continues; its failure counts once, when (if) it really fails."""
+        loop = self.store.require("loops", loop_id)
+        if self._current(loop)[0] == "fix" and loop["attempts"] and loop["attempts"][-1]["result"] == "interrupted":
+            loop["attempts"][-1].update(result=None, ended_at=None)
+            loop["consecutive_failures"] = max(0, loop["consecutive_failures"] - 1)
+            self.store.put("loops", loop)
+
+    async def _recover_loop(self, loop_id):
+        """Continue a loop after a controller restart; every side effect is first checked against the recorded PR and shas."""
+        loop = self.store.require("loops", loop_id)
+        phase = loop["phase"]
+        run = self.store.get("runs", loop["current_run_id"]) if loop["current_run_id"] else None
+        if run and run["state"] in ACTIVE_STATES and phase not in ("playing", "verifying"):
+            await self.coordinator.finish(run["id"], "issue_fix", final_state="Fixing")
+        kind = self._current(loop)[0] if loop["attempts"] else "fix"
+        if phase == "fixing":
+            await self._recover_fixing(loop_id)
+        elif phase == "gating":
+            self._resume_attempt(loop_id)
+            await self._gate(loop_id, kind)
+        elif phase == "merging":
+            await self._recover_merging(loop_id)
+        elif phase == "applying":
+            self._resume_attempt(loop_id)
+            await self._apply(loop_id, kind)
+        elif phase == "restart_required":
+            await self._resume_restart(loop)
+        elif phase == "verifying":
+            await (self._watch(loop_id) if (loop["verify"] or {}).get("run_id") else self._verify(loop_id))
+        elif phase == "reverting":
+            await self._recover_reverting(loop_id)
+
+    async def _recover_fixing(self, loop_id):
+        loop = self.store.require("loops", loop_id)
+        attempt = loop["attempts"][-1] if loop["attempts"] else None
+        if not (attempt and attempt["issue_id"] == loop["issue"]["issue_id"] and attempt["result"] in (None, "interrupted")):
+            return await self._after_stop(loop_id)
+        pr = await self._find_pr(attempt["branch"])
+        if not (pr and pr.get("state") == "OPEN" and pr.get("baseRefName") == BASE_BRANCH and not pr.get("isCrossRepository")):
+            return await self._fail_attempt(loop_id, "interrupted")
+        self._resume_attempt(loop_id)
+        self._update_unit(loop_id, "fix", pr={"number": pr["number"], "url": pr["url"], "head_sha": pr["headRefOid"]})
+        self._update(loop_id, phase="gating")
+        await self._gate(loop_id, "fix")
+
+    async def _recover_merging(self, loop_id):
+        self._resume_attempt(loop_id)
+        pr = self._unit(self.store.require("loops", loop_id), "fix")["pr"]
+        state, merged, head = await self._pr_state(pr["number"])
+        if state == "MERGED" and merged:
+            return await self._confirm_merge(loop_id, "fix", merged)
+        if state == "OPEN" and head == pr["head_sha"]:
+            return await self._merge(loop_id, "fix")
+        await self._fail_attempt(loop_id, "merge_failed")
+
+    async def _recover_reverting(self, loop_id):
+        loop = self.store.require("loops", loop_id)
+        kind, attempt = self._current(loop)
+        if kind == "fix":  # the phase was saved before _revert wrote its record
+            reason = "verify_failed" if loop["attempts"][-1]["result"] == "verify_failed" else "regression"
+            return await self._revert(loop_id, reason)
+        revert, checkout = attempt["revert"], str(self.checkout_root)
+        if revert["pr"]:
+            state, merged, _ = await self._pr_state(revert["pr"]["number"])
+            if state == "MERGED" and merged:
+                return await self._confirm_merge(loop_id, "revert", merged)
+            if state == "OPEN":
+                return await self._gate(loop_id, "revert")
+            return self._needs_you(loop_id, "revert_failed", sha=attempt["merge_sha"])
+        pushed, _ = await self._run(["git", "-C", checkout, "ls-remote", "--exit-code", "--heads", "origin", revert["branch"]], cwd=checkout)
+        if pushed == 0:
+            return await self._open_revert_pr(loop_id)
+        if Path(revert["worktree"]).exists():
+            await self._remove_worktree(revert["worktree"])
+        await self._revert_pr(loop_id)
 
     async def _resume_restart(self, loop):
         """The controller restarted after a fix or revert was applied: continue only when the new code is running."""
@@ -1029,4 +1205,4 @@ class Fixer:
         ancestor, _ = await self._run(["git", "-C", checkout, "merge-base", "--is-ancestor", sha, "HEAD"], cwd=checkout)
         if ancestor != 0 or not self._runtime_current(attempt["changed_paths"]):
             return self._needs_you(loop["id"], "restart_needed")
-        self._spawn(loop["id"], self._verify(loop["id"]) if kind == "fix" else self._after_revert(loop["id"]))
+        await (self._verify(loop["id"]) if kind == "fix" else self._after_revert(loop["id"]))

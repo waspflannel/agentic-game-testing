@@ -145,6 +145,10 @@ def test_fixer_env_is_allowlisted(monkeypatch):
         monkeypatch.setenv(name, "planted")
     assert set(fixer.fixer_env()) <= set(fixer.FIXER_ENV_KEYS)
     assert fixer.fixer_env("t")["CLAUDE_CODE_OAUTH_TOKEN"] == "t"
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1/bus")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1")
+    assert "DBUS_SESSION_BUS_ADDRESS" in fixer.fixer_env()
+    assert not {"DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR"} & set(fixer.fixer_env(session=False))
     assert fixer.jr_branch("fix_ab12") == "build/fix-ab12"
 
 
@@ -587,6 +591,7 @@ async def test_manual_hit_moves_run_to_fixing_and_waits(environment, monkeypatch
 async def test_auto_full_cycle_merges_applies_and_verifies(environment, monkeypatch, tmp_path, profile):
     async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
         world.coord.credentials.save(TOKEN_REFERENCE, "oat-PLANTED")
+        monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/1/bus")
         world.cycle.diff = "M\tashad/structured.py\nA\ttests/test_new_verb.py\n"
         await world.hit()
         # (1) the hit stops the run and moves it to Fixing
@@ -627,6 +632,8 @@ async def test_auto_full_cycle_merges_applies_and_verifies(environment, monkeypa
             ["git", "-C", co, "merge-base", "--is-ancestor", world.cycle.merge, "HEAD"],
             ["git", "-C", co, "worktree", "remove", "--force", wt]]
         gate = [c for c in world.shell.calls if c.argv == ["scripts/test.sh"]]
+        assert all("DBUS_SESSION_BUS_ADDRESS" not in c.env for c in gate)  # fixer-written tests cannot reach the keyring
+        assert all("DBUS_SESSION_BUS_ADDRESS" in c.env for c in world.shell.calls if c.argv[0] == "gh")
         assert [c.cwd for c in gate] == [wt, wt] and gate[0].timeout == fixer.GATE_TIMEOUT_SECONDS
         assert gate[0].log_path.name == "gate.log"
         assert world.calls("jr")[0] and next(c for c in world.shell.calls if c.argv[0] == "jr").env["CLAUDE_CODE_OAUTH_TOKEN"] == "oat-PLANTED"

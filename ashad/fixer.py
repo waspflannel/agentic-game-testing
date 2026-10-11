@@ -43,6 +43,7 @@ FIXER_ENV_KEYS = ("PATH", "HOME", "USER", "LOGNAME", "LANG", "LC_ALL", "LC_CTYPE
                   "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "DBUS_SESSION_BUS_ADDRESS")
 REPO_URLS = ("https://github.com/waspflannel/agentic-game-testing", "https://github.com/waspflannel/agentic-game-testing.git",
              "git@github.com:waspflannel/agentic-game-testing.git", "ssh://git@github.com/waspflannel/agentic-game-testing.git")
+SESSION_ENV_KEYS = ("DBUS_SESSION_BUS_ADDRESS", "XDG_RUNTIME_DIR")
 RUNTIME_ROOT = Path(__file__).resolve().parents[1]
 ACTIVE_PHASES = frozenset({"fixing", "gating", "merging", "applying", "reverting"})
 WRITE_PERMISSIONS = frozenset({"WRITE", "MAINTAIN", "ADMIN"})
@@ -215,9 +216,11 @@ def jr_branch(attempt_id):
     return "build/" + attempt_id.replace("_", "-")
 
 
-def fixer_env(token=None):
-    """An explicit allowlist, never the whole environment; only jr gets the Claude token."""
-    env = {key: os.environ[key] for key in FIXER_ENV_KEYS if os.environ.get(key)}
+def fixer_env(token=None, session=True):
+    """An explicit allowlist, never the whole environment; only jr gets the Claude token.
+    session=False also drops the session bus and runtime dir, so code the fixer wrote cannot reach the keyring."""
+    keys = FIXER_ENV_KEYS if session else [key for key in FIXER_ENV_KEYS if key not in SESSION_ENV_KEYS]
+    env = {key: os.environ[key] for key in keys if os.environ.get(key)}
     if token:
         env["CLAUDE_CODE_OAUTH_TOKEN"] = token
     return env
@@ -234,6 +237,11 @@ class Fixer:
 
     async def _run(self, argv, *, cwd, timeout=COMMAND_TIMEOUT_SECONDS, log_path=None, token=None):
         return await self.runner(list(argv), cwd=str(cwd), env=fixer_env(token), timeout=timeout, log_path=log_path)
+
+    async def _run_tests(self, worktree, log_path):
+        """scripts/test.sh runs code the fixer wrote, so it gets no session bus (keyring)."""
+        return await self.runner(["scripts/test.sh"], cwd=str(worktree), env=fixer_env(session=False),
+                                 timeout=GATE_TIMEOUT_SECONDS, log_path=log_path)
 
     def _settings_minutes(self):
         return (self.store.get("settings", "main") or {}).get("fixer_daily_minutes", DEFAULT_DAILY_MINUTES)
@@ -681,7 +689,7 @@ class Fixer:
             self._update_unit(loop_id, "fix", changed_paths=[path for _, path in entries])
         if not paths_allowed(entries, frozenset(attempt["changed_paths"]) if kind == "revert" else frozenset()):
             return await self._gate_failed(loop_id, kind, "disallowed_paths")
-        code, _ = await self._run(["scripts/test.sh"], cwd=worktree, timeout=GATE_TIMEOUT_SECONDS, log_path=log)
+        code, _ = await self._run_tests(worktree, log)
         if code != 0:
             return await self._gate_failed(loop_id, kind, "tests_failed")
         self._event(loop, "fix_pr_opened", kind=kind, attempt_id=attempt["id"], pr=pr["number"], head_sha=pr["head_sha"])
@@ -738,8 +746,7 @@ class Fixer:
         if Path(worktree).exists():  # a missing worktree was removed at the end of an earlier apply, after D15 passed
             code, _ = await self._run(["git", "-C", worktree, "checkout", "--detach", sha], cwd=worktree)
             if code == 0:  # D15: test exactly what was merged
-                code, _ = await self._run(["scripts/test.sh"], cwd=worktree, timeout=GATE_TIMEOUT_SECONDS,
-                                          log_path=self._attempt_dir(attempt["id"]) / "post_merge.log")
+                code, _ = await self._run_tests(worktree, self._attempt_dir(attempt["id"]) / "post_merge.log")
         if code != 0:
             if kind == "revert":
                 return self._needs_you(loop_id, "revert_failed", sha=sha)

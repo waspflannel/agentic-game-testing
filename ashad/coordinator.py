@@ -131,6 +131,7 @@ class Coordinator:
                 for run in runs:
                     self._forget_run_records(run)
                 Projects(self.store).delete(project_id)
+            # A list, not a generator: every directory is attempted even after one fails.
             files_removed = all([self._remove_run_dir(run["id"]) for run in runs])
             return {"deleted": project_id, "instances": len(runs), "files_removed": files_removed}
 
@@ -139,9 +140,9 @@ class Coordinator:
         if any(owner["run_id"] in targets for owner in self.occupied_instances()):
             raise ValueError(message)
         # finish() releases the slot before collect_evidence saves the run again.
-        pending = [self.finishing.get(run_id) for run_id in targets]
-        if any(task is not None and not task.done() for task in pending) or \
-                any(key[0] in targets and not task.done() for key, task in self.tasks.items()):
+        finishing = any(task is not None and not task.done() for task in map(self.finishing.get, targets))
+        playing = any(key[0] in targets and not task.done() for key, task in self.tasks.items())
+        if finishing or playing:
             raise ValueError("This instance is still saving its evidence. Try again in a moment.")
 
     def _forget_run_records(self, run):

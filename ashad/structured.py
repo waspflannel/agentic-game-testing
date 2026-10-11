@@ -342,6 +342,43 @@ class StructuredPlayers:
             LOG.exception("Could not record %s issue for %s/%s", issue_type, run["id"], player_id)
             return None
 
+    async def report_crash(self, run_id, player_id, kind, detector, reason):
+        """Record a game or environment death as a crash issue; never raises."""
+        try:
+            run = self.store.require("runs", run_id)
+            ps = run["players"][player_id]
+            dedupe = (run_id, player_id, ps["generation"], kind)
+            if dedupe in self.crashes_recorded:
+                return
+            self.crashes_recorded.add(dedupe)
+            status = ps.get("worker_status") or {}
+            game_exit = status.get("game_exit") or {}
+            exit_code, signal, log_tail = (game_exit.get(k) for k in ("exit_code", "signal", "log_tail"))
+            exit = f"signal:{signal}" if signal else f"code:{exit_code}" if exit_code is not None else None
+            basis = {"kind": kind, "detector": detector, "exit": exit}
+            recent = self.store.events(run_id, after=max(0, self.store.count_events(run_id) - 120), limit=120)
+            intent = next((e for e in reversed(recent) if e["kind"] == "structured_action_intent"
+                           and e["payload"].get("player_id") == player_id), None)
+            last_action = None
+            if intent:
+                payload = intent["payload"]
+                result = next((e["payload"].get("result") or {} for e in reversed(recent) if e["kind"] == "action_result"
+                               and e["payload"].get("action_id") == payload.get("action_id")), {})
+                last_action = {"event_id": intent["id"], "at": intent["timestamp"], "verb": payload["input"]["verb"],
+                    "target_id": payload["input"]["target_id"], "status": result.get("status")}
+            sections = {
+                "crash": {"kind": kind, "detector": detector, "reason": str(reason)[:2000], "exit_code": exit_code,
+                    "signal": signal, "log_tail": log_tail,
+                    "worker_status": {k: status.get(k) for k in ("lifecycle", "game_running", "infrastructure_error",
+                        "capture", "controller_age_seconds", "resources")}},
+                "last_action": last_action,
+                "timing": {"detected_at": time.time(), **{k: ps.get(k) for k in ("launched_at", "telemetry_received_at",
+                    "feed_captured_at", "simulation_advanced_at")}}}
+            await self._record(run, ps, player_id, "crash", basis, "monitor", ps.get("structured_context") or {},
+                sections, skip_pin=kind == "worker_lost")
+        except Exception:
+            LOG.exception("Could not report %s crash for %s/%s", kind, run_id, player_id)
+
     def forget_run(self, run_id):
         for counters in (self.loop_counts, self.bug_reports):
             for key in [k for k in counters if k[0] == run_id]:

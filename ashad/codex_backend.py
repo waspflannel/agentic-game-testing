@@ -10,7 +10,7 @@ from openai_codex.types import ReasoningEffort
 from openai_codex.generated.v2_all import ThreadUnsubscribeResponse
 
 from .models import MODEL, CODEX_MODELS
-from .prompts import planning_request, selection_request, tuning_request
+from .prompts import planning_request, selection_request
 from .store import redact
 
 
@@ -157,10 +157,6 @@ class CodexBackend:
         payload, schema, instructions = planning_request(evidence, schema)
         return await self._complete(payload, schema, instructions, model, operation="planning")
 
-    async def tune(self, evidence, *, model=MODEL, stage="manual", repair=False):
-        payload, schema, instructions = tuning_request(evidence, stage, repair)
-        return await self._complete(payload, schema, instructions, model, operation="tuning")
-
     async def _complete(self, payload, schema, instructions, model, *, operation="selection"):
         if self.ready_until.get(model, 0) <= time.monotonic():
             status = await self.status(model)
@@ -169,13 +165,12 @@ class CodexBackend:
         client = self.runtime()
         thread = handle = starting = None
         try:
-            # Synthesizing a whole controls manual takes longer than choosing an action.
-            async with asyncio.timeout(300 if operation == "tuning" else 120):
+            async with asyncio.timeout(120):
                 thread = await client.thread_start(model=model, model_provider="openai",
                     ephemeral=True, cwd=str(self.workspace), approval_mode=ApprovalMode.deny_all,
                     sandbox=Sandbox.read_only, base_instructions=instructions)
                 starting = asyncio.create_task(thread.turn(json.dumps(payload, ensure_ascii=False),
-                    model=model, output_schema=schema, effort=ReasoningEffort.medium if operation in {"tuning", "planning"} else ReasoningEffort.low,
+                    model=model, output_schema=schema, effort=ReasoningEffort.medium if operation == "planning" else ReasoningEffort.low,
                     approval_mode=ApprovalMode.deny_all, sandbox=Sandbox.read_only))
                 handle = await asyncio.shield(starting)
                 result = await handle.run()

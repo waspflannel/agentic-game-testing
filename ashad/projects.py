@@ -70,7 +70,7 @@ class Projects:
             return project
 
     def delete(self, project_id):
-        """Remove a project and its agents and build registrations; the caller holds the transaction and has removed its runs."""
+        """Remove a project and its project configurations and build registrations; the caller holds the transaction and has removed its runs."""
         self.store.require("projects", project_id)
         db = self.store.db
         db.execute("DELETE FROM commands WHERE scope='tuning' AND json_extract(result,'$.agent_id') IN "
@@ -83,7 +83,7 @@ class Projects:
         db.execute("DELETE FROM records WHERE kind='projects' AND id=?", (project_id,))
 
     def delete_agent(self, agent_id):
-        """Remove one agent configuration and its tuning request rows; the caller holds the transaction. Tuning notes are a per-build cache and stay."""
+        """Remove one project configuration and its request rows; the caller holds the transaction. Tuning notes are a per-build cache and stay."""
         self.store.require("agents", agent_id)
         db = self.store.db
         db.execute("DELETE FROM commands WHERE scope='tuning' AND json_extract(result,'$.agent_id')=?", (agent_id,))
@@ -106,7 +106,7 @@ class Projects:
         profile = self.store.require("agents", agent_id)
         assigned = self.project_for_build(profile["build_id"], project_id, allow_unassigned=allow_unassigned)
         if profile.get("project_id") not in (None, assigned):
-            raise ValueError("Agent and build belong to different projects")
+            raise ValueError("Project configuration and build belong to different projects")
         return assigned
 
     def register_build(self, record, project_id=None):
@@ -131,7 +131,7 @@ class Projects:
                     raise ValueError("Pinned build identity changed; register the revision under a new build ID")
             for profile in self.store.list("agents"):
                 if profile.get("build_id") == record["id"] and profile.get("project_id") not in (None, assigned):
-                    raise ValueError("Referenced agent belongs to another project")
+                    raise ValueError("Referenced project configuration belongs to another project")
             for run in self.store.list("runs"):
                 if record["id"] in _build_refs(run) and run.get("project_id") not in (None, assigned):
                     raise ValueError("Referenced run belongs to another project")

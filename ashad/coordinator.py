@@ -337,14 +337,14 @@ class Coordinator:
                 raise ValueError("; ".join(checked["errors"]))
             plan = checked["plan"]
             build = self.validated_build(plan["build_id"])
-            agent_profile = None
+            record = controls = None
             if plan.get("agent_id"):
-                from .agent_profiles import AgentProfiles
-                agent_profile = AgentProfiles(self.store, self.ai).validated(plan["agent_id"])
+                from .game_controls import GameControls
+                record, controls = GameControls(self.store, self.ai).validated(plan["agent_id"])
                 from .projects import Projects
                 Projects(self.store).project_for_agent(plan["agent_id"])
-                if agent_profile["build_id"] != plan["build_id"] or provider_of(agent_profile["model"]) != provider_of(plan["model"]):
-                    raise ValueError("Instance build and provider must match its tuned agent.")
+                if record["build_id"] != plan["build_id"]:
+                    raise ValueError("Instance build must match its project configuration.")
             for player in plan["players"]:
                 account = self.store.get("accounts", player["account_id"]) if player["account_id"] else None
                 environment = await self.inspect_worker_environment(build, player["worker_id"], account=account)
@@ -364,8 +364,8 @@ class Coordinator:
                 players[p["id"]] = {"id": p["id"], "worker_id": p["worker_id"], "identity": str(identity), "epoch": uid("epoch_"), "generation": 0, "phase": "waiting", "activity": "Waiting for launch" if p["initial"] else "Scheduled", "launched": False, "bound": False, "teardown_confirmed": False, "invalid_actions": 0, "last_observation": None, "telemetry": None}
             run = {"id": run_id, "session_id": run_id, "scenario_id": scenario_id, "scenario_revision": revision, "state": "Queued", "created_at": time.time(), "plan": copy.deepcopy(plan), "build": copy.deepcopy(build), "players": players, "events": {e["id"]: {"status": "pending", "attempts": 0} for e in plan["events"]}, "model": plan["model"], "controller_version": CONTROLLER_VERSION, "world_namespace": run_id, "progress": {"completed_quests": [], "handler": None, "disagreement": [], "world_simulating": "unknown"}, "starting_milestones": [], "investigation_deadline": None, "goal_complete": False, "demo_complete": False, "validity": "unknown", "evidence_status": "collecting", "limitations": [], "interventions": [], "evidence": [], "launch_record": {"explicit": True, "timestamp": time.time(), "scenario_revision": revision, "idempotency_key": idempotency_key}}
             run["approved_plan"] = copy.deepcopy(plan)
-            if agent_profile:
-                run.update(agent_id=agent_profile["id"], agent_profile=copy.deepcopy(agent_profile))
+            if record:
+                run.update(agent_id=record["id"], agent_profile=copy.deepcopy(record), game_controls=copy.deepcopy(controls))
                 if len(plan["players"]) == 1:
                     run["subgoal_plan"] = new_plan(plan["players"][0]["goal"], plan["players"][0]["id"], run_id)
             run.update(api=PROVIDERS[provider_of(plan["model"])]["pricing"]["api"], billing="subscription")

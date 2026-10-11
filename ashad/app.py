@@ -20,13 +20,13 @@ from .claude_backend import ClaudeError
 from .codex_backend import CodexError
 from .coordinator import Coordinator, InstanceConflict
 from .credentials import Credentials
-from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, AI_API, ACTIVE_STATES, require_same_provider, RecalculateGoalsRequest
+from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, AI_API, ACTIVE_STATES, RecalculateGoalsRequest
 from .repository import Repository, sha256_file
 from .reports import generate_report
-from .agent_profiles import AgentProfiles
+from .game_controls import BUSY, MODEL_NOT_ALLOWED, SIGN_IN_WAIT, GameControls, migrate_tuned_configurations
 from .projects import Projects
 from .workspace_environment import inspect_fresh_environment, prepare_environment, validate_build
-from .instances import Instances, InstanceRequest
+from .instances import Instances, InstanceRequest, default_model
 from .store import Store, uid
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -90,7 +90,8 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
                   "api": AI_API, "auth_method": "chatgpt", "billing": "subscription",
                   "message": "Sign in with ChatGPT in AI Settings to connect your Codex subscription."}, "ai_status")
     ai = OpenAI(store, credentials, backend=ai_backend, claude_backend=claude_backend)
-    profiles = AgentProfiles(store, ai)
+    migrate_tuned_configurations(store)
+    controls = GameControls(store, ai)
     coordinator = Coordinator(store, credentials, ai)
     instances = Instances(coordinator)
     from .game_mcp import GameMCP
@@ -139,11 +140,11 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
 
     app = FastAPI(title="ASHAD Bot", version="1.0.0", lifespan=lifespan)
     app.state.store, app.state.coordinator, app.state.ai, app.state.credentials = store, coordinator, ai, credentials
-    app.state.profiles = profiles
+    app.state.controls = controls
     app.state.controller_lock = controller_lock
     app.state.operations = {}
-    app.state.tuning_task = None
-    app.state.tuning_request_id = None
+    app.state.controls_task = None
+    app.state.controls_request_id = None
     app.state.instance_requests = {}
 
     @app.middleware("http")
@@ -172,7 +173,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             return JSONResponse({"detail": "The controller is draining; wait for shutdown or retry afterward."}, status_code=409)
         operation = asyncio.current_task() if mutation else None
         if operation:
-            app.state.operations[operation] = {"kind": "tuning" if request.url.path == "/api/agents/tune" else "mutation",
+            app.state.operations[operation] = {"kind": "controls" if request.url.path == "/api/agents/controls" else "mutation",
                                                "path": request.url.path}
         try:
             response = await call_next(request)
@@ -218,9 +219,9 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         return {"available": reason is None, "owners": owners, "limit": 1, "blocked_reason": reason}
 
     def operations_active():
-        """Another HTTP mutation (besides the caller), tuning, or pending sign-in."""
+        """Another HTTP mutation (besides the caller), Get game controls, or pending sign-in."""
         login = getattr(ai.backend, "login_wait", None)
-        return bool(app.state.tuning_task) or len(app.state.operations) > 1 or bool(login and not login.done())
+        return bool(app.state.controls_task) or len(app.state.operations) > 1 or bool(login and not login.done())
 
     def require_unleased_worker(worker_id, message):
         if any(l["kind"] == "worker" and l["resource_id"] == worker_id for l in store.leases()):
@@ -256,7 +257,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         # In particular an import/restart must validate this backend's own home.
         ai_status = {**ai.status, "api": AI_API}
         model_options = [dict(o) for o in MODEL_OPTIONS]
-        return {"settings": settings, "ai": ai_status, "ai_claude": ai.claude_status, "model_options": model_options, "builds": builds, "workers": workers, "accounts": store.list("accounts"), "agents": store.list("agents"), "runs": store.list("runs"), "usage_count": store.count("usage"), "leases": store.leases(), "projects": store.list("projects"),
+        return {"settings": settings, "ai": ai_status, "ai_claude": ai.claude_status, "model_options": model_options, "default_model": default_model(ai), "builds": builds, "workers": workers, "accounts": store.list("accounts"), "agents": store.list("agents"), "runs": store.list("runs"), "usage_count": store.count("usage"), "leases": store.leases(), "projects": store.list("projects"),
                 "instance_slot": instance_slot(),
                 "workspace_import": {"interrupted": coordinator.import_interrupted()}}
 
@@ -282,32 +283,25 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             except (ProviderError, CodexError, ClaudeError) as exc:
                 return {"ready": False, "status": exc.status, "message": exc.message, "model": model}
 
-        if model and not agent_id:
-            raise ValueError("Choose an agent configuration before a model.")
         Projects(store).project_for_build(build_id, project_id)
         build = store.require("builds", build_id)
-        resolved = MODEL
         if agent_id:
             Projects(store).project_for_agent(agent_id, project_id)
             selected = store.require("agents", agent_id)
             if selected["build_id"] != build_id:
                 raise ValueError("Saved configuration belongs to a different build")
-            resolved = Plan(model=selected["model"]).model
         build_validation = {"ready": False, "reason": "Build has not been validated"}
         try:
             await asyncio.to_thread(validate_build, build)
             Repository(build)  # Play reads the pinned source snapshot; validate_build does not check it.
             if agent_id:
-                resolved = (await asyncio.to_thread(profiles.validated, agent_id))["model"]
+                await asyncio.to_thread(controls.validated, agent_id)
             build_validation = {"ready": True, "reason": "Exact supported manifest, engine and artifact pins verified"}
         except (OSError, ValueError, KeyError) as exc:
             build_validation["reason"] = str(exc)
         if model:
-            require_same_provider(model, resolved, "this agent configuration")
-            resolved = model
-        if agent_id:
-            provider = await provider_check(resolved)
-        else:  # A build alone has no provider: either connected subscription is enough.
+            provider = await provider_check(Plan(model=model).model)
+        else:  # No model chosen yet: either connected subscription is enough.
             checks = await asyncio.gather(provider_check(MODEL), provider_check(CLAUDE_MODEL))
             provider = next((check for check in checks if check["ready"]),
                             {**checks[0], "message": "Set up AI in Settings › Account."})
@@ -336,7 +330,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         async with coordinator.lock:
             coordinator.require_instance_slot()
             if coordinator.draining or coordinator.stopping or operations_active():
-                raise ValueError("Wait for admission, tuning, sign-in and setup operations before preparation")
+                raise ValueError("Wait for admission, Get game controls, sign-in and setup operations before preparation")
             coordinator.draining = True
             try:
                 resources = PROJECT / "ashad_resources" if (PROJECT / "ashad_resources").is_dir() else PROJECT
@@ -345,50 +339,55 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             finally:
                 coordinator.draining = False
 
-    @app.post("/api/agents/tune")
-    async def tune_agent(body: dict):
-        model = Plan(model=body.get("model", MODEL)).model
-        if app.state.tuning_task:
+    @app.post("/api/agents/controls")
+    async def get_controls(body: dict):
+        if "model" in body:
+            raise ValueError(MODEL_NOT_ALLOWED)
+        if app.state.controls_task:
             request_id = body.get("request_id")
             if isinstance(request_id, str) and store.command("tuning", request_id):
-                return await profiles.tune(body.get("build_id"), model, project_id=body.get("project_id"),
-                                           name=body.get("name"), request_id=request_id)
-            raise ValueError("An agent is already being tuned. Wait for it to finish.")
+                return await controls.gather(body.get("build_id"), project_id=body.get("project_id"),
+                                             name=body.get("name"), request_id=request_id)
+            raise ValueError(BUSY)
         if any(key in body for key in ("project_id", "name", "request_id")) and not body.get("request_id"):
-            raise ValueError("Use a stable tuning request_id; explicit retune uses a new ID")
-        app.state.tuning_task = asyncio.current_task()
-        app.state.tuning_request_id = body.get("request_id")
+            raise ValueError("Use a stable Get game controls request_id; Get controls again uses a new ID")
+        app.state.controls_task = asyncio.current_task()
+        app.state.controls_request_id = body.get("request_id")
         try:
-            return await profiles.tune(body.get("build_id"), model, project_id=body.get("project_id"),
-                                       name=body.get("name"), request_id=body.get("request_id"))
+            return await controls.gather(body.get("build_id"), project_id=body.get("project_id"),
+                                         name=body.get("name"), request_id=body.get("request_id"))
         except asyncio.CancelledError:
-            # Only the owned quit drain (DesktopLifecycle) cancels tuning on purpose; server
+            # Only the owned quit drain (DesktopLifecycle) cancels Get game controls on purpose; server
             # shutdown or a dropped client must keep propagating cancellation.
             if coordinator.stopping or not coordinator.draining:
                 raise
-            return JSONResponse({"detail": "Agent tuning was cancelled; no incomplete profile was saved."}, status_code=409)
+            return JSONResponse({"detail": "Get game controls was cancelled; nothing was saved."}, status_code=409)
         finally:
-            app.state.tuning_task = None
-            app.state.tuning_request_id = None
+            app.state.controls_task = None
+            app.state.controls_request_id = None
 
-    @app.get("/api/agents/tuning/{request_id}")
-    async def tuning_request(request_id: str):
+    @app.get("/api/agents/controls/{request_id}")
+    async def controls_request(request_id: str):
         saved = store.command("tuning", request_id)
         if saved:
             return {"status": "completed", "request_id": request_id, "agent": store.require("agents", saved["agent_id"])}
-        running = bool(app.state.tuning_task and app.state.tuning_request_id == request_id)
+        running = bool(app.state.controls_task and app.state.controls_request_id == request_id)
         if not running:
             return {"status": "unknown", "request_id": request_id}
-        return {"status": "in_progress", "request_id": request_id, "progress": tuning_progress()}
+        return {"status": "in_progress", "request_id": request_id, "progress": controls_progress()}
 
-    def tuning_progress():
-        """The running tuning's stage and batch, plus its model calls so far (from usage rows), or None."""
-        progress = profiles.progress
+    def controls_progress():
+        """The running Get game controls stage and batches, plus its model calls so far (from usage rows), or None."""
+        progress = controls.progress
         if not progress:
             return None
         rows = store.usage_since("tuning", progress["started_at"])
         return {**progress, "model_calls": len(rows), "rejected_replies": sum(status != "completed" for status, _ in rows),
                 "last_call_at": max((at for _, at in rows), default=None)}
+
+    @app.get("/api/agents/{agent_id}/controls")
+    async def agent_controls(agent_id: str):
+        return (await asyncio.to_thread(controls.validated, agent_id))[1]
 
     @app.get("/api/instances/requests/{request_id}")
     async def instance_request(request_id: str):
@@ -598,8 +597,8 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         return await ai.validate()
 
     def require_ai_idle():
-        if profiles.lock.locked():
-            raise ValueError("Wait for agent tuning to finish before changing AI sign-in.")
+        if controls.lock.locked():
+            raise ValueError(SIGN_IN_WAIT)
         runs = store.list("runs")
         if any(r["state"] in {"Queued", "Starting", "Running", "Stopping"} for r in runs):
             raise ValueError("Pause or stop active bots and stop queued runs before changing AI sign-in.")

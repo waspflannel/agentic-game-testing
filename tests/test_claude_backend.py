@@ -8,7 +8,7 @@ import keyring.errors
 import pytest
 
 from ashad import claude_backend
-from ashad.claude_backend import ClaudeBackend, ClaudeError, SYSTEM_SUFFIX
+from ashad.claude_backend import CONTROLS_TIMEOUT_SECONDS, ClaudeBackend, ClaudeError, SYSTEM_SUFFIX
 from ashad.prompts import selection_request
 from ashad.store import Store
 from test_controller import MemoryCredentials
@@ -52,9 +52,11 @@ async def test_request_uses_every_hardening_flag_and_no_bare(backend):
     await backend.plan(EVIDENCE, SCHEMA)
     argv = invocation(backend)["argv"]
     assert argv[argv.index("--effort") + 1] == "medium"
-    await backend.tune(EVIDENCE)
+    await backend.write_controls(EVIDENCE, model="sonnet")
     argv = invocation(backend)["argv"]
     assert argv[argv.index("--effort") + 1] == "medium"
+    assert argv[argv.index("--tools") + 1] == ""
+    assert CONTROLS_TIMEOUT_SECONDS == 300
     assert "--bare" not in argv
 
 

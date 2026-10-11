@@ -4,9 +4,16 @@ from typing import Literal
 
 from pydantic import Field
 
-from .agent_profiles import AgentProfiles
-from .models import ACTIVE_STATES, Contract, Plan, require_same_provider
+from .game_controls import GameControls
+from .models import ACTIVE_STATES, CLAUDE_MODEL, MODEL, Contract, Plan
 from .projects import Projects
+
+
+def default_model(ai):
+    """Configurations own no model: prefer the connected Codex subscription, then Claude."""
+    if ai.status.get("status") == "ready":
+        return MODEL
+    return CLAUDE_MODEL if ai.claude_status.get("status") == "ready" else MODEL
 
 
 class InstanceRequest(Contract):
@@ -39,13 +46,12 @@ class Instances:
             if self.coordinator.draining or self.coordinator.stopping:
                 raise ValueError("The controller is draining; new instances are blocked.")
             self.coordinator.require_instance_slot()
+            record, _ = GameControls(self.store, self.coordinator.ai).validated(request.agent_id)
             Projects(self.store).project_for_agent(request.agent_id, request.project_id)
-            profile = AgentProfiles(self.store, self.coordinator.ai).validated(request.agent_id)
-            model = request.model or profile["model"]
-            require_same_provider(model, profile["model"], "this agent configuration")
-            build = self.coordinator.validated_build(profile["build_id"])
+            model = request.model or default_model(self.coordinator.ai)
+            build = self.coordinator.validated_build(record["build_id"])
             worker, accounts = await self._allocate_worker(build, request.transport)
-            plan = Plan(agent_id=profile["id"], build_id=profile["build_id"], model=model,
+            plan = Plan(agent_id=record["id"], build_id=record["build_id"], model=model,
                         title=payload["primary_goal"][:100], intent=payload["primary_goal"], primary_goal=payload["primary_goal"]).model_dump()
             plan["players"][0].update(name="Player 1", goal=payload["primary_goal"], goal_id="", worker_id=worker["id"],
                                      account_id=accounts[worker["id"]]["id"] if request.transport == "steam" else None)

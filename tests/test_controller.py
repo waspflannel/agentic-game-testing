@@ -74,10 +74,10 @@ class FakeClaudeBackend:
         return {"answers": {q["name"]: q["choices"][0]["value"] for q in questions},
                 "usage": None, "usage_scope": "selection_total", "thread_id": "test-thread", "turn_id": "test-turn"}
 
-    async def tune(self, evidence, *, model="sonnet", stage="manual", repair=False):
+    async def write_controls(self, evidence, *, model, stage="manual", repair=False):
         if not self.ready:
             raise ClaudeError("configuration_required", "Paste a token from claude setup-token")
-        return {"answers": {"instructions": "x" * 300}, "usage": None, "usage_scope": "tuning_total",
+        return {"answers": {"instructions": "x" * 300}, "usage": None, "usage_scope": "controls_total",
                 "thread_id": "test-thread", "turn_id": "test-turn"}
 
     def save_token(self, token):

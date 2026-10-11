@@ -213,7 +213,7 @@ async def test_cancelling_during_turn_start_still_interrupts_returned_handle(sto
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("operation", ["selection", "tuning", "planning"])
+@pytest.mark.parametrize("operation", ["selection", "planning"])
 async def test_timeout_interrupts_turn_and_has_connection_status(store, monkeypatch, operation):
     timeout = asyncio.timeout
     @asynccontextmanager
@@ -225,9 +225,7 @@ async def test_timeout_interrupts_turn_and_has_connection_status(store, monkeypa
     client.handle.block = True
     backend = CodexBackend(store, client=client)
     with pytest.raises(CodexError) as caught:
-        if operation == "tuning":
-            await backend.tune("source notes")
-        elif operation == "planning":
+        if operation == "planning":
             await backend.plan("game evidence", {})
         else:
             await backend.select("game evidence", QUESTIONS)

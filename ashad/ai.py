@@ -191,15 +191,15 @@ class OpenAI:
             raise ProviderError("context_limit", "Planning evidence exceeds the bounded context budget. Reduce context before continuing.")
         return await self._request(input, None, "planning", run_id, model, input_bytes, planning_schema=schema)
 
-    async def tune_agent(self, evidence, model=MODEL, *, stage="manual"):
-        self._checked_model(model)
+    async def write_controls(self, evidence, *, stage="manual"):
+        model = CLAUDE_MODEL
         if stage not in {"manual", "source_notes"}:
             raise ValueError("Unknown tuning stage")
         for attempt in range(2):
             input = json.dumps(evidence, ensure_ascii=False)
             input_bytes = len(input.encode("utf-8"))
             if input_bytes > 112000:
-                raise ProviderError("context_limit", "Tuning source or repair draft exceeds the bounded context budget; no agent was saved.")
+                raise ProviderError("context_limit", "Game controls source or repair draft exceeds the bounded context budget; no game controls were saved.")
             try:
                 return await self._request(input, None, "tuning", None, model, input_bytes,
                     tuning_stage=stage, tuning_repair=bool(attempt))
@@ -228,7 +228,7 @@ class OpenAI:
             call = lambda: backend.plan(input, planning_schema, model=model)
             parse = lambda data: self._plan(data, label)
         else:
-            call = lambda: backend.tune(input, model=model, stage=tuning_stage, repair=tuning_repair)
+            call = lambda: backend.write_controls(input, model=model, stage=tuning_stage, repair=tuning_repair)
             parse = lambda data: self._tuning_instructions(data, label, tuning_stage, tuning_repair, diagnostic)
         data = None
         try:
@@ -279,13 +279,13 @@ class OpenAI:
         size = len(result.strip().encode("utf-8")) if isinstance(result, str) else None
         diagnostic.update(output_bytes=size, output_limit_bytes=limit)
         if not isinstance(result, str) or set(answers) != {"instructions"}:
-            raise ProviderError("invalid_tuning", f"{label} returned invalid {kind} JSON: expected one instructions string; no agent was saved.")
+            raise ProviderError("invalid_tuning", f"{label} returned invalid {kind} JSON: expected one instructions string; no game controls were saved.")
         result = result.strip()
         if size < TUNING_MINIMUM_BYTES:
-            raise ProviderError("invalid_tuning", f"{label} returned incomplete {kind} ({size} UTF-8 bytes; minimum {TUNING_MINIMUM_BYTES}); no agent was saved.")
+            raise ProviderError("invalid_tuning", f"{label} returned incomplete {kind} ({size} UTF-8 bytes; minimum {TUNING_MINIMUM_BYTES}); no game controls were saved.")
         if size > limit:
             retry = " after one compression retry" if repair else ""
-            raise ProviderError("invalid_tuning", f"{label} {kind} exceeded the {limit}-byte limit ({size} UTF-8 bytes){retry}; no agent was saved.", draft=result)
+            raise ProviderError("invalid_tuning", f"{label} {kind} exceeded the {limit}-byte limit ({size} UTF-8 bytes){retry}; no game controls were saved.", draft=result)
         return result
 
     @staticmethod

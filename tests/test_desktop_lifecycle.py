@@ -20,7 +20,7 @@ from test_controller import environment, new_run, MemoryCredentials, FakeCodexBa
 
 def lifecycle(environment):
     store, coord, _, _ = environment
-    state = SimpleNamespace(store=store, coordinator=coord, ai=coord.ai, operations={}, tuning_task=None)
+    state = SimpleNamespace(store=store, coordinator=coord, ai=coord.ai, operations={}, controls_task=None)
     server = SimpleNamespace(should_exit=False)
     return DesktopLifecycle(SimpleNamespace(state=state), server), state, server
 
@@ -124,7 +124,7 @@ async def test_unknown_lease_never_reports_successful_quit(environment):
 
 
 @pytest.mark.asyncio
-async def test_tuning_requires_explicit_cancellation_and_keeps_honest_usage(environment):
+async def test_get_controls_requires_explicit_cancellation_and_keeps_honest_usage(environment):
     store, coord, _, _ = environment
     started = asyncio.Event()
 
@@ -132,11 +132,11 @@ async def test_tuning_requires_explicit_cancellation_and_keeps_honest_usage(envi
         started.set()
         await asyncio.Event().wait()
 
-    coord.ai.backend.tune = provider
+    coord.ai.claude_backend.write_controls = provider
     quit, state, server = lifecycle(environment)
-    task = asyncio.create_task(coord.ai._request("fixture", None, "tuning", None, "gpt-6-luna", 7))
-    state.tuning_task = task
-    state.operations[task] = {"kind": "tuning", "path": "/api/agents/tune"}
+    task = asyncio.create_task(coord.ai._request("fixture", None, "tuning", None, "sonnet", 7))
+    state.controls_task = task
+    state.operations[task] = {"kind": "controls", "path": "/api/agents/controls"}
     await started.wait()
     assert not (await quit.shutdown())["drained"] and not task.done()
     assert await quit.shutdown(cancel_operations=True) == {"drained": True}
@@ -185,7 +185,7 @@ def test_http_drain_blocks_mutations_but_keeps_readable_history(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_http_tuning_cancellation_returns_conflict_and_releases_operation(tmp_path):
+async def test_http_get_controls_cancellation_returns_conflict_and_releases_operation(tmp_path):
     import httpx
     app = create_app(tmp_path, credentials=MemoryCredentials(), start_services=False,
                      ai_backend=FakeCodexBackend())
@@ -195,23 +195,23 @@ async def test_http_tuning_cancellation_returns_conflict_and_releases_operation(
         entered.set()
         await asyncio.Event().wait()
 
-    app.state.ai.backend.tune = provider
+    app.state.ai.claude_backend.write_controls = provider
 
-    async def tune(*args, **kwargs):
-        return await app.state.ai._request("fixture", None, "tuning", None, "gpt-6-luna", 7)
+    async def gather(*args, **kwargs):
+        return await app.state.ai._request("fixture", None, "tuning", None, "sonnet", 7)
 
-    app.state.profiles.tune = tune
+    app.state.controls.gather = gather
     server = SimpleNamespace(should_exit=False)
     quit = DesktopLifecycle(app, server)
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
-            request = asyncio.create_task(client.post("/api/agents/tune", json={}, headers={"X-ASHAD-Request": "1"}))
+            request = asyncio.create_task(client.post("/api/agents/controls", json={}, headers={"X-ASHAD-Request": "1"}))
             await entered.wait()
-            assert quit.status()["operations"][0]["kind"] == "tuning"
+            assert quit.status()["operations"][0]["kind"] == "controls"
             assert await quit.shutdown(cancel_operations=True) == {"drained": True}
             response = await request
             assert response.status_code == 409 and "cancelled" in response.json()["detail"]
-            assert app.state.operations == {} and app.state.tuning_task is None
+            assert app.state.operations == {} and app.state.controls_task is None
             assert app.state.store.list("usage")[0]["status"] == "request_cancelled"
 
 

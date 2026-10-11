@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ashad.app import create_app
+from ashad.game_controls import CONFIGURATION_RETIRED
 from ashad.models import MODEL, CLAUDE_MODEL
 from ashad.projects import Projects
 from test_controller import MemoryCredentials, FakeCodexBackend
@@ -219,27 +220,27 @@ def test_steam_verification_requires_the_free_global_slot_and_unleased_worker(tm
 
 
 @pytest.mark.asyncio
-async def test_tuning_cancelled_outside_owned_quit_propagates_instead_of_409(tmp_path):
+async def test_get_controls_cancelled_outside_owned_quit_propagates_instead_of_409(tmp_path):
     app = offline_app(tmp_path)
     entered = asyncio.Event()
 
-    async def tune(*args, **kwargs):
+    async def gather(*args, **kwargs):
         entered.set()
         await asyncio.Event().wait()
 
-    app.state.profiles.tune = tune
+    app.state.controls.gather = gather
     try:
         async with app.router.lifespan_context(app):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
-                request = asyncio.create_task(client.post("/api/agents/tune", json={}, headers=HEADERS))
+                request = asyncio.create_task(client.post("/api/agents/controls", json={}, headers=HEADERS))
                 await asyncio.wait_for(entered.wait(), 2)
                 assert not app.state.coordinator.draining
-                tuning = app.state.tuning_task
-                tuning.cancel()  # Not the owned quit drain: no 409 is fabricated from the cancellation.
+                task = app.state.controls_task
+                task.cancel()  # Not the owned quit drain: no 409 is fabricated from the cancellation.
                 with pytest.raises(Exception):
                     await asyncio.wait_for(request, 5)
-                assert tuning.cancelled()
-                assert app.state.tuning_task is None and app.state.operations == {}
+                assert task.cancelled()
+                assert app.state.controls_task is None and app.state.operations == {}
     finally:
         app.state.store.close()
 
@@ -344,11 +345,11 @@ def test_deletes_are_refused_while_another_operation_runs(tmp_path):
     store.put("agents", {"id": "a1", "project_id": "p1", "build_id": "b1"})
     store.put("runs", released_run("r1", project_id="p1"))
     with TestClient(app) as client:
-        app.state.tuning_task = SimpleNamespace(done=lambda: False)
+        app.state.controls_task = SimpleNamespace(done=lambda: False)
         for url in ("/api/runs/r1", "/api/projects/p1", "/api/agents/a1"):
             busy = client.delete(url, headers=HEADERS)
             assert busy.status_code == 422 and "Wait for the current operation" in busy.json()["detail"]
-        app.state.tuning_task = None
+        app.state.controls_task = None
         assert store.get("runs", "r1") is not None and store.get("projects", "p1") is not None
         assert store.get("agents", "a1") is not None
 
@@ -392,19 +393,46 @@ def test_project_with_an_active_instance_cannot_be_deleted(tmp_path):
         assert store.get("projects", pid) and store.get("builds", "b1") and store.get("runs", "r1")
 
 
-def test_readiness_accepts_same_provider_model_only(tmp_path):
+def test_readiness_accepts_any_supported_model_with_or_without_configuration(tmp_path, monkeypatch):
     app = offline_app(tmp_path)
     store = app.state.store
     store.put("projects", {"id": "project", "name": "Game"})
     store.put("builds", {"id": "build", "project_id": "project", "name": "Fixture"})
-    store.put("agents", {"id": "agent", "build_id": "build", "project_id": "project", "model": "gpt-6-luna"})
-    app.state.ai.validate = AsyncMock(return_value={"configured": True, "status": "ready", "message": "Ready"})
+    store.put("agents", {"id": "agent", "build_id": "build", "project_id": "project", "status": "ready", "controls_version": 1})
+    monkeypatch.setattr(app.state.controls, "validated", lambda agent_id: (store.require("agents", agent_id), {}))
+    validate = app.state.ai.validate = AsyncMock(return_value={"configured": True, "status": "ready", "message": "Ready"})
     url = "/api/projects/project/readiness?build_id=build"
     with TestClient(app) as client:
-        chosen = client.get(f"{url}&agent_id=agent&model=gpt-6-sol")
-        assert chosen.status_code == 200 and chosen.json()["provider"]["model"] == "gpt-6-sol"
-        assert client.get(f"{url}&agent_id=agent&model=sonnet").status_code == 422
-        assert client.get(f"{url}&model=gpt-6-sol").status_code == 422
+        chosen = client.get(f"{url}&agent_id=agent&model=sonnet")
+        assert chosen.status_code == 200 and chosen.json()["provider"]["model"] == "sonnet"
+        validate.assert_awaited_once_with("sonnet")
+        validate.reset_mock()
+        assert client.get(f"{url}&model=gpt-6-sol").status_code == 200
+        validate.assert_awaited_once_with("gpt-6-sol")
+        assert client.get(f"{url}&model=nope").status_code == 422
+
+
+def test_controls_route_returns_validated_file_and_refuses_retired(tmp_path, monkeypatch):
+    app = offline_app(tmp_path)
+    store = app.state.store
+    store.put("agents", {"id": "ready", "status": "ready", "controls_version": 1})
+    store.put("agents", {"id": "old", "status": "retired", "controls_version": 1})
+    artifact = {"format": "ashad.game-controls", "controls": "Press next_text."}
+    monkeypatch.setattr(type(app.state.controls), "_validate", lambda self, record: artifact)
+    with TestClient(app) as client:
+        assert client.get("/api/agents/ready/controls").json() == artifact
+        refused = client.get("/api/agents/old/controls")
+        assert refused.status_code == 422 and refused.json()["detail"] == CONFIGURATION_RETIRED
+
+
+def test_bootstrap_reports_default_model(tmp_path):
+    app = offline_app(tmp_path)
+    with TestClient(app) as client:
+        app.state.ai.status = {"status": "ready"}
+        assert client.get("/api/bootstrap").json()["default_model"] == "gpt-6-luna"
+        app.state.ai.status = {"status": "login_required"}
+        app.state.ai.claude_status = {"status": "ready"}
+        assert client.get("/api/bootstrap").json()["default_model"] == "sonnet"
 
 
 def seed_agents(store):

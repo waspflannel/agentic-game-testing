@@ -27,7 +27,7 @@ BUSY = "Game controls are already being gathered. Wait for them to finish."
 CONFIGURATION_DELETED = "This instance's project configuration was deleted. Get game controls again for this project, then start the instance with the new configuration."
 CONFIGURATION_RETIRED = "This project configuration is retired. Get game controls again for this project, then start the instance with the new configuration."
 SIGN_IN_WAIT = "Wait for Get game controls to finish before changing AI sign-in."
-RETIRED_REASON = "Tuned before game controls existed and its saved instructions are invalid."
+RETIRED_REASON = "Saved before game controls existed, and its saved instructions are invalid."
 LIMITATIONS = ["AI-written controls knowledge from bounded source analysis; gameplay has not been verified.",
     "Get game controls prepares a reusable prompt, not model weights. Only currently advertised actions can execute."]
 LEGACY_KEYS = ("model", "instructions", "instructions_sha256", "source_files", "source_inventory_sha256", "source_coverage", "limitations")

@@ -138,10 +138,10 @@ test('each configuration row has a Delete action, disabled during a refresh or w
 
 test('a retired configuration shows its reason and only Delete', async () => {
   const { newOverview, overviewModel, overviewRegions } = await project();
-  const d = data({ agents: [{ id: 'old', name: 'Old', build_id: 'b', project_id: 'p', status: 'retired', retired_reason: 'Tuned before game controls existed and its saved instructions are invalid.', created_at: NOW - 60 }] });
+  const d = data({ agents: [{ id: 'old', name: 'Old', build_id: 'b', project_id: 'p', status: 'retired', retired_reason: 'Saved before game controls existed, and its saved instructions are invalid.', created_at: NOW - 60 }] });
   const ov = newOverview('p');
   const html = overviewRegions(overviewModel(d, ov, NOW), ov, NOW).agents;
-  assert.match(html, /Retired: Tuned before game controls existed/);
+  assert.match(html, /Retired: Saved before game controls existed/);
   assert.deepEqual([...html.matchAll(/data-action="([^"]+)"/g)].map(x => x[1]), ['ov-delete-agent']);
   assert.doesNotMatch(html, /New instance|View controls|Get controls again/);
 });

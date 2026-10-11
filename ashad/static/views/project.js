@@ -1,5 +1,5 @@
 // Project overview (spec §8.3). Model and markup are pure; app.js owns the DOM, the chooser and I/O.
-import { esc, icon, href, ago, since, newOp, runGoal, runTime, runStatus, runConfigurationId } from '../core.js';
+import { esc, icon, href, ago, since, newOp, runGoal, runTime, runStatus } from '../core.js';
 import { readinessHTML, projectBuilds, controlsProgressHTML } from './setup.js';
 
 const enc = encodeURIComponent;
@@ -30,7 +30,6 @@ export function overviewModel(data, ov, now = Date.now() / 1000) {
   const runs = (data?.runs || []).filter(r => r.project_id === ov.projectId).sort((a, b) => (runTime(b) || 0) - (runTime(a) || 0));
   return {
     busy: runs.some(r => owners.has(r.id)),
-    agentBusy: id => runs.some(r => owners.has(r.id) && runConfigurationId(r) === id),
     project, builds, build, agents, total: runs.length,
     recent: runs.slice(0, RECENT).map(r => ({ id: r.id, goal: runGoal(r), age: ago(runTime(r), now), status: runStatus(r, owners.get(r.id)), state: r.state, reason: r.ending_reason, duration: duration(r) })),
     buildName,
@@ -67,23 +66,21 @@ export function overviewRegions(m, ov, now = Date.now() / 1000) {
 
   const agents = m.agents.length ? `<ul class="list">${m.agents.map(a => {
     const title = `<span class="list-title">${esc(a.name || a.id)}</span>`;
-    const del = blocked => `<button type="button" class="btn btn-ghost btn-sm" data-action="ov-delete-configuration" data-id="${esc(a.id)}" data-key="ov-delconfiguration-${esc(a.id)}"${blocked ? ` aria-disabled="true" title="${blocked}"` : ''}>Delete</button>`;
-    if (a.status === 'retired') {
-      return `<li class="list-row"><div class="list-main">${title}${note('error', `Retired: ${a.retired_reason || 'reason not recorded'}`)}</div>`
-        + `<div class="list-actions">${del(m.agentBusy(a.id) ? 'Stop the instance using this project configuration before deleting it' : '')}</div></li>`;
-    }
     const op = ov.refreshes.get(a.id);
     const busy = op && (op.status === 'busy' || op.waiting);
-    const blocked = busy ? 'Wait for Get game controls to finish before deleting' : m.agentBusy(a.id) ? 'Stop the instance using this project configuration before deleting it' : '';
     const status = !op ? '' : op.waiting ? note('', 'Another Get game controls run is in progress; this one starts when it finishes.')
       : op.status === 'busy' ? `<div class="tuning">${controlsProgressHTML(op, now)}</div>`
       : op.status === 'done' ? note('', `Saved as ${op.value?.name || op.value?.id || 'a new configuration'}.`) : op.error ? note('error', op.error) : '';
+    const refresh = `<button type="button" class="btn btn-ghost btn-sm" data-action="ov-refresh" data-id="${esc(a.id)}" data-key="ov-refresh-${esc(a.id)}"${busy ? ' aria-busy="true" aria-disabled="true"' : ''}>Get controls again…</button>`;
+    if (a.status === 'retired') {
+      return `<li class="list-row"><div class="list-main">${title}${note('error', `Retired: ${a.retired_reason || 'reason not recorded'}`)}${status}</div>`
+        + `<div class="list-actions">${refresh}</div></li>`;
+    }
     return `<li class="list-row"><div class="list-main">${title}`
       + `<span class="check-detail">build ${esc(m.buildName(a.build_id))} · controls gathered ${a.created_at ? esc(since(a.created_at, now)) : 'at an unrecorded time'}</span>${status}</div>`
       + `<div class="list-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="ov-controls" data-id="${esc(a.id)}" data-key="ov-ctl-${esc(a.id)}">View controls</button>`
-      + `<button type="button" class="btn btn-ghost btn-sm" data-action="ov-refresh" data-id="${esc(a.id)}" data-key="ov-refresh-${esc(a.id)}"${busy ? ' aria-busy="true" aria-disabled="true"' : ''}>Get controls again…</button>`
-      + `<a class="btn btn-ghost btn-sm" href="${href('p', pid, 'new')}?configuration=${enc(a.id)}" data-key="ov-run-${esc(a.id)}">New instance</a>`
-      + `${del(blocked)}</div></li>`;
+      + refresh
+      + `<a class="btn btn-ghost btn-sm" href="${href('p', pid, 'new')}?configuration=${enc(a.id)}" data-key="ov-run-${esc(a.id)}">New instance</a></div></li>`;
   }).join('')}</ul>` : `<p class="hint">No project configuration yet. <a href="#/setup?project=${enc(pid)}" data-key="ov-setup">Add one</a> to start instances.</p>`;
 
   let readiness;

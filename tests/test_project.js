@@ -123,27 +123,23 @@ test('the overview head offers Delete project, disabled while one of its instanc
   assert.ok(live.includes('aria-disabled="true" title="Stop its active instance before deleting this project"'));
 });
 
-test('each configuration row has a Delete action, disabled during a refresh or while an instance using it is live', async () => {
+test('a configuration row has View controls and Get controls again but no Delete', async () => {
   const { newOverview, overviewModel, overviewRegions } = await project();
-  const button = (d, ov) => overviewRegions(overviewModel(d, ov, NOW), ov, NOW).agents.match(/<button[^>]*data-action="ov-delete-configuration"[^>]*>/)[0];
   const ov = newOverview('p');
-  const idle = button(data(), ov);
-  assert.ok(idle.includes('data-action="ov-delete-configuration" data-id="a"'));
-  assert.doesNotMatch(idle, /aria-disabled/);
-  ov.refreshes.set('a', { status: 'busy' });
-  assert.ok(button(data(), ov).includes('title="Wait for Get game controls to finish before deleting"'));
-  const live = data({ runs: [{ id: 'r1', project_id: 'p', state: 'Queued', plan: { configuration_id: 'a' } }], instance_slot: { owners: [{ run_id: 'r1' }] } });
-  assert.ok(button(live, newOverview('p')).includes('title="Stop the instance using this project configuration before deleting it"'));
+  const html = overviewRegions(overviewModel(data(), ov, NOW), ov, NOW).agents;
+  assert.deepEqual([...html.matchAll(/data-action="([^"]+)"/g)].map(x => x[1]), ['ov-controls', 'ov-refresh']);
+  assert.doesNotMatch(html, /Delete|ov-delete-configuration/);
 });
 
-test('a retired configuration shows its reason and only Delete', async () => {
+test('a retired configuration shows its reason and only Get controls again', async () => {
   const { newOverview, overviewModel, overviewRegions } = await project();
   const d = data({ configurations: [{ id: 'old', name: 'Old', build_id: 'b', project_id: 'p', status: 'retired', retired_reason: 'Saved before game controls existed, and its saved instructions are invalid.', created_at: NOW - 60 }] });
   const ov = newOverview('p');
   const html = overviewRegions(overviewModel(d, ov, NOW), ov, NOW).agents;
   assert.match(html, /Retired: Saved before game controls existed/);
-  assert.deepEqual([...html.matchAll(/data-action="([^"]+)"/g)].map(x => x[1]), ['ov-delete-configuration']);
-  assert.doesNotMatch(html, /New instance|View controls|Get controls again/);
+  assert.deepEqual([...html.matchAll(/data-action="([^"]+)"/g)].map(x => x[1]), ['ov-refresh']);
+  assert.match(html, /Get controls again/);
+  assert.doesNotMatch(html, /New instance|View controls|Delete/);
 });
 
 test('an empty project says it has no project configuration', async () => {

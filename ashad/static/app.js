@@ -1,4 +1,4 @@
-import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, createDrawer, patchHTML, dirtyBridge, runGoal, ago, modelLabel, since, nextOptionIndex } from './core.js';
+import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, createDrawer, patchHTML, dirtyBridge, runGoal, ago, modelLabel, nextOptionIndex } from './core.js';
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
 import { emptyHTML, noConfigurationsHTML, projectConfigurations, readinessKey, newDraft, draftModel, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
 import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions, defaultTab, nextTab } from './views/instance.js';
@@ -375,24 +375,6 @@ async function deleteProject(id) {
   poll();
 }
 
-async function deleteConfiguration(id) {
-  const agent = (state.data.configurations || []).find(a => a.id === id);
-  if (!agent) return;
-  const name = agent.name || id;
-  const gathered = agent.created_at ? since(agent.created_at) : 'at an unrecorded time';
-  if (!await confirmDialog({ title: `Delete ${name}?`, body: `Controls gathered ${gathered}. ASHAD forgets this project configuration and its game controls file. Instances that used it stay in history but are blocked until you get game controls again for this project and start them with the new configuration. This cannot be undone.`, confirm: 'Delete configuration', danger: true })) return;
-  try {
-    await api(`/api/configurations/${enc(id)}`, { method: 'DELETE' });
-    state.data.configurations = state.data.configurations.filter(a => a.id !== id);
-    for (const ov of state.overviews.values()) ov.refreshes.delete(id);
-    // A setup that finished while its page was closed still shows this configuration; it starts over at step 4.
-    for (const s of state.setups.values()) if (s.agent?.id === id) Object.assign(s, { agent: null, controls: newOp() });
-    toast(`${name} deleted.`, 'ok');
-  } catch (error) { toast(error.message, 'error'); }
-  render();
-  poll();
-}
-
 async function prepare(owner, projectId, build) {
   if (!build || owner.prepare.status === 'busy') return;
   if (!await confirmDialog({ title: 'Prepare desktop?', body: prepareDialogText(build), confirm: 'Prepare desktop' })) return;
@@ -757,7 +739,6 @@ function onOverviewAction(action, target) {
   if (action === 'ov-add-build') addBuild(ov, ov.projectId, target.dataset.kind);
   else if (action === 'ov-delete-build') deleteBuild(target.dataset.id);
   else if (action === 'ov-delete-project') deleteProject(ov.projectId);
-  else if (action === 'ov-delete-configuration') deleteConfiguration(target.dataset.id);
   else if (action === 'ov-recheck') { ov.readiness = null; renderView(); }
   else if (action === 'ov-prepare') prepare(ov, ov.projectId, (state.data.builds || []).find(b => b.id === ov.buildId));
   else if (action === 'ov-refresh') refreshControls(ov, agent);
@@ -1129,10 +1110,6 @@ async function onRoute() {
   state.isCurrent = epoch.next();  // Any response started for the previous route is now stale.
   if (composerProject(route, state.data)) state.readiness = null;  // Readiness probes on view open, never on the poll.
   if (route.name === 'composer' && route.query.configuration) draftFor(route.id).configurationId = route.query.configuration;
-  if (route.name === 'composer' && route.query.from) {  // "Start again" from a blocked instance prefills its goal and model.
-    const run = (state.data?.runs || []).find(r => r.id === route.query.from);
-    if (run) { const d = draftFor(route.id); d.goal ||= run.plan?.primary_goal || ''; d.model = run.plan?.model || d.model; }
-  }
   if (route.name === 'instance' && state.thread.runId !== route.id) {
     state.thread = { runId: route.id, player: null, instructionOpen: false, instructionText: '', statusKey: null, tl: createTimeline(), worldView: 'latest', lastObs: null, tab: null, scroll: {} };
     state.runSlot.set(null);  // Also drops a late GET for the previous thread.

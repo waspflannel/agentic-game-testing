@@ -346,7 +346,7 @@ def test_deletes_are_refused_while_another_operation_runs(tmp_path):
     store.put("runs", released_run("r1", project_id="p1"))
     with TestClient(app) as client:
         app.state.controls_task = SimpleNamespace(done=lambda: False)
-        for url in ("/api/runs/r1", "/api/projects/p1", "/api/configurations/a1"):
+        for url in ("/api/runs/r1", "/api/projects/p1"):
             busy = client.delete(url, headers=HEADERS)
             assert busy.status_code == 422 and "Wait for the current operation" in busy.json()["detail"]
         app.state.controls_task = None
@@ -450,59 +450,19 @@ def seed_configurations(store):
     store.put("tuning_notes", {"id": "n1", "build_id": "b1"})
 
 
-def test_deleting_a_configuration_removes_its_file_and_blocks_its_instances(tmp_path):
+def test_configuration_cannot_be_deleted_through_the_api(tmp_path):
     app = offline_app(tmp_path)
     store = app.state.store
     seed_configurations(store)
     file = controls_file(store, "a1")
     file.parent.mkdir(parents=True, exist_ok=True)
     file.write_text("{}")
-    snapshot = {"controls": "snapshot"}
-    store.put("runs", released_run("r1", project_id="p1", configuration_id="a1", configuration={"id": "a1"}, game_controls=snapshot))
     with TestClient(app) as client:
         response = client.delete("/api/configurations/a1", headers=HEADERS)
-        assert response.status_code == 200
-        assert response.json() == {"deleted": "a1", "instances_blocked": 1, "files_removed": True}
-        assert not file.exists()
-        assert store.get("configurations", "a1") is None
-        assert store.command("tuning", "t1") is None
-        assert store.get("configurations", "a2") is not None
-        assert store.command("tuning", "t2") is not None
-        assert store.get("tuning_notes", "n1") is not None
-        run = store.get("runs", "r1")
-        assert run["game_controls"] == snapshot and run["configuration_id"] == "a1"
-
-
-@pytest.mark.parametrize("case", [{"state": "Running", "configuration_id": "a1"}, {"state": "Queued", "plan": {"configuration_id": "a1"}}])
-def test_configuration_used_by_a_live_or_queued_instance_cannot_be_deleted(tmp_path, case):
-    app = offline_app(tmp_path)
-    store = app.state.store
-    seed_configurations(store)
-    store.put("runs", released_run("r1", project_id="p1", **case))
-    with TestClient(app) as client:
-        response = client.delete("/api/configurations/a1", headers=HEADERS)
-        assert response.status_code == 422
-        assert "Stop the instance using this project configuration" in response.json()["detail"]
-        assert store.get("configurations", "a1") is not None and store.command("tuning", "t1") is not None
-
-
-def test_configuration_whose_instance_is_still_finishing_cannot_be_deleted(tmp_path):
-    app = offline_app(tmp_path)
-    store = app.state.store
-    seed_configurations(store)
-    store.put("runs", released_run("r1", project_id="p1", configuration_id="a1"))
-    with TestClient(app) as client:
-        app.state.coordinator.finishing["r1"] = SimpleNamespace(done=lambda: False)
-        response = client.delete("/api/configurations/a1", headers=HEADERS)
-        assert response.status_code == 422 and "still saving" in response.json()["detail"]
+        assert response.status_code in {404, 405}
+        assert file.exists()
         assert store.get("configurations", "a1") is not None
-
-
-def test_deleting_an_unknown_configuration_is_422(tmp_path):
-    app = offline_app(tmp_path)
-    with TestClient(app) as client:
-        response = client.delete("/api/configurations/missing", headers=HEADERS)
-        assert response.status_code == 422 and "Unknown configurations" in response.json()["detail"]
+        assert store.command("tuning", "t1") is not None
 
 
 def test_build_only_readiness_is_ready_when_either_provider_is(tmp_path):

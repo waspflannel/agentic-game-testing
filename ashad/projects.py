@@ -83,13 +83,6 @@ class Projects:
         db.execute("DELETE FROM commands WHERE scope='project' AND json_extract(result,'$.project_id')=?", (project_id,))
         db.execute("DELETE FROM records WHERE kind='projects' AND id=?", (project_id,))
 
-    def delete_configuration(self, configuration_id):
-        """Remove one project configuration and its request rows; the caller holds the transaction. Tuning notes are a per-build cache and stay."""
-        self.store.require("configurations", configuration_id)
-        db = self.store.db
-        db.execute("DELETE FROM commands WHERE scope='tuning' AND json_extract(result,'$.configuration_id')=?", (configuration_id,))
-        db.execute("DELETE FROM records WHERE kind='configurations' AND id=?", (configuration_id,))
-
     def project_for_build(self, build_id, project_id=None, *, allow_unassigned=False):
         build = self.store.require("builds", build_id)
         assigned = build.get("project_id")

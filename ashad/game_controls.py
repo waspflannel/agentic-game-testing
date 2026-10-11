@@ -24,7 +24,6 @@ CONTROLS_KEYS = frozenset({"format", "version", "configuration_id", "project_id"
 CLAUDE_REQUIRED = "Getting game controls uses Claude Sonnet. Connect Claude in Settings › Account; instances can still use Codex."
 MODEL_NOT_ALLOWED = "Get game controls always uses Claude Sonnet; choose the testing model when you start an instance."
 BUSY = "Game controls are already being gathered. Wait for them to finish."
-CONFIGURATION_DELETED = "This instance's project configuration was deleted. Get game controls again for this project, then start the instance with the new configuration."
 CONFIGURATION_RETIRED = "This project configuration is retired. Get game controls again for this project, then start the instance with the new configuration."
 SIGN_IN_WAIT = "Wait for Get game controls to finish before changing AI sign-in."
 RETIRED_REASON = "Saved before game controls existed, and its saved instructions are invalid."
@@ -233,7 +232,7 @@ class GameControls:
     def validated(self, configuration_id):
         record = self.store.get("configurations", configuration_id)
         if record is None:
-            raise ValueError(CONFIGURATION_DELETED)
+            raise ValueError("Unknown project configuration.")
         if record.get("status") != "ready":
             raise ValueError(CONFIGURATION_RETIRED)
         if record.get("controls_version") != CONTROLS_VERSION:

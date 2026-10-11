@@ -466,7 +466,7 @@ async def test_legacy_start_request_replays_after_migration(environment, profile
 
 
 @pytest.mark.asyncio
-async def test_legacy_run_after_migration_counts_blocked_and_keeps_context(environment, profile):
+async def test_legacy_run_after_migration_keeps_context(environment, profile):
     store, coord, _, _ = environment
     run = await Instances(coord).start(InstanceRequest(configuration_id=profile["id"], primary_goal="Old run", request_id="legacy-run"))
     await coord.finish(run["id"], "user_stopped")
@@ -479,8 +479,7 @@ async def test_legacy_run_after_migration_counts_blocked_and_keeps_context(envir
         context = coord.structured.decision_context(run, run["plan"]["players"][0], {"state": {}, "entities": []})
         assert context["game_controls"] == "frozen legacy controls" and context["configuration_id"] == profile["id"]
         with TestClient(app) as client:
-            response = client.delete(f"/api/configurations/{profile['id']}", headers={"X-ASHAD-Request": "1"})
-            assert response.status_code == 200 and response.json()["instances_blocked"] == 1
+            assert client.get("/api/bootstrap").status_code == 200
             assert app.state.store.get("runs", run["id"])["agent_id"] == profile["id"]
     finally:
         app.state.store.close()

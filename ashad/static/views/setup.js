@@ -212,7 +212,7 @@ function mainHTML(data, s, m, now) {
         const a = s.agent;
         return `<dl class="kv"><dt>Configuration</dt><dd>${esc(a.name || a.id)}</dd><dt>Build</dt><dd>${esc(m.build?.name || a.build_id)}</dd><dt>Gathered by</dt><dd>Claude Sonnet</dd>`
           + `<dt>Gathered</dt><dd>${a.created_at ? esc(new Date(a.created_at * 1000).toLocaleString()) : 'Not recorded'}</dd></dl>`
-          + `<button type="button" class="btn btn-secondary btn-sm" data-action="ov-controls" data-id="${esc(a.id)}" data-key="s4-view">View controls</button>`;
+          + `<div class="btn-row"><button type="button" class="btn btn-secondary btn-sm" data-action="ov-controls" data-id="${esc(a.id)}" data-key="s4-view">View controls</button></div>`;
       }
       const op = s.controls;
       const about = `<p class="hint">ASHAD reads the build source with up to 4 Claude Sonnet workers and writes the game controls file every instance loads, whichever model it uses.</p>`;

@@ -379,6 +379,44 @@ class StructuredPlayers:
         except Exception:
             LOG.exception("Could not report %s crash for %s/%s", kind, run_id, player_id)
 
+    async def report_bug(self, run_id, player_id, report, observation):
+        """Record a suspected game bug the agent reported; never raises."""
+        try:
+            run, ps = self.binding(run_id, player_id)
+
+            def reject(reason):
+                self.store.event(run_id, "game_bug_report_rejected", {"player_id": player_id, "reason": reason})
+            if report.get("follow_up_error"):
+                return reject("follow_up_failed")
+            if report.get("symptom") == "not_a_bug":
+                return reject("not_a_bug")
+            action_id = report.get("related_action_id")
+            recent = self.store.events(run_id, after=max(0, self.store.count_events(run_id) - 120), limit=120)
+            intent = next((e for e in recent if e["kind"] == "structured_action_intent" and e["payload"].get("action_id") == action_id), None)
+            result_event = next((e for e in reversed(recent) if e["kind"] == "action_result" and e["payload"].get("action_id") == action_id), None)
+            completed = (result_event and (result_event["payload"].get("result") or {}).get("status") == "completed") or any(
+                e["kind"] == "structured_action_outcome" and (e["payload"].get("result") or {}).get("action_id") == action_id
+                and e["payload"]["result"].get("status") == "completed" for e in recent)
+            related = None
+            if action_id and intent:
+                given = intent["payload"]["input"]
+                related = {"action_id": action_id, "verb": given.get("verb"), "target_id": given.get("target_id"),
+                    "parameters": given.get("parameters"),
+                    "status": "completed" if completed else result_event and (result_event["payload"].get("result") or {}).get("status"),
+                    "intent_event_id": intent["id"], "result_event_id": result_event["id"] if result_event else None}
+            if report["symptom"] == "wrong_result" and not (related and related["status"] == "completed"):
+                return reject("no_completed_action")
+            target = observed_entity(observation, report.get("target_id"))
+            basis = {"symptom": report["symptom"], "expected": report["expected"], "observed": report["observed"],
+                "action_verb": related["verb"] if related else None, "target_kind": target.get("kind") or "none",
+                "target_label": repair_tasks.target_label(target.get("label"))}
+            sections = {"report": {"symptom": report["symptom"], "expected": report["expected"], "observed": report["observed"],
+                "target_id": report.get("target_id"), "target_kind": target.get("kind"), "target_label": target.get("label"),
+                "target_state": target.get("state"), "related_action": related}}
+            await self._record(run, ps, player_id, "game_bug", basis, "agent_signal", observation, sections)
+        except Exception:
+            LOG.exception("Could not report game bug for %s/%s", run_id, player_id)
+
     def forget_run(self, run_id):
         for counters in (self.loop_counts, self.bug_reports):
             for key in [k for k in counters if k[0] == run_id]:
@@ -567,6 +605,7 @@ class StructuredPlayers:
             run, ps = self.binding(run_id, player_id)
             player = next(p for p in run["plan"]["players"] if p["id"] == player_id)
             context = self.decision_context(run, player, observation)
+            context["bug_already_reported"] = self.bug_reports.get(key) == signature
             self.store.event(run_id, "structured_decision_context", {"player_id": player_id, "context": context,
                 "full_observation": observation, "source_revision": run["build"].get("source_revision")})
             self.last_decisions[key] = (signature, time.time(), generation)
@@ -596,6 +635,9 @@ class StructuredPlayers:
                 if phase in {"thinking", "tool"}:
                     self.status(run_id, player_id, "ready", "Decision finished; checking the next observation.", generation, completed_at=time.time())
                 await self._loop_backstop(run_id, player_id, generation, signature, observation, result)
+                if isinstance(result, dict) and result.get("status") == "bug_reported":
+                    self.bug_reports[key] = signature
+                    await self.report_bug(run_id, player_id, result.get("report") or {}, observation)
         except ProviderError as exc:
             if current():
                 if exc.status == "decision_needs_instructions":

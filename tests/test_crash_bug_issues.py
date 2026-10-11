@@ -8,11 +8,15 @@ import httpx
 import pytest
 
 from ashad import repair_tasks
+from ashad.ai import OpenAI, action_groups
 from ashad.coordinator import crash_of
-from ashad.repair_tasks import _size, issue_directory, issue_title, shrink_example
+from ashad.models import Plan
+from ashad.repair_tasks import _size, issue_directory, issue_title, record_issue, shrink_example, target_label
+from ashad.store import Store
 from ashad.worker_client import WorkerError
-from test_acceptance_edges import ready_run
+from test_acceptance_edges import game_context_worker, ready_run
 from test_controller import environment  # noqa: F401
+from test_decisions import Backend, answers, context
 from test_unsupported_actions import example
 
 
@@ -246,3 +250,97 @@ def test_crash_of_classifies_monitor_failures():
     assert crash_of(failure(ValueError, "reading worker status", "x"), {"infrastructure_error": "capture_unhealthy"}) == \
         ("desktop_lost", "capture_unhealthy")
     assert crash_of(failure(ValueError, "reading game telemetry", "x"), {"game_running": True}) is None
+
+
+REPORT = {"symptom": "wrong_result", "expected": "state_change", "observed": "no_change",
+          "related_action_id": "game_1", "target_id": "chest-3"}
+
+
+async def bug_turn(environment, monkeypatch, report, setup=prior_action):
+    store, coord, _, desktops = environment
+    run = await ready_run(environment)
+    observation = game_context_worker(monkeypatch, desktops["worker-1"], run)
+    observation["entities"] = [{"id": "chest-3", "version": 1, "kind": "chest", "label": "Chest 3", "actions": ["interact"], "state": {"open": False}}]
+    setup(store, run)
+    coord.ai.player_turn = AsyncMock(return_value={"status": "bug_reported", "action": {"tool": "report_game_bug", "args": {}}, "report": report})
+    await coord.player_turn(run["id"], "player-1")
+    return store, coord, run
+
+
+@pytest.mark.asyncio
+async def test_bug_choice_asks_one_structured_follow_up(tmp_path):
+    def respond(payload):
+        if [q["name"] for q in payload["questions"]] == ["target"]:
+            return answers(payload, {"target": payload["questions"][0]["choices"][-2]["value"]})
+        return answers(payload)
+    backend, dispatch = Backend(respond), AsyncMock()
+    store = Store(tmp_path)
+    store.put("runs", {"id": "run-1", "plan": Plan().model_dump()})
+    result = await OpenAI(store, backend=backend).player_turn(context(), dispatch, lambda: True, "run-1")
+    store.close()
+    assert result["status"] == "bug_reported"
+    assert set(result["report"]) == {"symptom", "expected", "observed", "related_action_id", "target_id"}
+    assert len(backend.calls) == 2
+    assert [q["name"] for q in backend.calls[1]["questions"]] == ["symptom", "expected", "observed", "related_action", "target"]
+    dispatch.assert_not_awaited()
+
+
+def test_bug_group_offered_before_needs_instructions_and_hidden_after_report():
+    groups = action_groups(context())
+    assert groups[-1]["actions"][0]["tool"] == "needs_instructions"
+    assert groups[-2]["actions"][0]["tool"] == "report_game_bug"
+    hidden = action_groups({**context(), "bug_already_reported": True})
+    assert not any(a["tool"] == "report_game_bug" for g in hidden for a in g["actions"])
+
+
+@pytest.mark.asyncio
+async def test_wrong_result_after_completed_action_writes_bug_issue(environment, monkeypatch):
+    store, coord, run = await bug_turn(environment, monkeypatch, REPORT)
+    [issue] = issue_files(store)
+    assert issue["type"] == "game_bug"
+    assert issue["signature_basis"]["action_verb"] == "interact"
+    assert issue["signature_basis"]["target_kind"] == "chest"
+    assert issue["signature_basis"]["target_label"] == "chest #"
+    [ex] = issue["examples"]
+    assert ex["report"]["related_action"]["status"] == "completed"
+    assert ex["report"]["target_state"] == {"open": False}
+    assert ex["recent_decisions"] and ex["screenshot"]["status"] == "pinned"
+    assert store.require("runs", run["id"])["state"] == "Running"
+    [recorded] = [e for e in store.events(run["id"], limit=500) if e["kind"] == "game_bug_recorded"]
+    assert recorded["payload"]["outcome"] == "kept"
+    assert coord.structured.bug_reports[(run["id"], "player-1")]
+
+
+def rejected_action(store, run):
+    store.event(run["id"], "structured_action_intent", {"player_id": "player-1", "action_id": "game_2", "reason": "open",
+        "input": {"verb": "interact", "target_id": "chest-3", "parameters": {}}})
+    store.event(run["id"], "action_result", {"player_id": "player-1", "action_id": "game_2", "result": {"status": "rejected"}})
+
+
+@pytest.mark.parametrize("related", [None, "game_2"])
+@pytest.mark.asyncio
+async def test_wrong_result_without_completed_action_is_rejected(environment, monkeypatch, related):
+    store, _, run = await bug_turn(environment, monkeypatch, {**REPORT, "related_action_id": related}, rejected_action)
+    assert issue_files(store) == []
+    [event] = [e for e in store.events(run["id"], limit=500) if e["kind"] == "game_bug_report_rejected"]
+    assert event["payload"]["reason"] == "no_completed_action"
+
+
+@pytest.mark.parametrize("report, reason", [({**REPORT, "symptom": "not_a_bug"}, "not_a_bug"),
+                                            ({"follow_up_error": "invalid_decision"}, "follow_up_failed")])
+@pytest.mark.asyncio
+async def test_not_a_bug_and_follow_up_failure_write_no_issue(environment, monkeypatch, report, reason):
+    store, _, run = await bug_turn(environment, monkeypatch, report)
+    assert issue_files(store) == []
+    [event] = [e for e in store.events(run["id"], limit=500) if e["kind"] == "game_bug_report_rejected"]
+    assert event["payload"]["reason"] == reason
+    assert store.require("runs", run["id"])["state"] == "Running"
+
+
+def test_bug_signature_groups_across_runs_and_digit_labels(tmp_path):
+    store = Store(tmp_path / "data")
+    record_issue(store, "game_bug", bug_basis(target_label=target_label("Chest 3")), example(run_id="run-1"))
+    record_issue(store, "game_bug", bug_basis(target_label=target_label("chest 7")), example(run_id="run-2", example_id="bug_2"))
+    repair_tasks.publish_pending(store)
+    [issue] = issue_files(store)
+    assert issue["occurrences"] == 2 and issue["runs"] == ["run-1", "run-2"]

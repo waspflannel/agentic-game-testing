@@ -1071,6 +1071,7 @@ async def test_stale_runtime_after_restart_needs_you(environment, monkeypatch, t
         assert (loop["phase"], loop["needs_you"]["reason"], loop["needs_you"]["offers"]) == ("needs_you", "restart_needed", ["cancel"])
         assert len(world.store.list("runs")) == runs and loop["verify"] is None and world.fx.restart_for_fix() is None
         assert world.store.require("runs", world.env.rid)["state"] == "Fixing"
+        assert "npm --prefix desktop run prepare:runtime" in loop["needs_you"]["message"]
 
 
 def in_order(world, *prefixes, start=0):
@@ -1124,6 +1125,41 @@ async def test_verify_fail_reverts_and_retries_in_auto(environment, monkeypatch,
         assert ("open", first["id"]) in history and history[-1][0] == "fixing" and issue["status"] == "fixing"  # attempt 2 took it again
         assert len(loop["attempts"]) == 2 and loop["attempts"][1]["n"] == 2 and loop["needs_you"]["reason"] == "usage_limit"
         assert loop["attempts"][0]["revert"]["applied_at"] and [e["payload"]["reason"] for e in events(world.env, "fix_reverted", vid)] == ["verify_failed"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("found", [{"isCrossRepository": True}, {"baseRefName": "dev"}, {"state": "CLOSED"}])
+async def test_revert_pr_lookup_refuses_a_fork_wrong_base_or_closed_pr(found, environment, monkeypatch, tmp_path, profile):
+    """Only a same-repo open PR into main on the revert branch is gated and merged; a fork's PR with that head name never is."""
+    async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
+        vid = await world.verifying()
+
+        async def listing(call):
+            if not flag_value(call.argv, "--head").startswith("revert/"):
+                return await world.cycle.on_list(call)
+            pr = {"number": 9, "url": PR_URL.format(9), "state": "OPEN", "headRefOid": "f" * 40, "baseRefName": "main",
+                  "isCrossRepository": False, **found}
+            return 0, json.dumps([pr])
+        world.shell.script.insert(0, (("gh", "pr", "list"), listing))
+        world.direct_hit(run_id=vid, basis_=world.issue()["signature_basis"])
+        await world.settle()
+        loop = world.loop()
+        assert (loop["phase"], loop["needs_you"]["reason"]) == ("needs_you", "revert_failed")
+        assert loop["attempts"][0]["revert"]["pr"] is None
+        assert [argv[3] for argv in world.calls("gh", "pr", "merge")] == ["7"]
+        assert world.calls("git", "fetch", "origin", "pull/9/head") == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_after_an_unrecorded_merge_notes_the_merged_pr(environment, monkeypatch, tmp_path, profile):
+    async with fix_world(environment, monkeypatch, tmp_path, profile) as world:
+        hold = await hold_until_started(world, ("gh", "pr", "merge"))
+        await world.until(lambda l: l["phase"] == "merging")
+        world.cycle.user_merges(world.cycle.pr)  # GitHub merged it; ASHAD is cancelled before it reads the merge back
+        await asyncio.wait_for(world.fx.command(world.loop_id, "cancel", "c1"), 20)
+        loop = world.loop()
+        assert loop["phase"] == "ended" and hold.cancelled and world.calls("gh", "pr", "close") == []
+        assert loop["cancel_notes"] == ["PR #7 was already merged. Revert it on GitHub if you do not want it on main."]
 
 
 @pytest.mark.asyncio

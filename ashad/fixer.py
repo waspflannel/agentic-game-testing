@@ -78,6 +78,7 @@ NEEDS_YOU = {
     "teardown_unconfirmed": "The game did not confirm that it stopped. Cancel the fix, then reconcile the instance.",
     "checkout_dirty": "Commit or stash your changes and check out main in {checkout}, then click Apply fix.",
     "restart_needed": "Update the checkout and restart ASHAD to load the fix: git pull --ff-only origin main, npm --prefix desktop run build:linux, then start ./desktop/output/linux-unpacked/ashad. Cancel the loop to stop waiting.",
+    "runtime_stale": "Restart ASHAD from the checkout to load the fix: npm --prefix desktop run prepare:runtime, then npm --prefix desktop start. Cancel the loop to stop waiting.",
     "verify_failed": "The issue came back after the fix. Revert it, run the fixer again, or cancel.",
     "verify_inconclusive": "The check run ended before the fix could be judged. Revert the fix or cancel.",
     "verify_launch_failed": "The check run could not start: {error}",
@@ -203,6 +204,11 @@ async def run_command(argv, *, cwd, env, timeout, log_path=None):
 
 
 DEFAULT_RUNNER = run_command
+
+
+def targets_main(pr):
+    """A PR from a branch of FIX_REPO itself into main; a fork's PR with the same head name is never ours."""
+    return pr.get("baseRefName") == BASE_BRANCH and not pr.get("isCrossRepository")
 
 
 def jr_branch(attempt_id):
@@ -627,7 +633,7 @@ class Fixer:
         if not pr or pr.get("state") != "OPEN":
             return await self._fail_attempt(loop_id, "no_pr")
         self._update_unit(loop_id, "fix", pr={"number": pr["number"], "url": pr["url"], "head_sha": pr["headRefOid"]})
-        if pr.get("baseRefName") != BASE_BRANCH or pr.get("isCrossRepository"):
+        if not targets_main(pr):
             return await self._fail_attempt(loop_id, "wrong_base")  # the recorded PR is closed
         self._update(loop_id, phase="gating")
         await self._gate(loop_id, "fix")
@@ -897,7 +903,7 @@ class Fixer:
         await self._run(["gh", "pr", "create", "--repo", FIX_REPO, "--base", BASE_BRANCH, "--head", revert["branch"],
                          "--title", title, "--body", body], cwd=self.checkout_root)
         pr = await self._find_pr(revert["branch"])
-        if not pr:
+        if not (pr and pr.get("state") == "OPEN" and targets_main(pr)):
             return self._needs_you(loop_id, "revert_failed", sha=attempt["merge_sha"])
         self._update_unit(loop_id, "revert", pr={"number": pr["number"], "url": pr["url"], "head_sha": pr["headRefOid"]})
         await self._gate(loop_id, "revert")
@@ -1001,6 +1007,8 @@ class Fixer:
                 state = (await self._pr_state(number))[0]
                 if state is None:
                     raise RuntimeError("PR state unreadable")
+                if state == "MERGED":  # e.g. cancelled after `gh pr merge` returned but before ASHAD recorded it
+                    notes.append(f"PR #{number} was already merged. Revert it on GitHub if you do not want it on main.")
                 if state == "OPEN" and (await self._run(["gh", "pr", "close", str(number), "--repo", FIX_REPO, "--comment", "Cancelled in ASHAD."],
                                                         cwd=self.checkout_root))[0] != 0:
                     raise RuntimeError("PR close failed")
@@ -1145,7 +1153,7 @@ class Fixer:
         if not (attempt and attempt["issue_id"] == loop["issue"]["issue_id"] and attempt["result"] in (None, "interrupted")):
             return await self._after_stop(loop_id)
         pr = await self._find_pr(attempt["branch"])
-        if not (pr and pr.get("state") == "OPEN" and pr.get("baseRefName") == BASE_BRANCH and not pr.get("isCrossRepository")):
+        if not (pr and pr.get("state") == "OPEN" and targets_main(pr)):
             return await self._fail_attempt(loop_id, "interrupted")
         self._resume_attempt(loop_id)
         self._update_unit(loop_id, "fix", pr={"number": pr["number"], "url": pr["url"], "head_sha": pr["headRefOid"]})
@@ -1191,5 +1199,5 @@ class Fixer:
         sha, checkout = self._unit(loop, kind)["merge_sha"], str(self.checkout_root)
         ancestor, _ = await self._run(["git", "-C", checkout, "merge-base", "--is-ancestor", sha, "HEAD"], cwd=checkout)
         if ancestor != 0 or not self._runtime_current(attempt["changed_paths"]):
-            return self._needs_you(loop["id"], "restart_needed")
+            return self._needs_you(loop["id"], "restart_needed", message=NEEDS_YOU["runtime_stale"])
         await (self._verify(loop["id"]) if kind == "fix" else self._after_revert(loop["id"]))

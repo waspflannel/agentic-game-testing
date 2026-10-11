@@ -249,41 +249,6 @@ export const PHASE_TEXT = {
   ended: 'Ended',
 };
 
-export const NEEDS_YOU_TEXT = {
-  dispatch: 'An unsupported action stopped the game. Run the fixer to open a PR for it, or cancel.',
-  review_pr: 'Review the PR, merge it on GitHub with a merge commit, then click Apply fix.',
-  review_revert: 'Review the revert PR, merge it on GitHub with a merge commit, then click Apply fix.',
-  attempt_failed: 'The fixer attempt failed. Run the fixer again, or cancel.',
-  issue_attempts: 'This issue has used all its fixer attempts. Run the fixer once more, or cancel.',
-  loop_attempts: 'This loop reached its limit of fixer attempts. Cancel the fix to end it.',
-  loop_fixes: 'This loop reached its limit of merged fixes. Cancel the fix to end it.',
-  repeat_failures: 'Three attempts in a row failed. Cancel the fix, then look at the issue yourself.',
-  budget: 'The fixer used its minutes for today. Raise the limit in Settings, run the fixer anyway, or cancel.',
-  usage_limit: 'Your Claude plan reached its usage limit. Run the fixer again when it resets, or cancel.',
-  fixer_unavailable: 'The fixer could not start. Check that jr, gh and Claude Code are set up, then run the fixer again, or cancel.',
-  needs_worker_change: 'This issue needs a change outside the agent layer, which the fixer may not make. Cancel the fix and change it yourself.',
-  no_save: 'There is no save from before this failure to check the fix against. Cancel the fix.',
-  teardown_unconfirmed: 'The game did not confirm it stopped. Cancel the fix, then reconcile the instance.',
-  checkout_dirty: 'The ASHAD checkout has local changes, so the merged fix cannot be pulled. Clean the checkout, then click Apply fix.',
-  restart_needed: 'Restart ASHAD from the checkout to load the fix: npm --prefix desktop run prepare:runtime, then npm --prefix desktop start.',
-  verify_failed: 'The issue came back after the fix. Revert it, run the fixer again, or cancel.',
-  verify_inconclusive: 'The check ended before it could tell whether the fix works. Revert the fix, or cancel.',
-  verify_launch_failed: 'The check could not start from the saved game. Cancel the fix.',
-  regression: 'The fix caused a new problem. Revert it, or cancel.',
-  reverted: 'The fix was reverted. Run the fixer again, or cancel.',
-  revert_failed: 'The revert did not complete. Revert the merge commit on GitHub yourself, then cancel the fix.',
-  merged_untested: 'The fix was merged but ASHAD could not test it. Revert it, or cancel.',
-};
-
-// A regression offers Revert only before its revert is applied; after it, Run fixer; one from another loop offers only Cancel
-// and the server message names the merge to revert by hand.
-function needsYouText(needs) {
-  if (needs.reason === 'regression' && !(needs.offers || []).includes('revert')) {
-    return (needs.offers || []).includes('dispatch') ? 'The fix was reverted because it caused a new problem. Run the fixer again, or cancel.' : needs.message;
-  }
-  return NEEDS_YOU_TEXT[needs.reason] || needs.message;
-}
-
 export const loopHead = loop => (loop ? `Improvement loop · ${loop.mode === 'auto' ? 'Auto' : 'Manual'}` : 'Improvement loop');
 
 const LOOP_BUTTONS = {
@@ -312,11 +277,12 @@ export function loopHTML(loop, { pending = new Set() } = {}) {
     a && Number.isFinite(a.minutes) && `${a.minutes} min`,
     Number.isFinite(loop.minutes_today) && `${loop.minutes_today} of ${loop.daily_minutes} fixer minutes today`].filter(Boolean);
   const needs = loop.phase === 'needs_you' && loop.needs_you;
-  const note = needs ? `<p class="loop-needs">${icon('alert')}<span>Needs you: ${esc(needsYouText(needs))}</span></p>` : '';
+  const note = needs ? `<p class="loop-needs">${icon('alert')}<span>Needs you: ${esc(needs.message)}</span></p>` : '';
+  const notes = loop.phase === 'ended' ? (loop.cancel_notes || []).map(n => `<p class="loop-needs">${icon('alert')}<span>${esc(n)}</span></p>`).join('') : '';
   const offers = needs ? (needs.offers || []).filter(name => name !== 'cancel' && LOOP_BUTTONS[name]) : [];
   const buttons = loop.phase === 'ended' ? ''
     : `<div class="loop-actions">${offers.map(name => loopButton(name, pending)).join('')}${loopButton('cancel', pending).replace('class="btn', 'class="loop-cancel btn')}</div>`;
-  return `<p class="loop-phase">${phase}</p>${issue}${meta.length ? `<p class="loop-meta">${meta.join(' · ')}</p>` : ''}${note}${buttons}${progressHTML(loop.progress || [])}`;
+  return `<p class="loop-phase">${phase}</p>${issue}${meta.length ? `<p class="loop-meta">${meta.join(' · ')}</p>` : ''}${note}${notes}${buttons}${progressHTML(loop.progress || [])}`;
 }
 
 const CHANGE_TEXT = { more: 'More', same: 'Same', less: 'Less' };

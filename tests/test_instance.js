@@ -410,8 +410,8 @@ test('loopHTML phase, attempt, PR link and escaping', async () => {
 });
 
 test('loopHTML needs-you sentence and offered buttons', async () => {
-  const { loopHTML, NEEDS_YOU_TEXT } = await load();
-  const html = loopHTML(loop({ phase: 'needs_you', needs_you: { reason: 'verify_failed', message: 'x', offers: ['revert', 'dispatch', 'cancel'] } }));
+  const { loopHTML } = await load();
+  const html = loopHTML(loop({ phase: 'needs_you', needs_you: { reason: 'verify_failed', message: 'The issue came back after the fix. Revert it, run the fixer again, or cancel.', offers: ['revert', 'dispatch', 'cancel'] } }));
   assert.match(html, /The issue came back after the fix\. Revert it, run the fixer again, or cancel\./);
   assert.match(html, /class="loop-needs"><svg[^>]*><use href="#i-alert"/);
   assert.match(html, /Needs you:/);
@@ -420,24 +420,28 @@ test('loopHTML needs-you sentence and offered buttons', async () => {
   assert.match(html, /class="btn btn-primary" data-action="loop-command" data-command="dispatch"/);
   assert.match(html, /class="loop-cancel btn btn-danger" data-action="loop-command" data-command="cancel"/);
   assert.match(html, /class="btn btn-secondary" data-action="loop-command" data-command="revert"/);
-  const busy = loopHTML(loop({ phase: 'needs_you', needs_you: { reason: 'dispatch', offers: ['dispatch', 'cancel'] } }), { pending: new Set(['loop:dispatch']) });
+  const busy = loopHTML(loop({ phase: 'needs_you', needs_you: { reason: 'dispatch', message: 'm', offers: ['dispatch', 'cancel'] } }), { pending: new Set(['loop:dispatch']) });
   assert.match(busy, /data-command="dispatch"[^>]*aria-busy="true" aria-disabled="true"/);
   assert.doesNotMatch(busy, /data-command="cancel"[^>]*aria-busy/);
-  assert.match(loopHTML(loop({ phase: 'needs_you', needs_you: { reason: 'new_reason', message: 'Fallback <b>', offers: ['cancel'] } })), /Fallback &lt;b&gt;/);
-  const reasons = 'dispatch review_pr review_revert attempt_failed issue_attempts loop_attempts loop_fixes repeat_failures budget usage_limit fixer_unavailable needs_worker_change no_save teardown_unconfirmed checkout_dirty restart_needed verify_failed verify_inconclusive verify_launch_failed regression reverted revert_failed merged_untested'.split(' ');
-  for (const r of reasons) assert.ok(NEEDS_YOU_TEXT[r], r);
 });
 
-test('loopHTML regression sentence follows the offered commands', async () => {
+test('loopHTML shows the server sentence with its details, escaped', async () => {
   const { loopHTML } = await load();
-  const needs = offers => loopHTML(loop({ phase: 'needs_you', needs_you: { reason: 'regression', message: 'Revert merge abc1234 on GitHub <yourself>.', offers } }));
-  assert.match(needs(['revert', 'cancel']), /The fix caused a new problem\. Revert it, or cancel\./);
-  const reverted = needs(['dispatch', 'cancel']);
-  assert.match(reverted, /The fix was reverted because it caused a new problem\. Run the fixer again, or cancel\./);
-  assert.doesNotMatch(reverted, /data-command="revert"/);
-  const foreign = needs(['cancel']);
-  assert.match(foreign, /Revert merge abc1234 on GitHub &lt;yourself&gt;\./);
+  const needs = (reason, message, offers) => loopHTML(loop({ phase: 'needs_you', needs_you: { reason, message, offers } }));
+  assert.match(needs('revert_failed', 'The revert did not complete (merge abc1234). Revert it <on GitHub> yourself, then cancel.', ['cancel']),
+    /merge abc1234\)\. Revert it &lt;on GitHub&gt; yourself/);
+  assert.match(needs('review_pr', 'The PR is not merged yet. Merge it on GitHub with a merge commit, then click Apply fix.', ['apply', 'cancel']),
+    /The PR is not merged yet\./);
+  const foreign = needs('regression', 'Revert merge abc1234 on GitHub yourself, then cancel.', ['cancel']);
+  assert.match(foreign, /Revert merge abc1234 on GitHub yourself/);
   assert.deepEqual([...foreign.matchAll(/data-command="(\w+)"/g)].map(m => m[1]), ['cancel']);
+});
+
+test('loopHTML ended shows cancel notes', async () => {
+  const { loopHTML } = await load();
+  const html = loopHTML(loop({ phase: 'ended', cancel_notes: ['PR #41 was already merged. <Revert> it on GitHub if you do not want it on main.'] }));
+  assert.match(html, /class="loop-needs"><svg[^>]*><use href="#i-alert"[^]*PR #41 was already merged\. &lt;Revert&gt; it/);
+  assert.doesNotMatch(loopHTML(loop({ phase: 'gating', cancel_notes: ['old'] })), /old/);
 });
 
 test('loopHTML ended has no buttons', async () => {

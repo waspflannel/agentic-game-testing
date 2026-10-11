@@ -11,7 +11,7 @@ const core = () => import(url('core.js'));
 const data = (extra = {}) => ({
   projects: [{ id: 'p', name: 'Agronauts' }],
   builds: [{ id: 'b', name: '0.3.1', project_id: 'p' }],
-  agents: [], model_options: [{ id: 'gpt-6-astra', label: 'GPT-6 Astra' }],
+  configurations: [], model_options: [{ id: 'gpt-6-astra', label: 'GPT-6 Astra' }],
   ai: { status: 'ready', model: 'gpt-6-astra' }, ai_claude: { status: 'ready' }, ...extra,
 });
 const readyProbe = { buildId: 'b', loading: false, at: 0, result: { provider: { ready: true }, build_validation: { ready: true }, environments: [{ id: 'w', ready: true }], slot: { available: true }, steam: { ready: false } } };
@@ -48,16 +48,16 @@ test('Get controls recovers a lost reply through tuning/<id> without a second PO
   const { newOp } = await core();
   let polls = 0;
   const f = fakeApi(u => {
-    if (u === '/api/agents/controls') throw new TypeError('Failed to fetch');
+    if (u === '/api/configurations/controls') throw new TypeError('Failed to fetch');
     polls += 1;
-    return polls < 3 ? { status: 'in_progress' } : { status: 'completed', agent: { id: 'agent-1' } };
+    return polls < 3 ? { status: 'in_progress' } : { status: 'completed', configuration: { id: 'agent-1' } };
   });
   const op = newOp();
   await getControls(op, { build_id: 'b', project_id: 'p', name: 'Scout' }, f.api, noWait);
   assert.equal(op.status, 'done');
   assert.deepEqual(op.value, { id: 'agent-1' });
   assert.equal(f.posts().length, 1);
-  assert.ok(f.calls.slice(1).every(c => c.url === `/api/agents/controls/${op.requestId}`));
+  assert.ok(f.calls.slice(1).every(c => c.url === `/api/configurations/controls/${op.requestId}`));
 });
 
 test('an unknown Get controls run after a lost reply says nothing was saved and retries the same ID', async () => {
@@ -65,7 +65,7 @@ test('an unknown Get controls run after a lost reply says nothing was saved and 
   const { newOp } = await core();
   let lose = true;
   const f = fakeApi(u => {
-    if (u === '/api/agents/controls') { if (lose) throw new TypeError('lost'); return { id: 'agent-2' }; }
+    if (u === '/api/configurations/controls') { if (lose) throw new TypeError('lost'); return { id: 'agent-2' }; }
     return { status: 'unknown' };
   });
   const op = newOp();

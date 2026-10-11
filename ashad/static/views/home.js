@@ -22,15 +22,15 @@ export function emptyHTML(data) {
 
 // ── Composer model ──────────────────────────────────────────────────────────
 // Saved, ready configurations whose build is registered in this project.
-export function projectAgents(data, projectId) {
+export function projectConfigurations(data, projectId) {
   const builds = new Map((data?.builds || []).map(b => [b.id, b]));
-  return (data?.agents || []).filter(a => builds.has(a.build_id)
+  return (data?.configurations || []).filter(a => builds.has(a.build_id)
     && (a.project_id || builds.get(a.build_id).project_id) === projectId
     && [undefined, 'ready', 'completed'].includes(a.status));  // Retired configurations are hidden.
 }
 
 export const readinessKey = (projectId, agent, model) => `${projectId}|${agent?.build_id}|${agent?.id}|${model}`;
-export const newDraft = () => ({ goal: '', agentId: '', model: '', transport: 'enet', requestId: null, sent: null, busy: false, result: null });
+export const newDraft = () => ({ goal: '', configurationId: '', model: '', transport: 'enet', requestId: null, sent: null, busy: false, result: null });
 
 export const draftModel = (data, draft) => ((data?.model_options || []).some(m => m.id === draft.model) ? draft.model : data?.default_model);
 
@@ -44,8 +44,8 @@ function desktopReason(r) {
 // readiness: { key, loading, result, error } from the probe run on view open. A record for another agent or build is ignored.
 export function composerModel(data, projectId, draft, readiness) {
   const project = (data?.projects || []).find(p => p.id === projectId);
-  const agents = projectAgents(data, projectId);
-  const agent = agents.find(a => a.id === draft.agentId) || agents[0];
+  const agents = projectConfigurations(data, projectId);
+  const agent = agents.find(a => a.id === draft.configurationId) || agents[0];
   const build = agent && (data.builds || []).find(b => b.id === agent.build_id);
   const model = agent && draftModel(data, draft);
   const check = agent && readiness?.key === readinessKey(projectId, agent, model) ? readiness : null;
@@ -99,7 +99,7 @@ export function composerSkeleton(projectId, draft) {
     + `<div id="composer-status" class="composer-status" data-region="status"></div></div>`;
 }
 
-export function noAgentsHTML(project) {
+export function noConfigurationsHTML(project) {
   return `<div class="center-col empty"><h1 class="hero">This project has no project configuration yet</h1>`
     + `<p class="lede">A project configuration pairs a build of <strong>${esc(project.name || project.id)}</strong> with the game controls gathered from it.</p>`
     + `<a class="btn btn-primary" href="#/setup?project=${enc(project.id)}" data-key="add-agent">Add project configuration</a></div>`;
@@ -115,7 +115,7 @@ export function composerRegions(m, draft) {
   const recheck = `<button type="button" class="icon-btn icon-btn-sm" data-action="composer-recheck" data-key="c-recheck" aria-label="Re-check readiness" title="Re-check readiness">${icon('refresh')}</button>`;
 
   const agentChip = `<label class="chip chip-select" title="${esc(m.agentOptions.find(o => o.id === m.agent.id)?.title || '')}">${icon('bot')}<span class="sr-only">Configuration</span>`
-    + `<select data-field="agent" data-key="c-agent" aria-label="Project configuration">${m.agentOptions.map(o => `<option value="${esc(o.id)}"${o.id === m.agent.id ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>`;
+    + `<select data-field="configuration" data-key="c-agent" aria-label="Project configuration">${m.agentOptions.map(o => `<option value="${esc(o.id)}"${o.id === m.agent.id ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>`;
   const modelChip = modelMenuHTML({ key: 'c-model', field: 'model', options: m.modelOptions, selected: m.model, defaultModel: m.defaultModel });
   const transportChip = `<label class="chip chip-select"${m.steam.enabled ? '' : ` title="${esc(m.steam.reason)}"`}>${icon('network')}<span class="sr-only">Transport</span>`
     + `<select data-field="transport" data-key="c-transport" aria-label="Transport" aria-describedby="composer-steam-note">`
@@ -164,8 +164,8 @@ function resultHTML(res) {
 // what happened to the earlier one, so an accepted start is never silently resubmitted with different inputs.
 // Returns { kind: 'accepted' | 'in-progress' | 'not-started' | 'conflict' | 'earlier-accepted' | 'error', ... }.
 export async function startInstance(draft, projectId, api) {
-  const payload = { agent_id: draft.agentId, project_id: projectId, primary_goal: draft.goal.trim(), transport: draft.transport, model: draft.model };
-  if (!payload.agent_id) return { kind: 'error', field: 'agent', message: 'Choose a project configuration.' };
+  const payload = { configuration_id: draft.configurationId, project_id: projectId, primary_goal: draft.goal.trim(), transport: draft.transport, model: draft.model };
+  if (!payload.configuration_id) return { kind: 'error', field: 'configuration', message: 'Choose a project configuration.' };
   if (!payload.primary_goal) return { kind: 'error', field: 'goal', message: 'Describe the goal before starting.' };
   const signature = JSON.stringify(payload);
   if (draft.sent && draft.sent !== signature) {

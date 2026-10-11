@@ -11,7 +11,7 @@ const core = () => import(url('core.js'));
 const data = (extra = {}) => ({
   projects: [{ id: 'p', name: 'Agronauts' }],
   builds: [{ id: 'b', name: '0.3.1', project_id: 'p' }],
-  agents: [{ id: 'a', name: 'Scout', build_id: 'b', project_id: 'p', status: 'ready' }],
+  configurations: [{ id: 'a', name: 'Scout', build_id: 'b', project_id: 'p', status: 'ready' }],
   default_model: 'gpt-6-astra',
   model_options: [
     { id: 'gpt-6-luna', label: 'GPT-6 Luna', provider: 'codex' }, { id: 'gpt-6-sol', label: 'GPT-6 Sol', provider: 'codex' },
@@ -34,7 +34,7 @@ function fakeApi(routes) {
   };
   return { api, calls, posts: () => calls.filter(c => c.method === 'POST') };
 }
-const draftWith = async goal => ({ ...(await load()).newDraft(), goal, agentId: 'a', requestId: 'req-1' });
+const draftWith = async goal => ({ ...(await load()).newDraft(), goal, configurationId: 'a', requestId: 'req-1' });
 
 test('a 409 keeps goal, transport and request ID and links the owning instance', async () => {
   const { startInstance, composerRegions, composerModel } = await load();
@@ -127,7 +127,7 @@ test('a changed goal after a never-launched start goes out under a new ID', asyn
 test('Steam never enables from stale account rows or App ID 480', async () => {
   const { composerModel, composerRegions } = await load();
   const stale = data({ accounts: [{ id: 'acct', readiness: 'ready', steam_id: '7656', app_id: 480, worker_id: 'w' }] });
-  const draft = { ...(await (await load()).newDraft()), agentId: 'a', transport: 'steam', goal: 'g' };
+  const draft = { ...(await (await load()).newDraft()), configurationId: 'a', transport: 'steam', goal: 'g' };
   for (const readiness of [null, { key: 'p|b|a|gpt-6-astra', loading: true }, { key: 'p|b|a|gpt-6-astra', result: ready }, { key: 'p|other|a|gpt-6-astra', result: { ...ready, steam: { ready: true } } }]) {
     const m = composerModel(stale, 'p', draft, readiness);
     assert.equal(m.steam.enabled, false);
@@ -142,7 +142,7 @@ test('Steam never enables from stale account rows or App ID 480', async () => {
 
 test('disabled Start always says why', async () => {
   const { composerModel, newDraft } = await load();
-  const draft = { ...newDraft(), agentId: 'a' };
+  const draft = { ...newDraft(), configurationId: 'a' };
   const reasons = (d, readiness = { key: 'p|b|a|gpt-6-astra', result: ready }) => composerModel(d, 'p', draft, readiness).blockers.join(' | ');
   assert.equal(reasons(data()), '');
   assert.match(reasons(data({ ai: { status: 'not_validated' } })), /No AI provider is connected/);
@@ -154,8 +154,8 @@ test('disabled Start always says why', async () => {
 test('long agent and build names stay on one composer row', async () => {
   const { composerModel, composerRegions, newDraft } = await load();
   const long = 'Agronauts DEMO - Decisions and corrected input scaling';
-  const d = data({ builds: [{ id: 'b', name: long, project_id: 'p' }], agents: [{ ...data().agents[0], name: `${long} agent` }] });
-  const draft = { ...newDraft(), agentId: 'a' };
+  const d = data({ builds: [{ id: 'b', name: long, project_id: 'p' }], configurations: [{ ...data().configurations[0], name: `${long} agent` }] });
+  const draft = { ...newDraft(), configurationId: 'a' };
   const r = composerRegions(composerModel(d, 'p', draft, { key: 'p|b|a|gpt-6-astra', result: ready }), draft);
   assert.match(r.bar, /<option value="a" selected>Agronauts DEMO - Decisions and corrected input scaling agent<\/option>/, 'the chip shows the name; the model is in the summary');
   assert.match(r.bar, /<label class="chip chip-select" title="Agronauts DEMO[^"]* agent · build Agronauts DEMO[^"]*">/);
@@ -169,18 +169,18 @@ test('long agent and build names stay on one composer row', async () => {
 });
 
 test('composer and empty workspace escape project names, agents and goals', async () => {
-  const { composerModel, composerRegions, composerSkeleton, emptyHTML, noAgentsHTML, newDraft } = await load();
+  const { composerModel, composerRegions, composerSkeleton, emptyHTML, noConfigurationsHTML, newDraft } = await load();
   const evil = '<img src=x onerror=alert(1)>';
-  const d = data({ projects: [{ id: 'p', name: evil }], agents: [{ ...data().agents[0], name: evil }] });
-  const draft = { ...newDraft(), agentId: 'a', goal: `</textarea>${evil}` };
-  const html = Object.values(composerRegions(composerModel(d, 'p', draft, null), draft)).join('') + composerSkeleton('p', draft) + noAgentsHTML(d.projects[0]) + emptyHTML(d);
+  const d = data({ projects: [{ id: 'p', name: evil }], configurations: [{ ...data().configurations[0], name: evil }] });
+  const draft = { ...newDraft(), configurationId: 'a', goal: `</textarea>${evil}` };
+  const html = Object.values(composerRegions(composerModel(d, 'p', draft, null), draft)).join('') + composerSkeleton('p', draft) + noConfigurationsHTML(d.projects[0]) + emptyHTML(d);
   assert.doesNotMatch(html, /<img/);
   assert.doesNotMatch(html, /<\/textarea><img/);
 });
 
 test('the empty project state uses project configuration wording', async () => {
-  const { noAgentsHTML, emptyHTML } = await load();
-  const html = noAgentsHTML({ id: 'p', name: 'Agronauts' });
+  const { noConfigurationsHTML, emptyHTML } = await load();
+  const html = noConfigurationsHTML({ id: 'p', name: 'Agronauts' });
   assert.match(html, /This project has no project configuration yet/);
   assert.match(html, /pairs a build of <strong>Agronauts<\/strong> with the game controls gathered from it\./);
   assert.match(html, />Add project configuration</);
@@ -210,7 +210,7 @@ test('the dirty-draft bridge sends only booleans and skips repeats', async () =>
 
 test('composer offers every model and marks the server default model as Default', async () => {
   const { composerModel, composerRegions, newDraft } = await load();
-  const draft = { ...newDraft(), agentId: 'a' };
+  const draft = { ...newDraft(), configurationId: 'a' };
   const bar = composerRegions(composerModel(data(), 'p', draft, null), draft).bar;
   assert.doesNotMatch(bar, /<select data-field="model"/);
   const options = [...bar.matchAll(/<button [^>]*role="option"[^>]*>.*?<\/button>/g)].map(x => x[0]);
@@ -229,18 +229,18 @@ test('composer offers every model and marks the server default model as Default'
 
 test('changing the configuration keeps the chosen model', async () => {
   const { composerModel, draftModel } = await load();
-  const d = data({ agents: [...data().agents, { id: 'a2', name: 'Other', build_id: 'b', project_id: 'p', status: 'ready' }] });
-  const draft = { goal: '', agentId: 'a', model: 'sonnet' };
+  const d = data({ configurations: [...data().configurations, { id: 'a2', name: 'Other', build_id: 'b', project_id: 'p', status: 'ready' }] });
+  const draft = { goal: '', configurationId: 'a', model: 'sonnet' };
   assert.equal(composerModel(d, 'p', draft, null).model, 'sonnet');
-  draft.agentId = 'a2';
+  draft.configurationId = 'a2';
   assert.equal(composerModel(d, 'p', draft, null).model, 'sonnet');
   assert.equal(draftModel(d, draft), 'sonnet');
 });
 
 test('retired configurations are not offered in the composer', async () => {
-  const { projectAgents } = await load();
-  const d = data({ agents: [...data().agents, { id: 'old', name: 'Old', build_id: 'b', project_id: 'p', status: 'retired' }] });
-  assert.deepEqual(projectAgents(d, 'p').map(a => a.id), ['a']);
+  const { projectConfigurations } = await load();
+  const d = data({ configurations: [...data().configurations, { id: 'old', name: 'Old', build_id: 'b', project_id: 'p', status: 'retired' }] });
+  assert.deepEqual(projectConfigurations(d, 'p').map(a => a.id), ['a']);
 });
 
 test('Start sends the chosen model and a changed model is a changed payload', async () => {

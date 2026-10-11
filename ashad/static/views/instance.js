@@ -275,6 +275,15 @@ export const NEEDS_YOU_TEXT = {
   merged_untested: 'The fix was merged but ASHAD could not test it. Revert it, or cancel.',
 };
 
+// A regression offers Revert only before its revert is applied; after it, Run fixer; one from another loop offers only Cancel
+// and the server message names the merge to revert by hand.
+function needsYouText(needs) {
+  if (needs.reason === 'regression' && !(needs.offers || []).includes('revert')) {
+    return (needs.offers || []).includes('dispatch') ? 'The fix was reverted because it caused a new problem. Run the fixer again, or cancel.' : needs.message;
+  }
+  return NEEDS_YOU_TEXT[needs.reason] || needs.message;
+}
+
 export const loopHead = loop => (loop ? `Improvement loop · ${loop.mode === 'auto' ? 'Auto' : 'Manual'}` : 'Improvement loop');
 
 const LOOP_BUTTONS = {
@@ -303,7 +312,7 @@ export function loopHTML(loop, { pending = new Set() } = {}) {
     a && Number.isFinite(a.minutes) && `${a.minutes} min`,
     Number.isFinite(loop.minutes_today) && `${loop.minutes_today} of ${loop.daily_minutes} fixer minutes today`].filter(Boolean);
   const needs = loop.phase === 'needs_you' && loop.needs_you;
-  const note = needs ? `<p class="loop-needs">${icon('alert')}<span>Needs you: ${esc(NEEDS_YOU_TEXT[needs.reason] || needs.message)}</span></p>` : '';
+  const note = needs ? `<p class="loop-needs">${icon('alert')}<span>Needs you: ${esc(needsYouText(needs))}</span></p>` : '';
   const offers = needs ? (needs.offers || []).filter(name => name !== 'cancel' && LOOP_BUTTONS[name]) : [];
   const buttons = loop.phase === 'ended' ? ''
     : `<div class="loop-actions">${offers.map(name => loopButton(name, pending)).join('')}${loopButton('cancel', pending).replace('class="btn', 'class="loop-cancel btn')}</div>`;

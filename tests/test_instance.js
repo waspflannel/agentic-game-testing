@@ -428,6 +428,18 @@ test('loopHTML needs-you sentence and offered buttons', async () => {
   for (const r of reasons) assert.ok(NEEDS_YOU_TEXT[r], r);
 });
 
+test('loopHTML regression sentence follows the offered commands', async () => {
+  const { loopHTML } = await load();
+  const needs = offers => loopHTML(loop({ phase: 'needs_you', needs_you: { reason: 'regression', message: 'Revert merge abc1234 on GitHub <yourself>.', offers } }));
+  assert.match(needs(['revert', 'cancel']), /The fix caused a new problem\. Revert it, or cancel\./);
+  const reverted = needs(['dispatch', 'cancel']);
+  assert.match(reverted, /The fix was reverted because it caused a new problem\. Run the fixer again, or cancel\./);
+  assert.doesNotMatch(reverted, /data-command="revert"/);
+  const foreign = needs(['cancel']);
+  assert.match(foreign, /Revert merge abc1234 on GitHub &lt;yourself&gt;\./);
+  assert.deepEqual([...foreign.matchAll(/data-command="(\w+)"/g)].map(m => m[1]), ['cancel']);
+});
+
 test('loopHTML ended has no buttons', async () => {
   const { loopHTML } = await load();
   const html = loopHTML(loop({ phase: 'ended' }));

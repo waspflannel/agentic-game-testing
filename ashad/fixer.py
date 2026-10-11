@@ -799,7 +799,7 @@ class Fixer:
         self.store.event(run_id, "run_ended", {"reason": reason, "from": "Fixing"})
 
     def _tick(self, loop, run):
-        """One watcher step on the loop record: the verdict is "pass", "regression", "ended" or None."""
+        """One watcher step on the loop record: "action_worked" or "no_recurrence" (a pass), "regression", "ended" or None."""
         verify, wanted = loop["verify"], loop["issue"]["wanted"]
         now = time.time()
         if run["state"] == "Running":

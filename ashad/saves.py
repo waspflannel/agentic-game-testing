@@ -80,22 +80,29 @@ class Saves:
             return None
 
     async def before_action(self, run_id, player_id, args, observation):
+        """Save before a risky action; the save holds the bot state from before this attempt."""
         run = self.store.require("runs", run_id)
         ps = run["players"][player_id]
         target_kind = observed_entity(observation, args.get("target_id", "")).get("kind") or "none"
         pair = f"{args['verb']}:{target_kind}"
-        attempted = ps.get("attempted_actions", [])
-        if pair not in attempted:
+        first = pair not in ps.get("attempted_actions", [])
+        if first:
             why = "first_attempt"
-            ps["attempted_actions"] = (attempted + [pair])[-MAX_ATTEMPTED:]
-            self.store.put("runs", run)
         else:
             results = [e for e in self.coordinator.structured._recent_events(run_id)
                        if e["kind"] == "action_result" and e["payload"].get("player_id") == player_id]
             failed = bool(results) and (results[-1]["payload"].get("result") or {}).get("status") in FAILED
             why = "after_failure" if failed else None
-        if why is None:
-            return
+        if why is not None:
+            await self._risky_save(run_id, player_id, why, args, target_kind)
+        if first:  # recorded after the save, so loading it retries this action as a first attempt
+            run = self.store.require("runs", run_id)
+            ps = run["players"][player_id]
+            ps["attempted_actions"] = (ps.get("attempted_actions", []) + [pair])[-MAX_ATTEMPTED:]
+            self.store.put("runs", run)
+
+    async def _risky_save(self, run_id, player_id, why, args, target_kind):
+        ps = self.store.require("runs", run_id)["players"][player_id]
         saves = self.records(run_id)
         if saves and saves[0]["observation_signature"] == ps.get("observation_signature"):
             self.store.event(run_id, "save_skipped", {"player_id": player_id, "reason": "unchanged"})

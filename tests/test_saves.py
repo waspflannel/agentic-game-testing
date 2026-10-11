@@ -206,7 +206,7 @@ async def test_first_attempt_saves_before_action(environment, monkeypatch):
     [record] = saves_of(env)
     assert record["trigger"] == "risky_action" and record["trigger_detail"]["why"] == "first_attempt"
     assert record["trigger_detail"]["verb"] == "interact" and record["trigger_detail"]["target_kind"] == "chest"
-    assert "interact:chest" in record["state"]["attempted_actions"]
+    assert "interact:chest" not in record["state"]["attempted_actions"]  # the save is from before this attempt
     assert "interact:chest" in env.store.require("runs", env.rid)["players"][PLAYER]["attempted_actions"]
 
 
@@ -558,3 +558,35 @@ async def test_run_detail_lists_save_summaries(environment, monkeypatch, api):
     listed = response.json()["saves"]
     assert [s["id"] for s in listed] == [second["id"], first["id"]]
     assert all("state" not in s and s["model"] == env.run["model"] for s in listed)
+
+
+@pytest.mark.asyncio
+async def test_risky_save_holds_bot_state_from_before_the_attempt(environment, monkeypatch, profile):
+    env = await running(environment, monkeypatch, profile)
+    await act(env)  # first interact on the chest: saved first, then recorded as attempted
+    [risky] = saves_of(env, "risky_action")
+    assert "interact:chest" not in risky["state"]["attempted_actions"]
+    assert "interact:chest" in env.store.require("runs", env.rid)["players"][PLAYER]["attempted_actions"]
+    await finished_source(env)
+    run = await Instances(env.coord).load_save(risky["id"], SaveLoadRequest(request_id="load-pre"))
+    loaded = env.store.require("runs", run["id"])["players"][PLAYER]
+    assert "interact:chest" not in loaded["attempted_actions"]  # the retry is a first attempt again, so it saves first
+
+
+@pytest.mark.asyncio
+async def test_restore_waits_longer_than_the_default_timeout(environment, monkeypatch, profile):
+    env = await running(environment, monkeypatch, profile)
+    saved = await env.coord.saves.capture(env.rid, PLAYER, "manual", {})
+    await finished_source(env)
+    timeouts = []
+    for desktop in environment[3].values():
+        inner = desktop.request
+
+        async def request(method, path, *, data=None, _inner=inner, **kwargs):
+            if path == "/saves/restore":
+                timeouts.append(kwargs.get("timeout"))
+            return await _inner(method, path, data=data, **kwargs)
+
+        monkeypatch.setattr(desktop, "request", request)
+    await load_and_admit(env, saved["id"], "load-timeout")
+    assert timeouts and timeouts[0] > 8

@@ -452,9 +452,10 @@ class Coordinator:
                 blob = path.read_bytes() if path.is_file() else b""
                 if hashlib.sha256(blob).hexdigest() != save["game"]["sha256"]:
                     raise ValueError("Saved game archive changed or is missing")
+                from .saves import CAPTURE_TIMEOUT_SECONDS
                 await self.request(state["worker_id"], "POST", "/saves/restore", {"epoch": state["epoch"],
                     "archive_base64": base64.b64encode(blob).decode(), "sha256": save["game"]["sha256"],
-                    "identity": state["identity"], "transport": transport["mode"]})
+                    "identity": state["identity"], "transport": transport["mode"]}, timeout=CAPTURE_TIMEOUT_SECONDS)
             self.store.event(run["id"], "save_restored", {"player_id": player["id"], "save_id": loaded["save_id"], "skipped": skipped})
             state["restored"] = True
             self.save_run(run)

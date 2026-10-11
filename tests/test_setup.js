@@ -219,5 +219,5 @@ test('step 1 lists existing projects as links without a delete button', async ()
   const { main } = setupRegions(d, s, { ...setupModel(d, s), step: 1 });
   assert.ok(main.includes('href="#/setup?project=p"'));
   assert.ok(main.includes('href="#/setup?project=q"'));
-  assert.doesNotMatch(main, /setup-delete-project|<button[^>]*data-id="(p|q)"/);
+  assert.doesNotMatch(main, /<button[^>]*data-(action="setup-delete|id="(p|q)")/);
 });

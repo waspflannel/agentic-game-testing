@@ -15,6 +15,7 @@ from .game_controls import remove_controls_file
 from .reports import generate_report
 from .repair_tasks import record_task, publish_pending
 from .store import uid
+from .worker_client import WorkerError
 from . import subgoals
 from .subgoals import new_plan
 from .validation import validate_plan
@@ -33,6 +34,24 @@ def event_due(run, event, state, now):
     if trigger == "event":
         return run["events"].get(str(event["value"]), {}).get("status") == "complete"
     return trigger == "manual" and bool(state.get("manual_triggered"))
+
+
+def crash_of(exc, status):
+    """Classify a monitoring failure as a game or environment death, or None for controller defects."""
+    step = getattr(exc, "monitoring_step", "")
+    if isinstance(exc, WorkerError) and exc.status_code is None and step in {"sending worker heartbeat", "reading worker status"}:
+        return "worker_lost", "worker_unreachable"
+    if step == "sending worker heartbeat":
+        return None
+    error = status.get("infrastructure_error") or ""
+    # A restarted worker has no game process either, so the restart must win over game_running.
+    if error.startswith("worker_restarted"):
+        return "worker_lost", "worker_restarted"
+    if status.get("game_running") is False:
+        return "game_exit", "worker_status"
+    if error == "capture_unhealthy":
+        return "desktop_lost", "capture_unhealthy"
+    return None
 
 
 class InstanceConflict(ValueError):
@@ -534,7 +553,11 @@ class Coordinator:
                 await self._monitor_player(run, player, ps, now)
             except Exception as exc:
                 self.save_run(run)
-                await self.investigate(run["id"], "infrastructure_failure", f"{player['name']} while {exc.monitoring_step}: {type(exc).__name__}: {exc}", players=[player["id"]])
+                reason = f"{player['name']} while {exc.monitoring_step}: {type(exc).__name__}: {exc}"
+                await self.investigate(run["id"], "infrastructure_failure", reason, players=[player["id"]])
+                # Report after investigate: its input hold bumps the generation once, so later ticks dedupe on the new one.
+                if crash := crash_of(exc, ps.get("worker_status") or {}):
+                    await self.structured.report_crash(run["id"], player["id"], *crash, reason)
                 return
         host = next(p for p in run["plan"]["players"] if p["role"] == "host")
         host_state = run["players"][host["id"]]
@@ -691,12 +714,16 @@ class Coordinator:
                 ps["last_simulation_tick"] = sim_tick
                 ps["simulation_advanced_at"] = now
             if allow_decisions and t.get("world_simulating") is True and ps.get("simulation_advanced_at") and now - ps["simulation_advanced_at"] > policy["simulation_timeout_seconds"]:
+                reason = "Simulation ticks stopped advancing while independent capture and telemetry remain available."
                 self.save_run(run)
-                await self.investigate(run["id"], "suspected_game_freeze", "Simulation ticks stopped advancing while independent capture and telemetry remain available.", [p["id"]])
+                await self.investigate(run["id"], "suspected_game_freeze", reason, [p["id"]])
+                await self.structured.report_crash(run["id"], p["id"], "game_hang", "simulation_stalled", reason)
                 return
             if allow_decisions and ps.get("telemetry_received_at") and now - ps["telemetry_received_at"] > policy["simulation_timeout_seconds"]:
+                reason = "Read-only game heartbeat stopped while worker monitoring remained reachable; game freeze is suspected, not confirmed."
                 self.save_run(run)
-                await self.investigate(run["id"], "suspected_game_freeze", "Read-only game heartbeat stopped while worker monitoring remained reachable; game freeze is suspected, not confirmed.", [p["id"]])
+                await self.investigate(run["id"], "suspected_game_freeze", reason, [p["id"]])
+                await self.structured.report_crash(run["id"], p["id"], "game_hang", "heartbeat_stalled", reason)
                 return
             if allow_decisions and ps["invalid_actions"] >= policy["invalid_actions_threshold"]:
                 self.save_run(run)
@@ -1298,6 +1325,7 @@ class Coordinator:
             ps["generation"] += 1
         self.save_run(run)
         await self.cancel_players(run_id)
+        self.structured.forget_run(run_id)
         run = self.store.require("runs", run_id)  # Retain cancellation outcomes written by the stopped tasks.
         event = self.store.event(run_id, "stopping", {"reason": reason, "terminate": terminate, "save": "not_promised" if terminate else "bounded_graceful_attempt"})
         record_task(self.store, run_id, "stop", limitation or reason, key="stop", category=reason, event_id=event["id"])

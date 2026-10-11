@@ -372,3 +372,102 @@ test('issuesHTML only asks to stop the instance when a hit can load, and keys ea
   assert.equal(keys.length, 2);
   assert.equal(new Set(keys).size, 2);
 });
+
+const loop = (extra = {}) => ({
+  id: 'loop_1', mode: 'auto', phase: 'gating', issue: { issue_id: 'i1', title: 'Agent could not ui_drag on slot' },
+  attempt: { n: 2, of: 3, minutes: 6, pr: { number: 41, url: 'https://github.com/waspflannel/agentic-game-testing/pull/41' } },
+  minutes_today: 38, daily_minutes: 240, progress: [], needs_you: null, verify: null, ...extra,
+});
+
+test('fixing state shows only the badge', async () => {
+  const { instanceState } = await load();
+  for (const [phase, label, tone] of [['gating', 'Fixing', 'pending'], ['verifying', 'Fixing', 'pending'], ['needs_you', 'Needs you', 'attention']]) {
+    const s = instanceState(run('Fixing', { loop: loop({ phase }) }), { reason: 'fixing' });
+    assert.deepEqual([s.key, s.badge, s.left, s.stop, s.menu], ['fixing', { tone, label }, [], false, []]);
+  }
+});
+
+test('loopHTML off says fixes are off', async () => {
+  const { loopHTML, loopHead } = await load();
+  assert.match(loopHTML(null), /Fixes are off for this instance\./);
+  assert.equal(loopHead(null), 'Improvement loop');
+  assert.equal(loopHead(loop()), 'Improvement loop · Auto');
+  assert.equal(loopHead(loop({ mode: 'manual' })), 'Improvement loop · Manual');
+});
+
+test('loopHTML phase, attempt, PR link and escaping', async () => {
+  const { loopHTML } = await load();
+  const html = loopHTML(loop({ issue: { title: '<img src=x onerror=1>' } }));
+  assert.match(html, /Running tests on the PR/);
+  assert.match(html, /Attempt 2 of 3/);
+  assert.match(html, /<a href="https:\/\/github\.com\/waspflannel\/agentic-game-testing\/pull\/41" target="_blank" rel="noreferrer">PR #41<\/a>/);
+  assert.match(html, /38 of 240 fixer minutes today/);
+  assert.doesNotMatch(html, /<img/);
+  assert.match(html, /&lt;img/);
+  const v = loopHTML(loop({ phase: 'verifying', verify: { decisions: 12, paused: true } }));
+  assert.match(v, /Checking the fix: 12 of 30 decisions, paused\. Resume the instance to continue\./);
+  assert.doesNotMatch(loopHTML(loop({ phase: 'verifying', verify: { decisions: 12 } })), /paused/);
+});
+
+test('loopHTML needs-you sentence and offered buttons', async () => {
+  const { loopHTML } = await load();
+  const html = loopHTML(loop({ phase: 'needs_you', needs_you: { reason: 'verify_failed', message: 'The issue came back after the fix. Revert it, run the fixer again, or cancel.', offers: ['revert', 'dispatch', 'cancel'] } }));
+  assert.match(html, /The issue came back after the fix\. Revert it, run the fixer again, or cancel\./);
+  assert.match(html, /class="loop-needs"><svg[^>]*><use href="#i-alert"/);
+  assert.match(html, /Needs you:/);
+  const cmds = [...html.matchAll(/data-command="(\w+)"/g)].map(m => m[1]);
+  assert.deepEqual(cmds.sort(), ['cancel', 'dispatch', 'revert']);
+  assert.match(html, /class="btn btn-primary" data-action="loop-command" data-command="dispatch"/);
+  assert.match(html, /class="loop-cancel btn btn-danger" data-action="loop-command" data-command="cancel"/);
+  assert.match(html, /class="btn btn-secondary" data-action="loop-command" data-command="revert"/);
+  const busy = loopHTML(loop({ phase: 'needs_you', needs_you: { reason: 'dispatch', message: 'm', offers: ['dispatch', 'cancel'] } }), { pending: new Set(['loop:dispatch']) });
+  assert.match(busy, /data-command="dispatch"[^>]*aria-busy="true" aria-disabled="true"/);
+  assert.doesNotMatch(busy, /data-command="cancel"[^>]*aria-busy/);
+});
+
+test('loopHTML shows the server sentence with its details, escaped', async () => {
+  const { loopHTML } = await load();
+  const needs = (reason, message, offers) => loopHTML(loop({ phase: 'needs_you', needs_you: { reason, message, offers } }));
+  assert.match(needs('revert_failed', 'The revert did not complete (merge abc1234). Revert it <on GitHub> yourself, then cancel.', ['cancel']),
+    /merge abc1234\)\. Revert it &lt;on GitHub&gt; yourself/);
+  assert.match(needs('review_pr', 'The PR is not merged yet. Merge it on GitHub with a merge commit, then click Apply fix.', ['apply', 'cancel']),
+    /The PR is not merged yet\./);
+  const foreign = needs('regression', 'Revert merge abc1234 on GitHub yourself, then cancel.', ['cancel']);
+  assert.match(foreign, /Revert merge abc1234 on GitHub yourself/);
+  assert.deepEqual([...foreign.matchAll(/data-command="(\w+)"/g)].map(m => m[1]), ['cancel']);
+});
+
+test('loopHTML ended shows cancel notes', async () => {
+  const { loopHTML } = await load();
+  const html = loopHTML(loop({ phase: 'ended', cancel_notes: ['PR #41 was already merged. <Revert> it on GitHub if you do not want it on main.'] }));
+  assert.match(html, /class="loop-needs"><svg[^>]*><use href="#i-alert"[^]*PR #41 was already merged\. &lt;Revert&gt; it/);
+  assert.doesNotMatch(loopHTML(loop({ phase: 'gating', cancel_notes: ['old'] })), /old/);
+});
+
+test('loopHTML ended has no buttons', async () => {
+  const { loopHTML } = await load();
+  const html = loopHTML(loop({ phase: 'ended' }));
+  assert.match(html, />Ended</);
+  assert.doesNotMatch(html, /<button/);
+});
+
+test('progressHTML table and empty state', async () => {
+  const { progressHTML } = await load();
+  assert.match(progressHTML([]), /Progress appears after the first instance in this loop stops\./);
+  const rows = [{ run_id: 'run_a', fix_before: null, quests: 2, goals_completed: 5, action_kinds: 7, stopped_by: '<b>t</b>', further: null },
+    ...['more', 'same', 'less'].map((further, i) => ({ run_id: `run_${i}`, fix_before: 'fix_1a2b', quests: 3, goals_completed: 8, action_kinds: 9, stopped_by: 'user_stopped', further }))];
+  const html = progressHTML(rows);
+  assert.equal((html.match(/<th scope="col">/g) || []).length, 7);
+  assert.match(html, /<td class="num">7<\/td>/);
+  for (const w of ['More', 'Same', 'Less']) assert.match(html, new RegExp(`<td>${w}</td>`));
+  assert.match(html, /<td>—<\/td><td class="num">2/);
+  assert.match(html, /&lt;b&gt;t/);
+});
+
+test('threadRegions carries the loop head and body', async () => {
+  const { threadRegions, instanceState } = await load();
+  const r = run('Fixing', { loop: loop() });
+  const regions = threadRegions(r, { status: instanceState(r), data: {}, ui: {}, pending: new Set(), tab: 'actions' });
+  assert.equal(regions['loop-head'], 'Improvement loop · Auto');
+  assert.match(regions.loop, /Running tests on the PR/);
+});

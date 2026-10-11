@@ -224,3 +224,19 @@ async def test_legacy_run_with_only_agent_profile_instructions_still_reaches_con
     player = run["plan"]["players"][0]
     context = coordinator.structured.decision_context(run, player, {"state": {}, "entities": []})
     assert context["game_controls"] == "legacy instructions"
+
+
+@pytest.mark.asyncio
+async def test_fix_mode_defaults_off_and_is_validated(environment, profile):
+    store, coordinator, _, _ = environment
+    instances = Instances(coordinator)
+    with pytest.raises(ValueError):
+        InstanceRequest(configuration_id=profile["id"], primary_goal="Fish", request_id="bad-mode", fix_mode="sometimes")
+    request = InstanceRequest(configuration_id=profile["id"], primary_goal="Fish", request_id="mode-off")
+    assert request.fix_mode == "off"
+    run = await instances.start(request)
+    assert store.list("loops") == [] and not run.get("loop_id")
+    await coordinator.finish(run["id"], "user_stopped")
+    with pytest.raises(ValueError, match="^Fixes are unavailable: "):
+        await instances.start(request.model_copy(update={"request_id": "mode-auto", "fix_mode": "auto"}))
+    assert len(store.list("runs")) == 1

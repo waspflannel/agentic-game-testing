@@ -215,7 +215,8 @@ class StructuredPlayers:
                    "target_id": args.get("target_id", ""), "target_version": args.get("target_version", -1),
                    "parameters": args.get("parameters", {})}
         event = self.store.event(run_id, "structured_action_intent", {"player_id": player_id, "action_id": action_id,
-             "source_observation": observation["observation_id"], "reason": args.get("reason"), "input": payload})
+             "source_observation": observation["observation_id"], "reason": args.get("reason"), "input": payload,
+             "target_kind": observed_entity(observation, payload["target_id"]).get("kind")})
         self.pending[key] = action_id
         ps["pending_action"] = {"action_id": action_id, "expires_at": payload["expires_at"]}
         if owner == "agent" and run.get("subgoal_plan", {}).get("player_id") == player_id:
@@ -357,6 +358,7 @@ class StructuredPlayers:
                 self.store.event(run_id, f"{issue_type}_recorded", {"player_id": player_id,
                     "issue_id": repair_tasks.issue_id(issue_type, basis), "example_id": example_id,
                     "source": source, "kept": outcome == "kept", "outcome": outcome, "save_before": before_id})
+                self.coordinator.fixer.issue_hit(run_id, issue_type, repair_tasks.issue_id(issue_type, basis), example_id, before_id)
             elif outcome == "full":
                 self.store.event(run_id, "issue_cap_reached", {"player_id": player_id, "issue_type": issue_type,
                     "signature": repair_tasks.issue_signature(issue_type, basis)})

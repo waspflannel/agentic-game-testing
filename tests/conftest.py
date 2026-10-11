@@ -14,7 +14,7 @@ import keyring
 import pytest
 from starlette.testclient import TestClient
 
-from ashad import claude_backend
+from ashad import claude_backend, fixer
 
 _init = TestClient.__init__
 
@@ -31,8 +31,14 @@ def _refuse_keyring(*args, **kwargs):
     raise AssertionError("test touched the real keyring")
 
 
+async def _refuse_command(*args, **kwargs):
+    raise AssertionError("test ran a real command through the fixer")
+
+
 @pytest.fixture(autouse=True)
 def no_real_claude_or_keyring(monkeypatch):
     for name in ("get_password", "set_password", "delete_password"):
         monkeypatch.setattr(keyring, name, _refuse_keyring)
     monkeypatch.setattr(claude_backend, "find_binary", lambda: None)
+    monkeypatch.setattr(fixer, "DEFAULT_RUNNER", _refuse_command)
+    monkeypatch.setattr(fixer.shutil, "which", lambda *a, **k: None)

@@ -42,7 +42,7 @@ function desktopReason(r) {
 }
 
 // readiness: { key, loading, result, error } from the probe run on view open. A record for another agent or build is ignored.
-export function composerModel(data, projectId, draft, readiness) {
+export function composerModel(data, projectId, draft, readiness, fixer) {
   const project = (data?.projects || []).find(p => p.id === projectId);
   const agents = projectConfigurations(data, projectId);
   const agent = agents.find(a => a.id === draft.configurationId) || agents[0];
@@ -76,6 +76,7 @@ export function composerModel(data, projectId, draft, readiness) {
   if (draft.transport === 'steam' && !steam.enabled) blockers.push(`${steam.reason}. No ENet fallback.`);
 
   return {
+    fixer: fixer || { ready: false, reasons: ['Checking the fixer…'] },
     project, agents, agent, build, model, modelOptions: data?.model_options || [], steam, desktop, blockers,
     projects: data?.projects || [],
     agentOptions: agents.map(a => ({ id: a.id, label: a.name || a.id, title: `${a.name || a.id} · build ${(data?.builds || []).find(b => b.id === a.build_id)?.name || a.build_id}` })),
@@ -121,6 +122,12 @@ export function composerRegions(m, draft) {
     + `<select data-field="transport" data-key="c-transport" aria-label="Transport" aria-describedby="composer-steam-note">`
     + `<option value="enet"${draft.transport === 'enet' ? ' selected' : ''}>ENet</option>`
     + `<option value="steam"${draft.transport === 'steam' ? ' selected' : ''}${m.steam.enabled ? '' : ' disabled'}>Steam${m.steam.enabled ? '' : ' (unavailable)'}</option></select></label>`;
+  const fixOff = !m.fixer.ready;
+  const fixChip = `<label class="chip chip-select">${icon('wrench')}<span class="sr-only">Fixes</span>`
+    + `<select data-field="fix" data-key="c-fix" aria-label="Fixes" aria-describedby="composer-fix-note">`
+    + `<option value="off"${!draft.fix || draft.fix === 'off' ? ' selected' : ''}>Fixes off</option>`
+    + `<option value="manual"${draft.fix === 'manual' ? ' selected' : ''}${fixOff ? ' disabled' : ''}>Fixes: manual</option>`
+    + `<option value="auto"${draft.fix === 'auto' ? ' selected' : ''}${fixOff ? ' disabled' : ''}>Fixes: auto</option></select></label>`;
   const start = `<button type="submit" class="btn btn-primary btn-round" data-key="c-start" aria-label="Start instance" title="Start instance (Ctrl+Enter)"`
     + `${m.canStart ? '' : ' aria-disabled="true"'}${draft.busy ? ' aria-busy="true"' : ''}>${icon(draft.busy ? 'loader' : 'arrow-up', draft.busy ? 'icon spin' : 'icon')}</button>`;
 
@@ -130,6 +137,7 @@ export function composerRegions(m, draft) {
   if (draft.busy) notes.push(`<p class="note">${icon('loader', 'icon spin')}Starting… This can take a minute while the desktop is checked.</p>`);
   else if (res) notes.push(resultHTML(res));
   if (!m.steam.enabled) notes.push(draft.transport === 'steam' ? `<p class="note" id="composer-steam-note">${esc(m.steam.reason)}.</p>` : `<span class="sr-only" id="composer-steam-note">${esc(m.steam.reason)}.</span>`);
+  if (fixOff) notes.push(draft.fix && draft.fix !== 'off' ? `<p class="note" id="composer-fix-note">${esc(m.fixer.reasons[0])}</p>` : `<span class="sr-only" id="composer-fix-note">${esc(m.fixer.reasons[0])}</span>`);
   if (!draft.busy && m.blockers.length) notes.push(`<div class="note note-blocked"><p>Start is unavailable:</p><ul>${m.blockers.map(b => `<li>${esc(b)}</li>`).join('')}</ul></div>`);
   notes.push(`<p class="note note-hint"><span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> to start</span></p>`);
 
@@ -137,7 +145,7 @@ export function composerRegions(m, draft) {
     hero: `What should the agent do in <strong>${name}</strong>?`,
     chips: projectChip + desktopChip + recheck,
     'goal-error': goalError,
-    bar: `<div class="composer-bar-left">${agentChip}${modelChip}${transportChip}</div><div class="composer-bar-right"><span class="composer-summary" title="${esc(m.summary)}">${esc(m.summary)}</span>${start}</div>`,
+    bar: `<div class="composer-bar-left">${agentChip}${modelChip}${transportChip}${fixChip}</div><div class="composer-bar-right"><span class="composer-summary" title="${esc(m.summary)}">${esc(m.summary)}</span>${start}</div>`,
     status: notes.join(''),
   };
 }
@@ -164,7 +172,7 @@ function resultHTML(res) {
 // what happened to the earlier one, so an accepted start is never silently resubmitted with different inputs.
 // Returns { kind: 'accepted' | 'in-progress' | 'not-started' | 'conflict' | 'earlier-accepted' | 'error', ... }.
 export async function startInstance(draft, projectId, api) {
-  const payload = { configuration_id: draft.configurationId, project_id: projectId, primary_goal: draft.goal.trim(), transport: draft.transport, model: draft.model };
+  const payload = { configuration_id: draft.configurationId, project_id: projectId, primary_goal: draft.goal.trim(), transport: draft.transport, model: draft.model, fix_mode: draft.fix || 'off' };
   if (!payload.configuration_id) return { kind: 'error', field: 'configuration', message: 'Choose a project configuration.' };
   if (!payload.primary_goal) return { kind: 'error', field: 'goal', message: 'Describe the goal before starting.' };
   const signature = JSON.stringify(payload);

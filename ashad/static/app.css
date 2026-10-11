@@ -268,10 +268,10 @@ a.active-pill:hover { text-decoration: none; background: var(--surface-2); }
 .composer-goal:focus-visible { outline: none; }
 .composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
 .composer-bar-left, .composer-bar-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.composer-bar-left { flex: 0 1 auto; }
+.composer-bar-left { flex: 0 1 auto; flex-wrap: wrap; }
 .composer-bar-left .chip-select { min-width: 0; }
 .composer-bar-left .chip-select select { max-width: 220px; min-width: 0; }
-.composer-bar-right { flex: 1 1 0; justify-content: flex-end; }
+.composer-bar-right { flex: 1 1 0; justify-content: flex-end; min-width: 36px; }
 .composer-bar-right .btn-round { flex: none; }
 .composer-summary { min-width: 0; color: var(--text-3); font-size: var(--fs-meta); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-status { display: grid; gap: 6px; min-height: 20px; }
@@ -608,3 +608,19 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .dialog p { color: var(--text-2); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
 
+
+/* Improvement loop */
+.loop-phase { font-size: var(--fs); color: var(--text); }
+.loop-issue { font-size: var(--fs); color: var(--text-2); overflow-wrap: anywhere; }
+.loop-meta { font-size: var(--fs-meta); color: var(--text-2); font-variant-numeric: tabular-nums; }
+.loop-needs { display: flex; gap: 8px; align-items: flex-start; color: var(--text); }
+.loop-needs .icon { color: var(--attention); flex: none; }
+.loop-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.loop-actions .loop-cancel { margin-left: auto; }
+.loop-progress-wrap { overflow-x: auto; }
+.loop-progress { width: 100%; border-collapse: collapse; font-size: var(--fs-meta); }
+.loop-progress th, .loop-progress td { padding: 4px 8px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
+.loop-progress th { color: var(--text-2); font-weight: 600; }
+.loop-progress tbody th { color: var(--text); font-weight: 400; }
+.loop-progress .num { text-align: right; font-variant-numeric: tabular-nums; }
+.loop-progress thead th:nth-child(n+3):nth-child(-n+5) { text-align: right; }

@@ -419,3 +419,30 @@ test('dirty draft prompts before View reload and resets on main-frame navigation
   assert.equal(await main.ipc('ashad:request-quit'), true);
   assert.ok(!main.calls.dialogs.some(item => item.title === 'Quit ASHAD?'));
 });
+
+test('launchConfig includes checkout_root only when given', () => {
+  assert.equal('checkout_root' in rules.launchConfig('data'), false);
+  assert.equal('checkout_root' in rules.launchConfig('data', null), false);
+  assert.equal(rules.launchConfig('data', '/work/checkout').checkout_root, '/work/checkout');
+});
+
+test('validatedStatus accepts restart_for_fix null or a loop id and rejects others', () => {
+  for (const value of [undefined, null, 'loop_ab-12_X']) {
+    assert.doesNotThrow(() => rules.validatedStatus({ ...idle(), restart_for_fix: value }));
+  }
+  for (const value of ['', 'loop_', 'run_1', 'loop_a b', `loop_${'a'.repeat(101)}`, 7, true, {}]) {
+    assert.throws(() => rules.validatedStatus({ ...idle(), restart_for_fix: value }));
+  }
+});
+
+test("fixPrUrl allows only the fixed repo's pull URLs", () => {
+  assert.equal(rules.fixPrUrl('https://github.com/waspflannel/agentic-game-testing/pull/41'), true);
+  for (const url of ['https://github.com/other/agentic-game-testing/pull/41',
+    'http://github.com/waspflannel/agentic-game-testing/pull/41',
+    'https://user@github.com/waspflannel/agentic-game-testing/pull/41',
+    'https://github.com:8443/waspflannel/agentic-game-testing/pull/41',
+    'https://github.com/waspflannel/agentic-game-testing/pull/41?x=1',
+    'https://github.com/waspflannel/agentic-game-testing/pull/41#c',
+    'https://github.com/waspflannel/agentic-game-testing/pull/1/files',
+    'https://github.com/waspflannel/agentic-game-testing/pull/abc', null, 42]) assert.equal(rules.fixPrUrl(url), false);
+});

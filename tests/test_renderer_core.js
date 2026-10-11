@@ -176,3 +176,10 @@ test('runConfigurationId reads the new key, then legacy run and plan keys', asyn
   assert.equal(runConfigurationId({}), undefined);
   assert.equal(runConfigurationId(null), undefined);
 });
+
+test('runStatus Fixing is pending Fixing, needs_you is attention Needs you', async () => {
+  const { runStatus } = await load();
+  assert.deepEqual(runStatus({ state: 'Fixing', loop: { phase: 'gating' } }), { tone: 'pending', label: 'Fixing' });
+  assert.deepEqual(runStatus({ state: 'Fixing' }), { tone: 'pending', label: 'Fixing' });
+  assert.deepEqual(runStatus({ state: 'Fixing', loop: { phase: 'needs_you' } }), { tone: 'attention', label: 'Needs you' });
+});

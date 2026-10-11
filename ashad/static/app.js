@@ -798,6 +798,7 @@ function renderThread(view) {
   const pending = new Set(mine().filter(([, c]) => c.pending).map(([k]) => k.slice(run.id.length + 1)));
   const error = mine().find(([, c]) => c.error)?.[1].error;
   patchRegions(view, threadRegions(run, { status, owner, data: state.data, ui: t, pending, error, cameraStatus: state.camera.status, player, tab: t.tab }));
+  updateTimes(view.querySelector('[data-region="saves"]'));
   for (const panel of view.querySelectorAll('.thread-panel')) panel.hidden = panel.id !== `panel-${t.tab}`;
   const reason = view.querySelector('#resume-reason');
   if (reason && reason.value !== t.instructionText) reason.value = t.instructionText;
@@ -985,6 +986,12 @@ async function command(action, send, ok, runOf = value => value) {
   return error ? undefined : value;
 }
 
+async function loadSave(saveId) {
+  if (!await confirmDialog({ title: 'Load this save?', body: 'A new instance starts from this save with the same goal, plan and recent actions, using the current game controls. This instance is not changed.', confirm: 'Load save' })) return;
+  const run = await command(`load-save:${saveId}`, id => api(`/api/saves/${enc(saveId)}/load`, { method: 'POST', body: { request_id: id } }), 'Loading the save in a new instance.', () => null);
+  if (run?.id) location.hash = href('i', run.id);
+}
+
 const runPath = run => `/api/runs/${enc(run.id)}`;
 const control = (run, name, extra = {}) => id => api(`${runPath(run)}/control`, { method: 'POST', body: { command: name, command_id: id, ...extra } });
 
@@ -1008,6 +1015,7 @@ async function onControl(action) {
       if (!form) return;
       return command('extend', control(run, 'extend', { seconds: Number(form.get('minutes')) * 60 }), 'Investigation extended.');
     }
+    case 'save': return command('save', id => api(`${runPath(run)}/saves`, { method: 'POST', body: { command_id: id } }), 'Saved.', () => null);
     case 'recalculate':
       if (!await confirmDialog({ title: 'Recalculate goals?', body: 'Bot input is held while ASHAD replans from fresh game state under the same primary goal. The old plan stays in the history. Resume separately when you are ready.', confirm: 'Recalculate goals' })) return;
       return command('recalculate', id => api(`${runPath(run)}/recalculate-goals`, { method: 'POST', body: { command_id: id } }), 'Goals recalculated. Bot input stays paused until you resume.');
@@ -1205,6 +1213,8 @@ document.addEventListener('click', async event => {
     else if (action === 'usage-more') u.limit += newUsageUi().limit;
     else Object.assign(u, u.sort === target.dataset.sort ? { dir: u.dir === 'asc' ? 'desc' : 'asc' } : { sort: target.dataset.sort, dir: 'desc' });
     renderView();
+  } else if (action === 'load-save') {
+    if (target.getAttribute('aria-disabled') !== 'true') loadSave(id);
   } else if (action === 'ctl') {
     target.closest('[popover]')?.hidePopover();
     if (target.getAttribute('aria-disabled') !== 'true') onControl(target.dataset.ctl);

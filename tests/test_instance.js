@@ -244,3 +244,49 @@ test('header shows a same-provider model menu for a live run and a plain chip fo
   assert.match(ended, /<span class="chip-text">GPT-6 Astra<\/span>/);
   assert.doesNotMatch(head(run('Running')), /model-default/);
 });
+
+test('save now is in the menu for launched running, paused and investigating only', async () => {
+  const { instanceState } = await load();
+  for (const state of ['Running', 'Paused', 'Investigating']) {
+    assert.ok(instanceState(run(state)).menu.includes('save'), state);
+    const unlaunched = run(state, { players: { p1: { id: 'p1', launched: false } } });
+    assert.ok(!instanceState(unlaunched).menu.includes('save'), `${state} unlaunched`);
+  }
+  for (const state of ['Starting', 'Ended']) assert.ok(!instanceState(run(state)).menu.includes('save'), state);
+});
+
+const SAVES = [
+  { id: 's1', created_at: 1000, trigger: 'risky_action', trigger_detail: { why: 'first_attempt', verb: 'interact', target_kind: 'chest' }, game: { status: 'confirmed' } },
+  { id: 's2', created_at: 900, trigger: 'issue', trigger_detail: { issue_type: 'unsupported_action' }, game: { status: 'none' } },
+  { id: 's3', created_at: 800, trigger: 'manual', trigger_detail: { label: 'before boss' }, game: { status: 'on_disk' } },
+];
+
+test('savesHTML empty state explains automatic saves', async () => {
+  const { savesHTML } = await load();
+  const html = savesHTML([], { slotFree: true, pending: new Set() });
+  assert.match(html, /No saves yet/);
+  assert.ok(!html.includes('<button'));
+});
+
+test('savesHTML rows describe trigger and game state in words', async () => {
+  const { savesHTML } = await load();
+  const html = savesHTML(SAVES, { slotFree: true, pending: new Set() });
+  for (const text of ['Before first interact on chest', 'Issue: Unsupported action', 'Manual: before boss', 'Last game save on disk', 'Game saved', 'No game save']) assert.ok(html.includes(text), text);
+  assert.equal(html.split('data-action="load-save"').length - 1, 3);
+  assert.ok(!html.includes('aria-disabled'));
+});
+
+test('savesHTML disables load while the slot is occupied', async () => {
+  const { savesHTML } = await load();
+  const html = savesHTML(SAVES, { slotFree: false, pending: new Set() });
+  assert.equal(html.split('aria-disabled="true"').length - 1, 3);
+  assert.ok(html.includes('Stop the running instance before loading a save.'));
+});
+
+test('savesHTML marks a pending load busy', async () => {
+  const { savesHTML } = await load();
+  const html = savesHTML(SAVES, { slotFree: true, pending: new Set(['load-save:s2']) });
+  const row = html.split('<li ').find(r => r.includes('data-id="s2"'));
+  assert.ok(row.includes('aria-busy="true"') && row.includes('i-loader'));
+  assert.equal(html.split('aria-busy').length - 1, 1);
+});

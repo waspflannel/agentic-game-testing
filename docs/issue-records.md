@@ -102,7 +102,7 @@ Crashes are detected in `Coordinator.tick` and `Coordinator.monitor` and recorde
 
 | `kind` | `detector` | Trigger |
 |---|---|---|
-| `game_exit` | `worker_status` | The worker status says `game_running` is false. |
+| `game_exit` | `worker_status` | The worker status says `game_running` is false and the worker did not restart. |
 | `game_hang` | `simulation_stalled` | The freeze check in `monitor`: the simulation stopped advancing past `simulation_timeout_seconds`. |
 | `game_hang` | `heartbeat_stalled` | The freeze check in `monitor`: telemetry stopped arriving past `simulation_timeout_seconds`. |
 | `worker_lost` | `worker_unreachable` | A worker heartbeat or status read fails with no HTTP status (the worker did not answer). No `/pin` is requested; `screenshot.status` is `unavailable`. |

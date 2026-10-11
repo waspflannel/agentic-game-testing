@@ -43,11 +43,12 @@ def crash_of(exc, status):
         return "worker_lost", "worker_unreachable"
     if step == "sending worker heartbeat":
         return None
-    if status.get("game_running") is False:
-        return "game_exit", "worker_status"
     error = status.get("infrastructure_error") or ""
+    # A restarted worker has no game process either, so the restart must win over game_running.
     if error.startswith("worker_restarted"):
         return "worker_lost", "worker_restarted"
+    if status.get("game_running") is False:
+        return "game_exit", "worker_status"
     if error == "capture_unhealthy":
         return "desktop_lost", "capture_unhealthy"
     return None

@@ -247,6 +247,10 @@ def test_crash_of_classifies_monitor_failures():
     assert crash_of(failure(ValueError, "reading worker status", "x"), {"game_running": False}) == ("game_exit", "worker_status")
     assert crash_of(failure(ValueError, "reading worker status", "x"), {"infrastructure_error": "worker_restarted: 2"}) == \
         ("worker_lost", "worker_restarted")
+    # A real restarted worker also reports no running game; the restart still classifies it.
+    assert crash_of(failure(ValueError, "reading worker status", "x"),
+                    {"game_running": False, "infrastructure_error": "worker_restarted; game process and inputs require reconciliation"}) == \
+        ("worker_lost", "worker_restarted")
     assert crash_of(failure(ValueError, "reading worker status", "x"), {"infrastructure_error": "capture_unhealthy"}) == \
         ("desktop_lost", "capture_unhealthy")
     assert crash_of(failure(ValueError, "reading game telemetry", "x"), {"game_running": True}) is None

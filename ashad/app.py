@@ -20,7 +20,7 @@ from .claude_backend import ClaudeError
 from .codex_backend import CodexError
 from .coordinator import Coordinator, InstanceConflict
 from .credentials import Credentials
-from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, AI_API, ACTIVE_STATES, RecalculateGoalsRequest
+from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, AI_API, ACTIVE_STATES, PROVIDERS, SUPPORTED_MODELS, provider_of, RecalculateGoalsRequest
 from .repository import Repository, sha256_file
 from .reports import generate_report
 from .agent_profiles import AgentProfiles
@@ -309,31 +309,38 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
                    for kind in ("builds", "agents", "runs")}}
 
     @app.get("/api/projects/{project_id}/readiness")
-    async def project_readiness(project_id: str, build_id: str, agent_id: str | None = None):
+    async def project_readiness(project_id: str, build_id: str, agent_id: str | None = None, model: str | None = None):
+        if model and not agent_id:
+            raise ValueError("Choose an agent configuration before a model.")
         Projects(store).project_for_build(build_id, project_id)
         build = store.require("builds", build_id)
-        model = MODEL
+        resolved = MODEL
         if agent_id:
             Projects(store).project_for_agent(agent_id, project_id)
             selected = store.require("agents", agent_id)
             if selected["build_id"] != build_id:
                 raise ValueError("Saved configuration belongs to a different build")
-            model = Plan(model=selected["model"]).model
+            resolved = Plan(model=selected["model"]).model
         build_validation = {"ready": False, "reason": "Build has not been validated"}
         try:
             await asyncio.to_thread(validate_build, build)
             Repository(build)  # Play reads the pinned source snapshot; validate_build does not check it.
             if agent_id:
-                model = (await asyncio.to_thread(profiles.validated, agent_id))["model"]
+                resolved = (await asyncio.to_thread(profiles.validated, agent_id))["model"]
             build_validation = {"ready": True, "reason": "Exact supported manifest, engine and artifact pins verified"}
         except (OSError, ValueError, KeyError) as exc:
             build_validation["reason"] = str(exc)
+        if model:
+            provider = provider_of(resolved)
+            if model not in SUPPORTED_MODELS or provider_of(model) != provider:
+                raise ValueError(f"Choose a {PROVIDERS[provider]['label']} model for this agent configuration.")
+            resolved = model
         try:
-            status = await ai.validate(model)
+            status = await ai.validate(resolved)
             provider = {"ready": status.get("configured") is True and status.get("status") == "ready",
-                        "status": status.get("status", "unknown"), "message": status.get("message", "Unknown AI connection"), "model": model}
+                        "status": status.get("status", "unknown"), "message": status.get("message", "Unknown AI connection"), "model": resolved}
         except (ProviderError, CodexError, ClaudeError) as exc:
-            provider = {"ready": False, "status": exc.status, "message": exc.message, "model": model}
+            provider = {"ready": False, "status": exc.status, "message": exc.message, "model": resolved}
         environments = []
         if build_validation["ready"]:
             occupied = {lease["resource_id"] for lease in store.leases() if lease["kind"] == "worker"}

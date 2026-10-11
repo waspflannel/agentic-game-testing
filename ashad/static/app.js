@@ -799,6 +799,7 @@ function renderThread(view) {
   const error = mine().find(([, c]) => c.error)?.[1].error;
   patchRegions(view, threadRegions(run, { status, owner, data: state.data, ui: t, pending, error, cameraStatus: state.camera.status, player, tab: t.tab }));
   updateTimes(view.querySelector('[data-region="saves"]'));
+  updateTimes(view.querySelector('[data-region="issues"]'));
   for (const panel of view.querySelectorAll('.thread-panel')) panel.hidden = panel.id !== `panel-${t.tab}`;
   const reason = view.querySelector('#resume-reason');
   if (reason && reason.value !== t.instructionText) reason.value = t.instructionText;

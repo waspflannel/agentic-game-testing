@@ -83,14 +83,13 @@ class Saves:
         attempted = ps.get("attempted_actions", [])
         if pair not in attempted:
             why = "first_attempt"
+            ps["attempted_actions"] = (attempted + [pair])[-MAX_ATTEMPTED:]
+            self.store.put("runs", run)
         else:
             results = [e for e in self.coordinator.structured._recent_events(run_id)
                        if e["kind"] == "action_result" and e["payload"].get("player_id") == player_id]
             failed = bool(results) and (results[-1]["payload"].get("result") or {}).get("status") in FAILED
             why = "after_failure" if failed else None
-        if pair not in attempted:
-            ps["attempted_actions"] = (attempted + [pair])[-MAX_ATTEMPTED:]
-            self.store.put("runs", run)
         if why is None:
             return
         saves = self.records(run_id)

@@ -54,13 +54,12 @@ def game_environment(env: dict) -> dict:
 
 def _zip_game_dir(game_dir: Path) -> bytes:
     stream = io.BytesIO()
-    count = 0
     with zipfile.ZipFile(stream, "w", zipfile.ZIP_DEFLATED) as archive:
         for path in game_dir.rglob("*"):
             if path.is_file() and not path.is_symlink() and path.name != "ashad-fixture.json":
                 archive.write(path, str(path.relative_to(game_dir)))
-                count += 1
-    return stream.getvalue() if count else b""
+        empty = not archive.namelist()
+    return b"" if empty else stream.getvalue()
 
 
 class Runtime:

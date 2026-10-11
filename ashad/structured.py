@@ -270,12 +270,13 @@ class StructuredPlayers:
                 except Exception:
                     pass  # Status stays "unavailable"; a missing pin never blocks the record.
             recent = self.store.events(run_id, after=max(0, self.store.count_events(run_id) - 120), limit=120)
+            player_events = [e for e in recent if e["payload"].get("player_id") == player_id
+                             and e["kind"] in {"decision_selected", "action_result", "structured_tool_result"}]
             decisions = []
-            for e in [e for e in recent if e["payload"].get("player_id") == player_id and
-                      e["kind"] in {"decision_selected", "action_result", "structured_tool_result"}][-5:]:
-                text = json.dumps(e["payload"], ensure_ascii=False)
-                decisions.append({"event_id": e["id"], "kind": e["kind"], "at": e["timestamp"],
-                                  "payload": e["payload"] if len(text) <= 2000 else text[:2000]})
+            for event in player_events[-5:]:
+                text = json.dumps(event["payload"], ensure_ascii=False)
+                decisions.append({"event_id": event["id"], "kind": event["kind"], "at": event["timestamp"],
+                                  "payload": event["payload"] if len(text) <= 2000 else text[:2000]})
             plan = run.get("subgoal_plan") if (run.get("subgoal_plan") or {}).get("player_id") == player_id else None
             goal = subgoals.active_goal(plan) if plan else None
             intent = {"primary_goal": plan["primary_goal"] if plan else player["goal"],

@@ -22,7 +22,6 @@ SUBSCRIPTION_PRICING = PROVIDERS["codex"]["pricing"]
 GAME_VERBS = ("move_to", "interact", "input", "ui_click", "ui_drag", "ui_text", "ui_scroll", "fish_follow")  # worker/models.py GameAction.verb
 STRUCTURED_TOOLS = ("observe", "explain_objective", "list_entities", "inspect_entity", "list_actions",
                     "get_action_status", "cancel_action", "read_changes", "wait_for_change", "perform_action")
-BLOCKERS = ("action_missing", "target_missing", "parameter_missing", "unclear")
 
 
 class ProviderError(Exception):

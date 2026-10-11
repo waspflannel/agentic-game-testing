@@ -65,22 +65,18 @@ def _size(value):
 def shrink_example(example):
     """Trim the largest evidence first until the example fits MAX_EXAMPLE_BYTES."""
     example = copy.deepcopy(redact(example))
-    state = example.get("game_state") or {}
-    observation = state.get("observation")
-    steps = [
-        ("capabilities.candidate_actions", lambda: example["capabilities"].__setitem__("candidate_actions", [])),
-        ("game_state.telemetry.diagnostics", lambda: state["telemetry"].__setitem__("diagnostics", None)),
-        ("game_state.observation.entities", lambda: observation.__setitem__("entities", observation["entities"][:20])),
-        ("recent_decisions[*].payload", lambda: [d.__setitem__("payload", None) for d in example["recent_decisions"]]),
-        ("game_state.observation", lambda: state.__setitem__("observation", {"observation_id": observation.get("observation_id")})),
-    ]
-    for name, apply in steps:
+    state = example["game_state"]
+    steps = (
+        ("capabilities.candidate_actions", lambda: example["capabilities"].update(candidate_actions=[])),
+        ("game_state.telemetry.diagnostics", lambda: state["telemetry"].update(diagnostics=None)),
+        ("game_state.observation.entities", lambda: state["observation"].update(entities=state["observation"].get("entities", [])[:20])),
+        ("recent_decisions[*].payload", lambda: example.update(recent_decisions=[{**d, "payload": None} for d in example["recent_decisions"]])),
+        ("game_state.observation", lambda: state.update(observation={"observation_id": state["observation"].get("observation_id")})),
+    )
+    for name, trim in steps:
         if _size(example) <= MAX_EXAMPLE_BYTES:
             break
-        try:
-            apply()
-        except (KeyError, TypeError, AttributeError):
-            continue
+        trim()
         example["truncated"].append(name)
     return example
 

@@ -63,3 +63,13 @@ async def test_full_hit_writes_no_recorded_event(environment, monkeypatch):
     await act(env)
     assert len(events(env, "issue_cap_reached")) == 1
     assert events(env, "unsupported_action_recorded") == []
+
+
+def test_events_of_kinds_is_newest_first_and_bounded(tmp_path):
+    store = Store(tmp_path / "data")
+    store.event("r1", "a")
+    store.event("r1", "b")
+    store.event("r1", "a")
+    store.event("r2", "a")
+    assert [e["seq"] for e in store.events_of_kinds("r1", ("a",), 10)] == [3, 1]
+    assert len(store.events_of_kinds("r1", ("a", "b"), 2)) == 2

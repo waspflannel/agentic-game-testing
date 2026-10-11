@@ -77,6 +77,8 @@ class Coordinator:
         self.draining = False
         from .structured import StructuredPlayers
         self.structured = StructuredPlayers(self)
+        from .saves import Saves
+        self.saves = Saves(self)
 
     def occupied_instances(self):
         """Lifecycle labels cannot release unresolved desktop/account ownership."""
@@ -176,8 +178,9 @@ class Coordinator:
                    "'instance_' || id IN (SELECT id FROM commands WHERE scope='launch' AND json_extract(result,'$.run_id')=?))",
                    (rid, rid))
         db.execute("DELETE FROM commands WHERE scope='launch' AND json_extract(result,'$.run_id')=?", (rid,))
+        db.execute("DELETE FROM commands WHERE scope=?", ("save:" + rid,))
         db.execute("DELETE FROM events WHERE run_id=?", (rid,))
-        db.execute("DELETE FROM records WHERE kind IN ('incidents','repair_task_exports') AND json_extract(data,'$.run_id')=?", (rid,))
+        db.execute("DELETE FROM records WHERE kind IN ('incidents','repair_task_exports','saves') AND json_extract(data,'$.run_id')=?", (rid,))
         db.execute("DELETE FROM records WHERE kind='runs' AND id=?", (rid,))
         scenario_id = run.get("scenario_id")
         if scenario_id and not db.execute("SELECT 1 FROM records WHERE kind='runs' AND json_extract(data,'$.scenario_id')=? LIMIT 1",
@@ -209,7 +212,7 @@ class Coordinator:
                 if field in latest:
                     run[field] = copy.deepcopy(latest[field])
             for pid, ps in run["players"].items():
-                for key in ("last_observation", "activity", "invalid_actions", "structured_context", "agent_memory", "agent_status", "pending_action", "observation_signature", "last_state_change_at"):
+                for key in ("last_observation", "activity", "invalid_actions", "structured_context", "agent_memory", "agent_status", "pending_action", "observation_signature", "last_state_change_at", "attempted_actions"):
                     if key == "agent_status" and run["state"] not in {"Starting", "Running"}:
                         continue
                     ps[key] = latest["players"][pid].get(key, ps.get(key))

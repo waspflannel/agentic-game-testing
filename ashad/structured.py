@@ -56,6 +56,9 @@ def wait_signature(observation):
     return hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()
 
 
+OWN_ACTION_KINDS = frozenset({"decision_selected", "structured_action_intent", "action_result", "structured_action_outcome", "goal_changed"})
+
+
 def observed_entity(observation, target_id):
     return next((e for e in observation.get("entities", []) if target_id and e.get("id") == target_id), {})
 
@@ -458,7 +461,7 @@ class StructuredPlayers:
         ps = run["players"][player["id"]]
         recent = self.store.events(run["id"], after=max(0, self.store.count_events(run["id"])-120), limit=120)
         own = [e for e in recent if e["payload"].get("player_id") == player["id"] and e["kind"] in
-               {"decision_selected", "structured_action_intent", "action_result", "structured_action_outcome", "goal_changed"}][-20:]
+               OWN_ACTION_KINDS][-20:]
         team = [e for e in recent if e["kind"] == "team_message"][-12:] if player.get("cooperation") == "team" else []
         configuration_id, snapshot = run_configuration(run)
         context = {"play_mode": run["plan"]["play_mode"], "player": player, "goal": player["goal"],

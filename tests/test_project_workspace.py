@@ -61,7 +61,7 @@ def test_readiness_requires_positive_fresh_environment_and_provider(workspace, m
         result = client.get("/api/projects/project/readiness?build_id=build").json()
         assert result["ready"] and result["build_validation"]["ready"] and result["environments"][0]["ready"]
         assert result["steam"]["ready"] is False and not app.state.store.list("runs")
-        assert inspect.await_count == 1 and app.state.ai.validate.await_count == 1
+        assert inspect.await_count == 1 and app.state.ai.validate.await_count == 2
         app.state.ai.validate.return_value = {"configured": False, "status": "configuration_required", "message": "Signed out"}
         assert client.get("/api/projects/project/readiness?build_id=build").json()["ready"] is False
         app.state.coordinator.draining = True

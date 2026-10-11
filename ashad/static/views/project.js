@@ -29,6 +29,8 @@ export function overviewModel(data, ov, now = Date.now() / 1000) {
   const owners = new Map((data?.instance_slot?.owners || []).map(o => [o.run_id, o]));
   const runs = (data?.runs || []).filter(r => r.project_id === ov.projectId).sort((a, b) => (runTime(b) || 0) - (runTime(a) || 0));
   return {
+    busy: runs.some(r => owners.has(r.id)),
+    agentBusy: id => runs.some(r => owners.has(r.id) && [r.agent_id, r.plan?.agent_id].includes(id)),
     project, builds, build, agents, total: runs.length,
     recent: runs.slice(0, RECENT).map(r => ({ id: r.id, goal: runGoal(r), age: ago(runTime(r), now), status: runStatus(r, owners.get(r.id)), state: r.state, reason: r.ending_reason, duration: duration(r) })),
     buildName, modelLabel: id => modelLabel(data, id),
@@ -46,6 +48,7 @@ const note = (kind, text) => `<p class="note${kind ? ` note-${kind}` : ''}"${kin
 export function overviewRegions(m, ov, now = Date.now() / 1000) {
   const pid = ov.projectId;
   const head = `<h1>${esc(m.project.name || m.project.id)}</h1><div class="btn-row">`
+    + `<button type="button" class="btn btn-ghost" data-action="ov-delete-project" data-key="ov-delete-project"${m.busy ? ' aria-disabled="true" title="Stop its active instance before deleting this project"' : ''}>${icon('trash')}Delete project</button>`
     + `<a class="btn btn-secondary" href="#/setup?project=${enc(pid)}" data-key="ov-add-agent">${icon('plus')}Add agent configuration</a>`
     + `<a class="btn btn-primary" href="${href('p', pid, 'new')}" data-key="ov-new">${icon('square-pen')}New instance</a></div>`;
 
@@ -65,6 +68,7 @@ export function overviewRegions(m, ov, now = Date.now() / 1000) {
   const agents = m.agents.length ? `<ul class="list">${m.agents.map(a => {
     const op = ov.retunes.get(a.id);
     const busy = op && (op.status === 'busy' || op.waiting);
+    const blocked = busy ? 'Wait for the retune to finish before deleting' : m.agentBusy(a.id) ? 'Stop the instance using this configuration before deleting it' : '';
     const status = !op ? '' : op.waiting ? note('', 'Another agent is being tuned; this retune starts when it finishes.')
       : op.status === 'busy' ? `<div class="tuning">${tuningProgressHTML(op, now)}</div>`
       : op.status === 'done' ? note('', `Retuned as ${op.value?.name || op.value?.id || 'a new configuration'}.`) : op.error ? note('error', op.error) : '';
@@ -72,7 +76,8 @@ export function overviewRegions(m, ov, now = Date.now() / 1000) {
       + `<span class="check-detail">${esc(m.modelLabel(a.model))} · build ${esc(m.buildName(a.build_id))} · tuned ${a.created_at ? esc(since(a.created_at, now)) : 'at an unrecorded time'}</span>${status}</div>`
       + `<div class="list-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="ov-instructions" data-id="${esc(a.id)}" data-key="ov-ins-${esc(a.id)}">View instructions</button>`
       + `<button type="button" class="btn btn-ghost btn-sm" data-action="ov-retune" data-id="${esc(a.id)}" data-key="ov-tune-${esc(a.id)}"${busy ? ' aria-busy="true" aria-disabled="true"' : ''}>Retune…</button>`
-      + `<a class="btn btn-ghost btn-sm" href="${href('p', pid, 'new')}?agent=${enc(a.id)}" data-key="ov-run-${esc(a.id)}">New instance</a></div></li>`;
+      + `<a class="btn btn-ghost btn-sm" href="${href('p', pid, 'new')}?agent=${enc(a.id)}" data-key="ov-run-${esc(a.id)}">New instance</a>`
+      + `<button type="button" class="btn btn-ghost btn-sm" data-action="ov-delete-agent" data-id="${esc(a.id)}" data-key="ov-delagent-${esc(a.id)}"${blocked ? ` aria-disabled="true" title="${blocked}"` : ''}>Delete</button></div></li>`;
   }).join('')}</ul>` : `<p class="hint">No agent configuration yet. <a href="#/setup?project=${enc(pid)}" data-key="ov-setup">Add one</a> to start instances.</p>`;
 
   let readiness;

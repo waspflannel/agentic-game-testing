@@ -3,11 +3,10 @@
 import { esc, icon, since, badge } from '../core.js';
 
 const enc = encodeURIComponent;
-export const SECTIONS = [['account', 'Account'], ['desktops', 'Desktops'], ['steam', 'Steam accounts'], ['limits', 'Limits'], ['maintenance', 'Maintenance']];
+export const SECTIONS = [['account', 'Account'], ['desktops', 'Desktops'], ['steam', 'Steam accounts'], ['limits', 'Limits']];
 const errorNote = text => (text ? `<p class="note note-error" data-announce>${icon('alert')}<span>${esc(text)}</span></p>` : '');
 const okNote = text => (text ? `<p class="note">${icon('check')}<span>${esc(text)}</span></p>` : '');
 const disabled = reason => (reason ? ` aria-disabled="true" title="${esc(reason)}"` : '');
-export const isAbsolutePath = value => /^([A-Za-z]:[\\/]|\\\\[^\\]|\/)/.test(String(value || '').trim());
 
 export function settingsSkeleton(section, inner) {
   const nav = SECTIONS.map(([id, label]) => `<a class="row settings-link${id === section ? ' is-current' : ''}" href="#/settings/${id}" data-key="sn-${id}"${id === section ? ' aria-current="page"' : ''}>${esc(label)}</a>`).join('');
@@ -228,101 +227,6 @@ export function limitsRegions(data, ui) {
     hardware: `<dl class="kv"><dt>CPU</dt><dd>${pct(h.cpu_percent)} in use</dd><dt>Memory</dt><dd>${pct(h.memory_percent)} in use · ${gb(h.memory_available)} available</dd><dt>Disk free</dt><dd>${gb(h.disk_free)}</dd><dt>GPU</dt><dd>${h.gpu ? esc(JSON.stringify(h.gpu)) : 'Not reported'}</dd></dl>`,
     'form-status': errorNote(ui.formError) + okNote(ui.saved),
   };
-}
-
-// ── Maintenance ─────────────────────────────────────────────────────────────
-const lines = value => String(value || '').split(/\r?\n/).map(s => s.trim()).filter(Boolean);
-const joinPath = (root, leaf) => (root ? root.replace(/[\\/]+$/, '') + (root.includes('/') && !root.includes('\\') ? '/' : '\\') + leaf : '');
-
-export function importPayload(values) {
-  const errors = {};
-  const source = String(values.source_root || '').trim();
-  const backup = String(values.backup_dir || '').trim();
-  if (!isAbsolutePath(source)) errors.source_root = 'Enter an absolute path to the old ASHAD data folder.';
-  if (!isAbsolutePath(backup)) errors.backup_dir = 'Enter an absolute path to a new, empty backup folder.';
-  const inventory = { codex_home: joinPath(source, 'codex'), worker_registration_paths: lines(values.worker_registration_paths), external_build_paths: lines(values.external_build_paths),
-    docker_volumes: lines(values.docker_volumes), keyring_services: lines(values.keyring_services) };
-  for (const key of ['worker_registration_paths', 'external_build_paths']) if (inventory[key].some(p => !isAbsolutePath(p))) errors[key] = 'Every path must be absolute.';
-  for (const key of ['confirmed', 'source_idle_confirmed', 'external_backup_confirmed']) if (values[key] !== true) errors[key] = 'Required.';
-  return { errors, body: { source_root: source, backup_dir: backup, external_inventory: inventory, confirmed: values.confirmed === true, source_idle_confirmed: values.source_idle_confirmed === true, external_backup_confirmed: values.external_backup_confirmed === true } };
-}
-
-// A starting grouping: each project's builds, then one suggested project per unassigned build.
-export function suggestGroups(data) {
-  const slug = text => String(text || 'project').toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80) || 'project';
-  const builds = data?.builds || [];
-  const groups = (data?.projects || []).map(p => ({ project_id: p.id, name: p.name || p.id, build_ids: builds.filter(b => b.project_id === p.id).map(b => b.id) })).filter(g => g.build_ids.length);
-  for (const b of builds.filter(b => !b.project_id)) groups.push({ project_id: slug(b.name || b.id), name: b.name || b.id, build_ids: [b.id] });
-  return JSON.stringify(groups, null, 2);
-}
-
-export function parseGroups(text) {
-  let groups;
-  try { groups = JSON.parse(text); } catch { return { error: 'Groups must be valid JSON: a list of {"project_id", "name", "build_ids"}.' }; }
-  if (!Array.isArray(groups) || !groups.length) return { error: 'Add at least one group.' };
-  return { groups, signature: JSON.stringify(groups) };
-}
-
-// A reviewed preview stays valid only for the exact grouping it was made from.
-export const previewValid = (migration, text) => Boolean(migration.preview && migration.preview.signature === parseGroups(text).signature);
-
-export function maintenanceSkeleton(data, groupsText) {
-  const oldDataPlaceholder = navigator.userAgent.includes('Windows') ? 'C:\\Users\\you\\ASHAD-old\\data' : '/home/you/ASHAD-old/data';
-  const check = (name, label) => `<label class="check"><input type="checkbox" name="${name}"> ${esc(label)}</label>`;
-  return head('Maintenance', 'Guarded, one-time operations. Each asks for absolute paths, explicit confirmations and a review first.')
-    + `<form class="card settings-card settings-form" data-form="settings-import" novalidate><h2 class="card-title">Import an older workspace</h2>`
-    + `<p class="hint">Copies run history from a previous ASHAD data folder into this one. Imported sign-in is never trusted; you sign in again afterwards.</p>`
-    + field('i-source', 'Old data folder (absolute)', `<input id="i-source" class="input mono" name="source_root" autocomplete="off" spellcheck="false" placeholder="${oldDataPlaceholder}">`)
-    + field('i-backup', 'New backup folder (absolute, empty)', `<input id="i-backup" class="input mono" name="backup_dir" autocomplete="off" spellcheck="false">`)
-    + field('i-builds', 'External build paths (one per line)', `<textarea id="i-builds" class="textarea mono" name="external_build_paths" rows="2" spellcheck="false"></textarea>`, 'Must cover every build path the old workspace recorded.')
-    + field('i-workers', 'Worker registration paths (one per line, optional)', `<textarea id="i-workers" class="textarea mono" name="worker_registration_paths" rows="2" spellcheck="false"></textarea>`)
-    + field('i-volumes', 'Docker volumes (one per line, optional)', `<textarea id="i-volumes" class="textarea mono" name="docker_volumes" rows="2" spellcheck="false"></textarea>`)
-    + field('i-keyring', 'Keyring services (one per line, optional)', `<textarea id="i-keyring" class="textarea mono" name="keyring_services" rows="2" spellcheck="false"></textarea>`)
-    + `<fieldset class="checks-set"><legend>Confirm</legend>${check('confirmed', 'I want to import this workspace')}${check('source_idle_confirmed', 'The old ASHAD is closed and idle')}${check('external_backup_confirmed', 'I have backed up the external resources listed above')}</fieldset>`
-    + `<div data-region="import-status"></div><div class="btn-row"><button type="submit" class="btn btn-primary" data-key="i-review">Review import…</button></div></form>`
-    + `<form class="card settings-card settings-form" data-form="settings-migration" novalidate><h2 class="card-title">Group history into projects</h2>`
-    + `<p class="hint">Assigns older builds, agents and runs to projects. Preview first; changing the grouping discards the reviewed preview.</p>`
-    + field('m-groups', 'Groups (JSON)', `<textarea id="m-groups" class="textarea mono" name="groups" rows="8" spellcheck="false">${esc(groupsText)}</textarea>`, 'A list of {"project_id", "name", "build_ids"}. IDs use letters, digits, _ and -.')
-    + `<div class="btn-row"><button type="button" class="btn btn-secondary" data-action="migration-preview" data-key="m-preview">Preview</button></div>`
-    + `<div data-region="migration-preview"></div>`
-    + field('m-backup', 'Backup folder (absolute, empty)', `<input id="m-backup" class="input mono" name="backup_dir" autocomplete="off" spellcheck="false">`)
-    + check('confirmed', 'I reviewed this preview and want to apply it')
-    + `<div data-region="migration-status"></div><div class="btn-row" data-region="migration-actions"></div></form>`;
-}
-
-// m: { preview: {signature, result}|null, previewing, applying, error, applied, groupsText }
-export function maintenanceRegions(ui) {
-  const m = ui.migration;
-  const p = m.preview?.result;
-  const valid = previewValid(m, m.groupsText);
-  let preview = '';
-  if (m.previewing) preview = `<p class="note">${icon('loader', 'icon spin')}<span>Previewing…</span></p>`;
-  else if (p && !valid) preview = `<p class="note">${icon('info')}<span>The grouping changed since the preview. Preview again before applying.</span></p>`;
-  else if (p) {
-    const count = obj => Object.keys(obj || {}).length;
-    const unassigned = ['builds', 'agents', 'runs'].flatMap(k => (p.unassigned?.[k] || []).map(u => `<li>${esc(k.slice(0, -1))} ${esc(u.id || u)}: ${esc(u.reason || 'unassigned')}</li>`)).join('');
-    preview = `<div class="preview"><dl class="kv"><dt>Projects</dt><dd>${esc(Object.values(p.projects || {}).join(', ') || 'None')}</dd>`
-      + `<dt>Assigned</dt><dd>${count(p.assignments?.builds)} builds · ${count(p.assignments?.agents)} agents · ${count(p.assignments?.runs)} runs</dd></dl>`
-      + (unassigned ? `<p class="hint">Left unassigned:</p><ul class="link-list">${unassigned}</ul>` : '')
-      + (p.blockers?.length ? `<p class="note note-error">${icon('alert')}<span>Blocked: ${esc(p.blockers.join('; '))}</span></p>` : '')
-      + (p.backup_scope ? `<p class="hint">${esc(p.backup_scope)}</p>` : '') + (p.already_applied ? `<p class="hint">This grouping was already applied; applying again returns the same result.</p>` : '') + `</div>`;
-  }
-  const reason = !valid ? 'Preview this grouping first.' : p.blockers?.length ? 'Resolve the blockers first.' : m.applying ? 'Applying…' : '';
-  return {
-    'import-status': errorNote(ui.importError) + okNote(ui.imported),
-    'migration-preview': preview,
-    'migration-status': errorNote(m.error) + okNote(m.applied),
-    'migration-actions': `<button type="submit" class="btn btn-primary" data-key="m-apply"${disabled(reason)}>Apply migration</button>${reason ? `<span class="hint">${esc(reason)}</span>` : ''}`,
-  };
-}
-
-export function importReviewHTML(body) {
-  const list = items => (items.length ? `<ul class="link-list mono">${items.map(i => `<li>${esc(i)}</li>`).join('')}</ul>` : '<p class="hint">None</p>');
-  const inv = body.external_inventory;
-  return `<dl class="kv"><dt>From</dt><dd class="mono">${esc(body.source_root)}</dd><dt>Backup to</dt><dd class="mono">${esc(body.backup_dir)}</dd><dt>Codex home</dt><dd class="mono">${esc(inv.codex_home)}</dd></dl>`
-    + `<p class="hint">External build paths</p>${list(inv.external_build_paths)}<p class="hint">Worker registrations</p>${list(inv.worker_registration_paths)}`
-    + `<p class="hint">Docker volumes</p>${list(inv.docker_volumes)}<p class="hint">Keyring services</p>${list(inv.keyring_services)}`
-    + `<p>Mutations are blocked while the import runs. Afterwards, sign in to your AI providers again and re-check desktops.</p>`;
 }
 
 function field(id, label, control, hint = '', errorId = '') {

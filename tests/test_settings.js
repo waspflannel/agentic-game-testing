@@ -8,10 +8,6 @@ const { pathToFileURL } = require('node:url');
 const url = file => pathToFileURL(path.join(__dirname, '../ashad/static', file)).href;
 const settings = () => import(url('views/settings.js'));
 const usage = () => import(url('views/usage.js'));
-// The renderer always has navigator; Node 20 doesn't, so tests choose the platform explicitly.
-const useAgent = userAgent => Object.defineProperty(globalThis, 'navigator', { value: { userAgent }, configurable: true });
-useAgent('Mozilla/5.0 (X11; Linux x86_64)');
-
 const NOW = 2_000_000_000;
 const data = (extra = {}) => ({
   workers: [{ id: 'w1', name: 'Lab PC', url: 'http://10.0.0.2:8101', credential_ref: 'worker:w1' }, { id: 'w2', name: 'Spare', url: 'http://10.0.0.3:8101' }],
@@ -87,32 +83,11 @@ test('Steam rejects App ID 480 inline, and Verify needs a build with the same Ap
   assert.match(html, /data-action="steam-verify"[^>]*aria-disabled="true" title="No registered build has App ID 3753020/);
 });
 
-test('a changed migration grouping invalidates the reviewed preview', async () => {
-  const { parseGroups, previewValid, maintenanceRegions } = await settings();
-  const text = JSON.stringify([{ project_id: 'p', name: 'Agronauts', build_ids: ['b'] }]);
-  const migration = { groupsText: text, preview: { signature: parseGroups(text).signature, result: { projects: { p: 'Agronauts' }, blockers: [], preview_token: 't' } } };
-  const ui = { migration };
-  assert.equal(previewValid(migration, text), true);
-  assert.doesNotMatch(maintenanceRegions(ui)['migration-actions'], /aria-disabled/);
-  migration.groupsText = text.replace('Agronauts', 'Agronauts 2');
-  assert.equal(previewValid(migration, migration.groupsText), false);
-  assert.match(maintenanceRegions(ui)['migration-actions'], /aria-disabled="true"[^>]*>Apply migration<\/button><span class="hint">Preview this grouping first/);
-  assert.match(maintenanceRegions(ui)['migration-preview'], /changed since the preview/);
-  migration.groupsText = text;
-  migration.preview.result.blockers = ['Resource leases remain'];
-  assert.match(maintenanceRegions(ui)['migration-actions'], /Resolve the blockers first/);
-});
-
-test('maintenance inputs must be absolute paths with every confirmation ticked', async () => {
-  const { importPayload, isAbsolutePath } = await settings();
-  for (const p of ['C:\\data', 'D:/x', '\\\\server\\share', '/home/x']) assert.equal(isAbsolutePath(p), true, p);
-  for (const p of ['data', '.\\data', '..\\x', '']) assert.equal(isAbsolutePath(p), false, p);
-  const bad = importPayload({ source_root: 'old', backup_dir: 'D:\\bk', external_build_paths: 'builds' });
-  assert.deepEqual(Object.keys(bad.errors).sort(), ['confirmed', 'external_backup_confirmed', 'external_build_paths', 'source_idle_confirmed', 'source_root']);
-  const ok = importPayload({ source_root: 'C:\\old\\data\\', backup_dir: 'D:\\bk', external_build_paths: 'C:\\b1\n\nC:\\b2', confirmed: true, source_idle_confirmed: true, external_backup_confirmed: true });
-  assert.deepEqual(ok.errors, {});
-  assert.equal(ok.body.external_inventory.codex_home, 'C:\\old\\data\\codex', 'codex home is <source_root>\\codex');
-  assert.deepEqual(ok.body.external_inventory.external_build_paths, ['C:\\b1', 'C:\\b2']);
+test('the settings nav has no Maintenance section', async () => {
+  const { SECTIONS, settingsSkeleton } = await settings();
+  assert.deepEqual(SECTIONS.map(([id]) => id), ['account', 'desktops', 'steam', 'limits']);
+  const links = [...settingsSkeleton('account', '').matchAll(/class="row settings-link[^"]*" href="#\/settings\/(\w+)"/g)].map(m => m[1]);
+  assert.deepEqual(links, ['account', 'desktops', 'steam', 'limits']);
 });
 
 test('usage totals count cached and reasoning tokens once and never invent a price', async () => {
@@ -159,22 +134,11 @@ test('settings and usage markup escape every server string', async () => {
   const u = await usage();
   const evil = '<img src=x onerror=alert(1)>';
   const d = data({ workers: [{ id: evil, name: evil, url: evil, last_probe: { status: 'unavailable', message: evil }, desktop_url: evil }], accounts: [{ id: evil, name: evil, worker_id: evil, steam_id: evil, app_id: evil }], builds: [{ id: evil, name: evil, steam_app_id: evil }], projects: [{ id: evil, name: evil }] });
-  const ui = { probing: new Set(), errors: new Map([[evil, evil]]), busy: new Map(), results: new Map([[evil, { ok: false, text: evil }]]), formError: evil, saved: evil, migration: { groupsText: evil, preview: null }, importError: evil };
-  const html = [s.accountRegions({ ai: { status: evil, message: evil, plan_type: evil }, error: evil, login: { auth_url: evil } }), s.desktopsRegions(d, ui, NOW), s.steamRegions(d, ui, NOW), s.limitsRegions(d, ui), s.maintenanceRegions(ui)]
-    .flatMap(Object.values).join('') + s.desktopsSkeleton(d, evil) + s.steamSkeleton(d) + s.maintenanceSkeleton(d, s.suggestGroups(d))
+  const ui = { probing: new Set(), errors: new Map([[evil, evil]]), busy: new Map(), results: new Map([[evil, { ok: false, text: evil }]]), formError: evil, saved: evil };
+  const html = [s.accountRegions({ ai: { status: evil, message: evil, plan_type: evil }, error: evil, login: { auth_url: evil } }), s.desktopsRegions(d, ui, NOW), s.steamRegions(d, ui, NOW), s.limitsRegions(d, ui)]
+    .flatMap(Object.values).join('') + s.desktopsSkeleton(d, evil) + s.steamSkeleton(d)
     + Object.values(u.usageRegions({ rows: [{ timestamp: NOW, model: evil, purpose: evil, run_id: evil, status: evil }] }, { ...u.newUsageUi(), range: 'all' }, new Map([[evil, evil]]), NOW)).join('');
   assert.doesNotMatch(html, /<img/);
-});
-
-test('import placeholder shows a path for the running platform', async () => {
-  const s = await settings();
-  try {
-    useAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64)');
-    assert.match(s.maintenanceSkeleton(data(), ''), /placeholder="C:\\Users\\you\\ASHAD-old\\data"/);
-  } finally {
-    useAgent('Mozilla/5.0 (X11; Linux x86_64)');
-  }
-  assert.match(s.maintenanceSkeleton(data(), ''), /placeholder="\/home\/you\/ASHAD-old\/data"/);
 });
 
 const claudeCard = (claude, extra = {}) => settings().then(m => m.accountRegions({ ai: { status: 'ready' }, claude, ...extra }));

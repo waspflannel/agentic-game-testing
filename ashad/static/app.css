@@ -370,9 +370,6 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .list-actions { display: flex; flex-wrap: wrap; gap: 4px; }
 .list-reason { flex-basis: 100%; font-size: var(--fs-meta); color: var(--attention); }
 .tag-muted { font-size: 11px; font-weight: 400; padding: 0 6px; border-radius: 4px; background: var(--surface-3); color: var(--text-2); }
-.checks-set { border: 0; margin: 0; padding: 0; display: grid; gap: 6px; }
-.checks-set legend { font-size: var(--fs-meta); color: var(--text-2); margin-bottom: 4px; }
-.preview { display: grid; gap: 8px; padding: 12px; border-radius: var(--r-row); background: var(--surface-2); }
 .usage-page { max-width: 1120px; gap: 16px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 8px; }
 .tile { display: grid; gap: 2px; padding: 14px 16px; border-radius: var(--r-card); background: var(--surface); }

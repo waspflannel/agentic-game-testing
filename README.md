@@ -32,7 +32,7 @@ Chromium's sandbox needs ordinary user read access to the app's files. If `ASHAD
 
 Quit lists owning instances and in-flight work. **Cancel** leaves them unchanged; **Stop/cancel and quit** waits for confirmed teardown and clean controller exit. Failed teardown keeps the app open for reconciliation. If the controller has already exited, Quit asks for confirmation rather than trapping the window; the watchdog keeps its authority. Closing a human viewer never hands control back automatically.
 
-Data from an older checkout-based controller (`.data\controller`) is not loaded automatically; bring it in explicitly with **Import existing workspace…**. Desktop preparation, build registration and Steam account setup live in the app.
+Data from an older checkout-based controller (`.data\controller`) is not loaded automatically. Desktop preparation, build registration and Steam account setup live in the app.
 
 ## Build and run (Linux x64)
 
@@ -75,7 +75,7 @@ Profile tuning and bot decisions require account access to the selected model. T
 
 Use **Projects + → Setup new game agent** to create a game project, select/register a supported pinned manifest, explicitly inspect/prepare its desktop, tune a named model-specific configuration and review its saved guide. Selection never imports, prepares, tunes or starts automatically. Duplicate names remain independent IDs. Completed tuning retries reconcile the same request rather than silently retuning. Exactly **one occupied instance globally** is allowed, including queued, paused, human-owned and ended/unconfirmed work. Existing higher saved caps remain historical settings, not effective capacity.
 
-Optional **Import existing workspace…** requires an empty owned target, a stopped source controller/watchdog, confirmed idle worker/account pool, a fresh verified SQLite/evidence backup and explicit separate external backups/inventory. It does not copy Codex auth, OS keyring values, registrations, external builds or Docker volumes, and does not infer current readiness. Claude tokens are not copied. Project grouping is a separate explicit preview/backup/apply operation; unassigned history remains readable. Interrupted imports block editing/admission until operator reconciliation: retain the journal, evidence and backup; do not remove them blindly.
+Interrupted imports from older ASHAD versions block editing and admission until operator reconciliation: retain the journal, evidence and backup; do not remove them blindly.
 
 ## Tune an agent, then run it
 

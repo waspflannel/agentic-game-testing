@@ -1,11 +1,11 @@
-import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, createDrawer, patchHTML, dirtyBridge, runGoal, ago, modelLabel } from './core.js';
+import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, createDrawer, patchHTML, dirtyBridge, runGoal, ago, modelLabel, since } from './core.js';
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
 import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, draftModel, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
 import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions, defaultTab, nextTab } from './views/instance.js';
 import { panelRegions, mergeEvents, latestObservation } from './views/inspector.js';
 import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discardSetup, tuneAgent, setupSkeleton, setupRegions, prepareDialogText, prepareDesktop, registerBuild, elapsed } from './views/setup.js';
 import { settingsSkeleton, accountSkeleton, accountRegions, accountBlocker, settleLogin, desktopsSkeleton, desktopsRegions, workerPayload, steamSkeleton, steamRegions, steamErrors,
-  limitsSkeleton, limitsRegions, limitsPayload, maintenanceSkeleton, maintenanceRegions, importPayload, importReviewHTML, suggestGroups, parseGroups, previewValid, isAbsolutePath, SECTIONS } from './views/settings.js';
+  limitsSkeleton, limitsRegions, limitsPayload, SECTIONS } from './views/settings.js';
 import { newUsageUi, usageSkeleton, usageRegions } from './views/usage.js';
 import { newOverview, readinessDue, overviewModel, overviewSkeleton, overviewRegions } from './views/project.js';
 import { PAGE, MAX_EVENTS, createTimeline, beginPage, applyPage, failPage, seedFromRun, applyLive, timelineCards, timelineRegions, syncCards, cardBody, rawJSON, eventIndex } from './views/timeline.js';
@@ -34,8 +34,7 @@ const state = {
   setups: new Map(),         // project ID ('' before step 1) -> setup state; long operations survive leaving the page
   settingsDirty: false,
   account: { checking: false, busy: false, error: '', login: null },  // login: { auth_url, login_id } only while sign-in is pending
-  settingsUi: { probing: new Set(), errors: new Map(), saving: false, saved: '', formError: '', steamBusy: new Map(), steamResults: new Map(), importError: '', imported: '',
-    migration: { groupsText: null, preview: null, previewing: false, applying: false, error: '', applied: '' } },
+  settingsUi: { probing: new Set(), errors: new Map(), saving: false, saved: '', formError: '', steamBusy: new Map(), steamResults: new Map() },
   overviews: new Map(),      // project ID -> overview state (selected build, readiness, chooser, prepare, retunes)
   usage: null,               // { loading, rows, error, at }; fetched on view open and Refresh only
   usageUi: newUsageUi(),
@@ -367,9 +366,26 @@ async function deleteProject(id) {
     const result = await api(`/api/projects/${enc(id)}`, { method: 'DELETE' });
     for (const kind of ['runs', 'agents', 'builds']) state.data[kind] = (state.data[kind] || []).filter(r => r.project_id !== id);
     state.data.projects = state.data.projects.filter(p => p.id !== id);
+    if (['project', 'composer'].includes(state.route.name) && state.route.id === id) location.hash = '#/';
     state.setups.delete(id); state.drafts.delete(id); state.overviews.delete(id); state.ui.expanded.delete(id); state.ui.showAll.delete(id);
     if (state.ui.lastProject === id) state.ui.lastProject = null;
     toast(result.files_removed === false ? `${name} deleted. Some files could not be removed.` : `${name} deleted.`, 'ok');
+  } catch (error) { toast(error.message, 'error'); }
+  render();
+  poll();
+}
+
+async function deleteAgent(id) {
+  const agent = (state.data.agents || []).find(a => a.id === id);
+  if (!agent) return;
+  const name = agent.name || id;
+  const tuned = agent.created_at ? `tuned ${since(agent.created_at)}` : 'tuned at an unrecorded time';
+  if (!await confirmDialog({ title: `Delete ${name}?`, body: `${modelLabel(state.data, agent.model)}, ${tuned}. ASHAD forgets this configuration and its tuned instructions. Instances that used it keep their own copy and stay in history. This cannot be undone.`, confirm: 'Delete configuration', danger: true })) return;
+  try {
+    await api(`/api/agents/${enc(id)}`, { method: 'DELETE' });
+    state.data.agents = state.data.agents.filter(a => a.id !== id);
+    for (const ov of state.overviews.values()) ov.retunes.delete(id);
+    toast(`${name} deleted.`, 'ok');
   } catch (error) { toast(error.message, 'error'); }
   render();
   poll();
@@ -404,7 +420,6 @@ function onSetupAction(action, target, event) {
     $('#setup-step-title')?.focus();
   } else if (action === 'setup-create') createProject(s);
   else if (action === 'setup-add-build') addBuild(s, s.projectId, target.dataset.kind);
-  else if (action === 'setup-delete-project') deleteProject(target.dataset.id);
   else if (action === 'setup-recheck') { s.readiness = null; renderView(); }
   else if (action === 'setup-prepare') prepare(s, s.projectId, setupModel(state.data, s).build);
   else if (action === 'setup-tune') startTuning(s);
@@ -464,13 +479,9 @@ function renderSettings(view) {
   } else if (section === 'steam') {
     inner = steamSkeleton(state.data);
     regions = steamRegions(state.data, { busy: ui.steamBusy, results: ui.steamResults, formError: ui.formError, saved: ui.saved }, now);
-  } else if (section === 'limits') {
+  } else {
     inner = limitsSkeleton(state.data);
     regions = limitsRegions(state.data, ui);
-  } else {
-    ui.migration.groupsText ??= suggestGroups(state.data);
-    inner = maintenanceSkeleton(state.data, ui.migration.groupsText);
-    regions = maintenanceRegions(ui);
   }
   mount(view, key, settingsSkeleton(section, inner));
   patchRegions(view, regions);
@@ -613,16 +624,6 @@ async function settingsAction(action, target) {
     poll();
   } else if (action.startsWith('steam-')) {
     steamAction(action.slice(6), accountById(id));
-  } else if (action === 'migration-preview') {
-    const m = ui.migration;
-    const parsed = parseGroups(m.groupsText);
-    if (parsed.error) { m.error = parsed.error; return renderView(); }
-    Object.assign(m, { previewing: true, error: '', applied: '' });
-    renderView();
-    try { m.preview = { signature: parsed.signature, result: await api('/api/projects/migration/preview', { method: 'POST', body: { groups: parsed.groups } }) }; }
-    catch (error) { Object.assign(m, { error: error.message, preview: null }); }
-    m.previewing = false;
-    renderView();
   }
 }
 
@@ -681,39 +682,6 @@ async function settingsSubmit(form) {
     const { body, errors } = limitsPayload(values);
     if (!showErrors(form, errors)) return;
     await settingsSave(() => api('/api/settings', { method: 'POST', body }), 'Limits saved.');
-  } else if (kind === 'settings-import') {
-    const { body, errors } = importPayload(values);
-    ui.importError = ['confirmed', 'source_idle_confirmed', 'external_backup_confirmed'].some(k => errors[k]) ? 'Tick all three confirmations to import.' : '';
-    renderView();
-    if (!showErrors(form, errors) || ui.importError) return;
-    if (!await confirmDialog({ title: 'Import this workspace?', html: importReviewHTML(body), confirm: 'Import workspace', wide: true })) return;
-    ui.imported = '';
-    try {
-      await api('/api/workspace/import', { method: 'POST', body });
-      Object.assign(ui, { imported: 'Imported. Sign in to your AI providers again and re-check your desktops.', importError: '' });
-      state.settingsDirty = false;
-      syncDirty();
-    } catch (error) { ui.importError = error.message; }
-    renderView();
-    poll();
-  } else if (kind === 'settings-migration') {
-    const m = ui.migration;
-    const parsed = parseGroups(m.groupsText);
-    if (!previewValid(m, m.groupsText) || m.preview.result.blockers?.length || m.applying) return;
-    const errors = isAbsolutePath(values.backup_dir) ? {} : { backup_dir: 'Enter an absolute path to a new, empty backup folder.' };
-    if (!showErrors(form, errors)) return;
-    if (!values.confirmed) { m.error = 'Tick the confirmation to apply.'; return renderView(); }
-    Object.assign(m, { applying: true, error: '', applied: '' });
-    renderView();
-    try {
-      await api('/api/projects/migration/apply', { method: 'POST', body: { groups: parsed.groups, preview_token: m.preview.result.preview_token, backup_dir: values.backup_dir.trim(), confirmed: true } });
-      m.applied = 'Migration applied. Projects now group the assigned history.';
-      state.settingsDirty = false;
-      syncDirty();
-    } catch (error) { m.error = error.message; }
-    m.applying = false;
-    renderView();
-    poll();
   }
 }
 
@@ -774,6 +742,8 @@ function onOverviewAction(action, target) {
   const agent = (state.data.agents || []).find(a => a.id === target.dataset.id);
   if (action === 'ov-add-build') addBuild(ov, ov.projectId, target.dataset.kind);
   else if (action === 'ov-delete-build') deleteBuild(target.dataset.id);
+  else if (action === 'ov-delete-project') deleteProject(ov.projectId);
+  else if (action === 'ov-delete-agent') deleteAgent(target.dataset.id);
   else if (action === 'ov-recheck') { ov.readiness = null; renderView(); }
   else if (action === 'ov-prepare') prepare(ov, ov.projectId, (state.data.builds || []).find(b => b.id === ov.buildId));
   else if (action === 'ov-retune') retune(ov, agent);
@@ -1221,7 +1191,7 @@ document.addEventListener('click', async event => {
     onSetupAction(action, target, event);
   } else if (action.startsWith('ov-')) {
     onOverviewAction(action, target);
-  } else if (/^(account|claude|worker|steam|migration)-/.test(action)) {
+  } else if (/^(account|claude|worker|steam)-/.test(action)) {
     settingsAction(action, target);
   } else if (action === 'usage-refresh') {
     loadUsage();
@@ -1303,7 +1273,6 @@ document.addEventListener('input', event => {
       settingsForm.querySelector(`[data-error-for="${event.target.id}"]`).textContent = message;
       if (message) event.target.setAttribute('aria-invalid', 'true'); else event.target.removeAttribute('aria-invalid');
     }
-    if (event.target.name === 'groups') { state.settingsUi.migration.groupsText = event.target.value; renderView(); }
     return;
   }
   const field = event.target.dataset?.field;

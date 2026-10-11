@@ -25,7 +25,6 @@ from .repository import Repository, sha256_file
 from .reports import generate_report
 from .agent_profiles import AgentProfiles
 from .projects import Projects
-from .workspace_import import import_workspace, IMPORT_ID as WORKSPACE_IMPORT_ID
 from .workspace_environment import inspect_fresh_environment, prepare_environment, validate_build
 from .instances import Instances, InstanceRequest
 from .store import Store, uid
@@ -49,10 +48,6 @@ async def settled_operation(operation):
         with anyio.CancelScope(shield=True):
             await asyncio.shield(task)
         raise
-
-
-async def disk_mutation(operation, *args, **kwargs):
-    return await settled_operation(asyncio.to_thread(operation, *args, **kwargs))
 
 
 def finite_number(value):
@@ -263,38 +258,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         model_options = [dict(o) for o in MODEL_OPTIONS]
         return {"settings": settings, "ai": ai_status, "ai_claude": ai.claude_status, "model_options": model_options, "builds": builds, "workers": workers, "accounts": store.list("accounts"), "agents": store.list("agents"), "runs": store.list("runs"), "usage_count": store.count("usage"), "leases": store.leases(), "projects": store.list("projects"),
                 "instance_slot": instance_slot(),
-                "workspace_import": {"interrupted": coordinator.import_interrupted(), "completed": store.get("migrations", WORKSPACE_IMPORT_ID),
-                                     "readiness_verified": False}}
-
-    @app.post("/api/workspace/import")
-    async def workspace_import(body: dict):
-        require_controller_lock("Import")
-        for name in ("source_root", "backup_dir"):
-            if not isinstance(body.get(name), str) or not Path(body[name]).is_absolute():
-                raise ValueError("Import requires explicit absolute source and fresh backup paths")
-        async with coordinator.lock:
-            if coordinator.draining or coordinator.stopping or coordinator.occupied_instances():
-                raise ValueError("Import requires an idle, reconciled target controller")
-            if operations_active():
-                raise ValueError("Wait for provider, sign-in and setup operations before importing")
-            previous = store.get("migrations", WORKSPACE_IMPORT_ID)
-            coordinator.draining = True
-            try:
-                result = await disk_mutation(import_workspace, store,
-                    source_root=body["source_root"], backup_dir=body["backup_dir"],
-                    external_inventory=body.get("external_inventory"), confirmed=body.get("confirmed") is True,
-                    source_idle_confirmed=body.get("source_idle_confirmed") is True,
-                    external_backup_confirmed=body.get("external_backup_confirmed") is True,
-                    target_drained=True)  # Authority is server-derived, never a body flag.
-                if not previous:
-                    ai.status = {"configured": False, "status": "not_validated", "api": AI_API,
-                                 "auth_method": "chatgpt", "model": MODEL,
-                                 "message": "Imported history is not readiness. Re-check ChatGPT sign-in and compatible desktops in this workspace."}
-                return result
-            except RuntimeError as exc:
-                return JSONResponse({"detail": "Import refused: " + str(exc)}, status_code=409)
-            finally:
-                coordinator.draining = False
+                "workspace_import": {"interrupted": coordinator.import_interrupted()}}
 
     @app.post("/api/projects")
     async def create_project(body: dict):
@@ -310,6 +274,14 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
 
     @app.get("/api/projects/{project_id}/readiness")
     async def project_readiness(project_id: str, build_id: str, agent_id: str | None = None, model: str | None = None):
+        async def provider_check(model):
+            try:
+                status = await ai.validate(model)
+                return {"ready": status.get("configured") is True and status.get("status") == "ready",
+                        "status": status.get("status", "unknown"), "message": status.get("message", "Unknown AI connection"), "model": model}
+            except (ProviderError, CodexError, ClaudeError) as exc:
+                return {"ready": False, "status": exc.status, "message": exc.message, "model": model}
+
         if model and not agent_id:
             raise ValueError("Choose an agent configuration before a model.")
         Projects(store).project_for_build(build_id, project_id)
@@ -333,12 +305,12 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         if model:
             require_same_provider(model, resolved, "this agent configuration")
             resolved = model
-        try:
-            status = await ai.validate(resolved)
-            provider = {"ready": status.get("configured") is True and status.get("status") == "ready",
-                        "status": status.get("status", "unknown"), "message": status.get("message", "Unknown AI connection"), "model": resolved}
-        except (ProviderError, CodexError, ClaudeError) as exc:
-            provider = {"ready": False, "status": exc.status, "message": exc.message, "model": resolved}
+        if agent_id:
+            provider = await provider_check(resolved)
+        else:  # A build alone has no provider: either connected subscription is enough.
+            checks = await asyncio.gather(provider_check(MODEL), provider_check(CLAUDE_MODEL))
+            provider = next((check for check in checks if check["ready"]),
+                            {**checks[0], "message": "Set up AI in Settings › Account."})
         environments = []
         if build_validation["ready"]:
             occupied = {lease["resource_id"] for lease in store.leases() if lease["kind"] == "worker"}
@@ -370,32 +342,6 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
                 resources = PROJECT / "ashad_resources" if (PROJECT / "ashad_resources").is_dir() else PROJECT
                 return await settled_operation(prepare_environment(store, credentials, project_id=project_id,
                     build=build, request_id=body["request_id"], confirmed=True, target_drained=True, resource_root=resources))
-            finally:
-                coordinator.draining = False
-
-    @app.post("/api/projects/migration/preview")
-    async def migration_preview(body: dict):
-        return await asyncio.to_thread(Projects(store).preview, body.get("groups"), operations_active=operations_active())
-
-    @app.post("/api/projects/migration/apply")
-    async def migration_apply(body: dict):
-        require_controller_lock("Migration")
-        if not isinstance(body.get("backup_dir"), str) or not Path(body["backup_dir"]).is_absolute():
-            raise ValueError("Choose an absolute, fresh migration backup directory")
-        if not isinstance(body.get("preview_token"), str):
-            raise ValueError("Review a migration preview before confirming")
-        # Own the same admission authority as launch/resume. The store helper also
-        # rejects every queued/live/unresolved lease and changing source snapshot.
-        async with coordinator.lock:
-            if coordinator.draining:
-                raise ValueError("Controller is already draining")
-            operations = operations_active()
-            coordinator.draining = True
-            try:
-                return await disk_mutation(Projects(store).apply, body.get("groups"),
-                    preview_token=body.get("preview_token"), backup_dir=body.get("backup_dir"),
-                    confirmed=body.get("confirmed") is True, operations_active=operations,
-                    codex_home=store.root / "codex")
             finally:
                 coordinator.draining = False
 
@@ -831,6 +777,12 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         if operations_active():
             raise ValueError("Wait for the current operation to finish before deleting.")
         return await coordinator.delete_project(project_id)
+
+    @app.delete("/api/agents/{agent_id}")
+    async def delete_agent(agent_id: str):
+        if operations_active():
+            raise ValueError("Wait for the current operation to finish before deleting.")
+        return await coordinator.delete_agent(agent_id)
 
     @app.delete("/api/{kind}/{record_id}")
     async def delete_catalog(kind: str, record_id: str):

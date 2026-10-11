@@ -2,11 +2,7 @@
 import asyncio
 import copy
 from unittest.mock import AsyncMock
-from contextlib import closing
-import threading
 import httpx
-from ashad.store import Store
-from ashad.process_lock import acquire
 
 import pytest
 from fastapi.testclient import TestClient
@@ -170,32 +166,6 @@ def test_project_api_duplicate_names_idempotency_and_fixed_saved_cap(tmp_path):
         assert not app.state.store.list("runs") and not app.state.store.leases()
 
 
-def test_import_api_preserves_history_and_does_not_trust_old_auth_or_caller_drain(tmp_path):
-    source = tmp_path / "legacy"
-    with closing(Store(source)) as old:
-        old.put("settings", {"id": "main", "concurrent_sessions": 9})
-        old.put("settings", {"id": "ai_status", "configured": True, "status": "ready", "auth_method": "chatgpt"})
-        old.put("runs", {"id": "old-run", "state": "Ended", "players": {}, "plan": {"primary_goal": "Frozen history"}})
-        old.event("old-run", "ended", {"reason": "fixture"})
-    target_lock = acquire(tmp_path / "desktop" / "controller.lock")
-    app = offline_app(tmp_path / "desktop", controller_lock=target_lock)
-    payload = {"source_root": str(source), "backup_dir": str(tmp_path / "backup"),
-               "external_inventory": {"codex_home": str(source / "codex"), "worker_registration_paths": [],
-                                      "external_build_paths": [], "docker_volumes": [], "keyring_services": ["ASHAD.Bot.Local"]},
-               "source_idle_confirmed": True, "external_backup_confirmed": True, "target_drained": False}
-    headers = {"X-ASHAD-Request": "1"}
-    with target_lock, TestClient(app) as client:
-        assert client.post("/api/workspace/import", json=payload, headers=headers).status_code == 422
-        result = client.post("/api/workspace/import", json={**payload, "confirmed": True}, headers=headers)
-        assert result.status_code == 200 and result.json()["readiness_verified"] is False
-        data = client.get("/api/bootstrap").json()
-        assert data["runs"][0]["plan"] == {"primary_goal": "Frozen history"}
-        assert data["ai"]["configured"] is False and data["settings"]["saved_concurrent_sessions"] == 9
-        assert app.state.store.require("settings", "ai_status")["configured"] is True  # Raw history untouched.
-        assert client.post("/api/workspace/import", json={**payload, "confirmed": True}, headers=headers).json() == result.json()
-        assert not app.state.coordinator.draining
-
-
 @pytest.mark.asyncio
 async def test_request_lookup_reports_real_inflight_tasks_before_durable_preparation(tmp_path, monkeypatch):
     releases = [asyncio.Event(), asyncio.Event()]
@@ -230,16 +200,6 @@ async def test_request_lookup_reports_real_inflight_tasks_before_durable_prepara
             release.set()
         await asyncio.gather(*requests, return_exceptions=True)
         app.state.store.close()
-
-
-def test_import_cannot_forge_target_process_ownership_through_request_body(tmp_path):
-    app = offline_app(tmp_path)
-    with TestClient(app) as client:
-        result = client.post("/api/workspace/import", json={"source_root": str(tmp_path / "source"),
-            "backup_dir": str(tmp_path / "backup"), "target_drained": True, "confirmed": True,
-            "source_idle_confirmed": True, "external_backup_confirmed": True}, headers={"X-ASHAD-Request": "1"})
-        assert result.status_code == 422 and "process lock" in result.json()["detail"]
-        assert not (tmp_path / "backup").exists() and not app.state.store.list("migrations")
 
 
 def test_request_reconciliation_apis_return_saved_outputs_without_work(tmp_path):
@@ -307,40 +267,6 @@ def test_interrupted_import_exposes_history_but_blocks_all_mutations(tmp_path):
             app.state.coordinator.require_instance_slot()
 
 
-@pytest.mark.asyncio
-async def test_import_http_cancellation_retains_drain_until_real_disk_work_finishes(tmp_path, monkeypatch):
-    import ashad.app as app_module
-    started, release = threading.Event(), threading.Event()
-    def disk_work(store, **kwargs):
-        assert kwargs["target_drained"] is True
-        started.set()
-        assert release.wait(5)
-        raise ValueError("Fixture cancellation; no data touched")
-    monkeypatch.setattr(app_module, "import_workspace", disk_work)
-    target_lock = acquire(tmp_path / "controller.lock")
-    app = offline_app(tmp_path, controller_lock=target_lock)
-    request = None
-    try:
-        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
-            request = asyncio.create_task(client.post("/api/workspace/import", json={"source_root": str(tmp_path / "source"),
-                "backup_dir": str(tmp_path / "backup")}, headers={"X-ASHAD-Request": "1"}))
-            assert await asyncio.to_thread(started.wait, 2)
-            request.cancel()
-            await asyncio.sleep(0)
-            assert app.state.coordinator.draining is True
-            release.set()
-            with pytest.raises(asyncio.CancelledError):
-                await request
-            assert app.state.coordinator.draining is False
-    finally:
-        release.set()
-        if request and not request.done():
-            request.cancel()
-            await asyncio.gather(request, return_exceptions=True)
-        app.state.store.close()
-        target_lock.close()
-
-
 def test_http_conflict_exposes_actual_owner_before_requiring_agent(tmp_path):
     app = offline_app(tmp_path)
     app.state.store.put("runs", {"id": "legacy-owned", "state": "Paused", "players": {}})
@@ -350,28 +276,6 @@ def test_http_conflict_exposes_actual_owner_before_requiring_agent(tmp_path):
         assert result.status_code == 409 and result.json()["code"] == "active_instance_conflict"
         assert result.json()["owning_instances"][0]["run_id"] == "legacy-owned"
         assert len(app.state.store.list("runs")) == 1
-
-
-def test_migration_api_is_explicit_backed_up_and_replay_safe(tmp_path):
-    target_lock = acquire(tmp_path / "data" / "controller.lock")
-    app = offline_app(tmp_path / "data", controller_lock=target_lock)
-    app.state.store.put("builds", {"id": "legacy-build", "source_revision": "legacy"})
-    app.state.store.put("runs", {"id": "historical", "state": "Ended", "plan": {"build_id": "legacy-build"},
-                                 "approved_plan": {"build_id": "legacy-build"}, "players": {}})
-    before = copy.deepcopy(app.state.store.require("runs", "historical"))
-    groups = [{"project_id": "migrated-game", "name": "Legacy game", "build_ids": ["legacy-build"]}]
-    headers = {"X-ASHAD-Request": "1"}
-    with target_lock, TestClient(app) as client:
-        preview = client.post("/api/projects/migration/preview", json={"groups": groups}, headers=headers).json()
-        payload = {"groups": groups, "preview_token": preview["preview_token"], "backup_dir": str(tmp_path / "backup")}
-        assert client.post("/api/projects/migration/apply", json=payload, headers=headers).status_code == 422
-        result = client.post("/api/projects/migration/apply", json={**payload, "confirmed": True}, headers=headers)
-        assert result.status_code == 200
-        assert client.post("/api/projects/migration/apply", json={**payload, "confirmed": True}, headers=headers).json() == result.json()
-        migrated = app.state.store.require("runs", "historical")
-        assert migrated == {**before, "project_id": "migrated-game"}
-        assert (tmp_path / "backup" / "ashad.sqlite3").is_file()
-        assert not app.state.coordinator.draining and len(app.state.store.list("projects")) == 1
 
 
 @pytest.mark.asyncio

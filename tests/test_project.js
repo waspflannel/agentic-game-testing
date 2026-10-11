@@ -110,6 +110,29 @@ test('the overview lists builds with validation, agents, readiness and the last 
   assert.match(r.recent, /Ended · stopped by user · 5m · now/);
 });
 
+test('the overview head offers Delete project, disabled while one of its instances is live', async () => {
+  const { newOverview, overviewModel, overviewRegions } = await project();
+  const head = d => { const ov = newOverview('p'); return overviewRegions(overviewModel(d, ov, NOW), ov, NOW).head; };
+  const idle = head(data());
+  assert.match(idle, /data-action="ov-delete-project"/);
+  assert.doesNotMatch(idle, /aria-disabled/);
+  const live = head(data({ runs: [{ id: 'r1', project_id: 'p', state: 'Running' }], instance_slot: { owners: [{ run_id: 'r1' }] } }));
+  assert.ok(live.includes('aria-disabled="true" title="Stop its active instance before deleting this project"'));
+});
+
+test('each agent row has a Delete action, disabled during its retune or while an instance using it is live', async () => {
+  const { newOverview, overviewModel, overviewRegions } = await project();
+  const button = (d, ov) => overviewRegions(overviewModel(d, ov, NOW), ov, NOW).agents.match(/<button[^>]*data-action="ov-delete-agent"[^>]*>/)[0];
+  const ov = newOverview('p');
+  const idle = button(data(), ov);
+  assert.ok(idle.includes('data-action="ov-delete-agent" data-id="a"'));
+  assert.doesNotMatch(idle, /aria-disabled/);
+  ov.retunes.set('a', { status: 'busy' });
+  assert.ok(button(data(), ov).includes('title="Wait for the retune to finish before deleting"'));
+  const live = data({ runs: [{ id: 'r1', project_id: 'p', state: 'Queued', plan: { agent_id: 'a' } }], instance_slot: { owners: [{ run_id: 'r1' }] } });
+  assert.ok(button(live, newOverview('p')).includes('title="Stop the instance using this configuration before deleting it"'));
+});
+
 test('overview markup escapes project, build, agent and goal text', async () => {
   const { newOverview, overviewModel, overviewRegions } = await project();
   const evil = '<img src=x onerror=alert(1)>';

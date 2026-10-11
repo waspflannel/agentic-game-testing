@@ -286,6 +286,10 @@ test('fix menu shows why Manual and Auto are disabled when the fixer is not read
   assert.doesNotMatch(html, /sr-only" id=/);
   assert.match(rows.off, /aria-selected="true"[\s\S]*#i-check/);
   assert.match(bar({ ...draft, fix: 'manual' }), /<span class="chip-text">Fixes: manual<\/span>/);
+  // A blocked Manual or Auto choice keeps its reason visible with the menu closed; Off needs no note.
+  const status = d => composerRegions(composerModel(data(), 'p', d, { key: 'p|b|a|gpt-6-astra', result: ready }, fixer), d).status;
+  assert.match(status({ ...draft, fix: 'manual' }), /<p class="note">Put jr on PATH\.<\/p>/);
+  assert.doesNotMatch(status(draft), /Put jr on PATH/);
   const waiting = composerRegions(composerModel(data(), 'p', draft, null), draft).bar;
   assert.match(waiting, /<p>Checking the fixer…<\/p>/);
   assert.match(fixOptions(waiting).auto, /aria-disabled="true"[\s\S]*Checking the fixer…/);

@@ -832,6 +832,12 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             raise ValueError("Wait for the current operation to finish before deleting.")
         return await coordinator.delete_project(project_id)
 
+    @app.delete("/api/agents/{agent_id}")
+    async def delete_agent(agent_id: str):
+        if operations_active():
+            raise ValueError("Wait for the current operation to finish before deleting.")
+        return await coordinator.delete_agent(agent_id)
+
     @app.delete("/api/{kind}/{record_id}")
     async def delete_catalog(kind: str, record_id: str):
         if kind not in {"builds", "workers", "accounts"}:

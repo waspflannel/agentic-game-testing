@@ -137,6 +137,18 @@ class Coordinator:
             files_removed = all([self._remove_run_dir(run["id"]) for run in runs])
             return {"deleted": project_id, "instances": len(runs), "files_removed": files_removed}
 
+    async def delete_agent(self, agent_id):
+        """Forget one agent configuration; instances that used it keep their own copy of it."""
+        from .projects import Projects
+        async with self.lock:
+            self.store.require("agents", agent_id)
+            users = [run["id"] for run in self.store.list("runs")
+                     if agent_id in (run.get("agent_id"), (run.get("plan") or {}).get("agent_id"))]
+            self._require_deletable(users, "Stop the instance using this agent configuration before deleting it.")
+            with self.store.transaction():
+                Projects(self.store).delete_agent(agent_id)
+            return {"deleted": agent_id, "instances_kept": len(users)}
+
     def _require_deletable(self, run_ids, message):
         targets = set(run_ids)
         if any(owner["run_id"] in targets for owner in self.occupied_instances()):

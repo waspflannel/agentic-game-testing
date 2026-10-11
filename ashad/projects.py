@@ -168,6 +168,13 @@ class Projects:
         db.execute("DELETE FROM commands WHERE scope='project' AND json_extract(result,'$.project_id')=?", (project_id,))
         db.execute("DELETE FROM records WHERE kind='projects' AND id=?", (project_id,))
 
+    def delete_agent(self, agent_id):
+        """Remove one agent configuration and its tuning request rows; the caller holds the transaction. Tuning notes are a per-build cache and stay."""
+        self.store.require("agents", agent_id)
+        db = self.store.db
+        db.execute("DELETE FROM commands WHERE scope='tuning' AND json_extract(result,'$.agent_id')=?", (agent_id,))
+        db.execute("DELETE FROM records WHERE kind='agents' AND id=?", (agent_id,))
+
     def project_for_build(self, build_id, project_id=None, *, allow_unassigned=False):
         build = self.store.require("builds", build_id)
         assigned = build.get("project_id")

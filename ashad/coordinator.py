@@ -329,8 +329,8 @@ class Coordinator:
                 agent_profile = AgentProfiles(self.store, self.ai).validated(plan["agent_id"])
                 from .projects import Projects
                 Projects(self.store).project_for_agent(plan["agent_id"])
-                if agent_profile["build_id"] != plan["build_id"] or agent_profile["model"] != plan["model"]:
-                    raise ValueError("Instance build and model must match its tuned agent.")
+                if agent_profile["build_id"] != plan["build_id"] or provider_of(agent_profile["model"]) != provider_of(plan["model"]):
+                    raise ValueError("Instance build and provider must match its tuned agent.")
             for player in plan["players"]:
                 account = self.store.get("accounts", player["account_id"]) if player["account_id"] else None
                 environment = await self.inspect_worker_environment(build, player["worker_id"], account=account)

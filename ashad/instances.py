@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import Field
 
 from .agent_profiles import AgentProfiles
-from .models import ACTIVE_STATES, Contract, Plan
+from .models import ACTIVE_STATES, Contract, Plan, PROVIDERS, SUPPORTED_MODELS, provider_of
 from .projects import Projects
 
 
@@ -15,6 +15,7 @@ class InstanceRequest(Contract):
     primary_goal: str = Field(min_length=1, max_length=4000)
     transport: Literal["enet", "steam"] = "enet"
     request_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,100}$")
+    model: str | None = Field(default=None, max_length=100)
 
 
 class Instances:
@@ -40,9 +41,13 @@ class Instances:
             self.coordinator.require_instance_slot()
             Projects(self.store).project_for_agent(request.agent_id, request.project_id)
             profile = AgentProfiles(self.store, self.coordinator.ai).validated(request.agent_id)
+            model = request.model or profile["model"]
+            provider = provider_of(profile["model"])
+            if model not in SUPPORTED_MODELS or provider_of(model) != provider:
+                raise ValueError(f"Choose a {PROVIDERS[provider]['label']} model for this agent configuration.")
             build = self.coordinator.validated_build(profile["build_id"])
             worker, accounts = await self._allocate_worker(build, request.transport)
-            plan = Plan(agent_id=profile["id"], build_id=profile["build_id"], model=profile["model"],
+            plan = Plan(agent_id=profile["id"], build_id=profile["build_id"], model=model,
                         title=payload["primary_goal"][:100], intent=payload["primary_goal"], primary_goal=payload["primary_goal"]).model_dump()
             plan["players"][0].update(name="Player 1", goal=payload["primary_goal"], goal_id="", worker_id=worker["id"],
                                      account_id=accounts[worker["id"]]["id"] if request.transport == "steam" else None)

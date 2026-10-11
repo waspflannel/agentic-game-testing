@@ -3,7 +3,7 @@ import { sidebarModel, sidebarHTML } from './views/sidebar.js';
 import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, draftModel, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
 import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions, defaultTab, nextTab } from './views/instance.js';
 import { panelRegions, mergeEvents, latestObservation } from './views/inspector.js';
-import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discardSetup, tuneAgent, setupSkeleton, setupRegions, prepareDialogText, prepareDesktop, registerBuild, elapsed } from './views/setup.js';
+import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discardSetup, getControls, setupSkeleton, setupRegions, prepareDialogText, prepareDesktop, registerBuild, elapsed } from './views/setup.js';
 import { settingsSkeleton, accountSkeleton, accountRegions, accountBlocker, settleLogin, desktopsSkeleton, desktopsRegions, workerPayload, steamSkeleton, steamRegions, steamErrors,
   limitsSkeleton, limitsRegions, limitsPayload, SECTIONS } from './views/settings.js';
 import { newUsageUi, usageSkeleton, usageRegions } from './views/usage.js';
@@ -277,7 +277,7 @@ function renderSetup(view) {
   // Submitted input is locked until its request settles, so a retry can only resend the same payload.
   const name = view.querySelector('#setup-name');
   if (name) name.readOnly = ['busy', 'lost'].includes(s.project.status);
-  for (const field of view.querySelectorAll('#setup-agent-name, #setup-model')) field.disabled = Boolean(s.agent) || ['busy', 'lost'].includes(s.tune.status) || s.tune.waiting;
+  for (const field of view.querySelectorAll('#setup-agent-name')) field.disabled = Boolean(s.agent) || ['busy', 'lost'].includes(s.controls.status) || s.controls.waiting;
 }
 
 // Readiness probes the machine: on view open and explicit Re-check only. owner.readiness is replaced by each probe.
@@ -422,37 +422,37 @@ function onSetupAction(action, target, event) {
   else if (action === 'setup-add-build') addBuild(s, s.projectId, target.dataset.kind);
   else if (action === 'setup-recheck') { s.readiness = null; renderView(); }
   else if (action === 'setup-prepare') prepare(s, s.projectId, setupModel(state.data, s).build);
-  else if (action === 'setup-tune') startTuning(s);
-  else if (action === 'setup-stop-waiting') { s.tune.stopWaiting = true; renderView(); }
+  else if (action === 'setup-controls') startControls(s);
+  else if (action === 'setup-stop-waiting') { s.controls.stopWaiting = true; renderView(); }
 }
 
-// While a tuning runs, its progress is read every 3s from the tuning recovery route: no probe, no inference.
-async function watchTuning(op) {
+// While Get game controls runs, its progress is read every 3s from the recovery route: no probe, no inference.
+async function watchControls(op) {
   while (op.status === 'busy' || op.waiting) {
     if (op.status === 'busy' && op.requestId && !document.hidden) {
       try {
-        const r = await api(`/api/agents/tuning/${enc(op.requestId)}`);
+        const r = await api(`/api/agents/controls/${enc(op.requestId)}`);
         if (r?.status === 'in_progress') op.progress = r.progress || null;
-      } catch { /* The next tick retries; the tuning itself is unaffected. */ }
+      } catch { /* The next tick retries; the run itself is unaffected. */ }
       renderView();
     }
     await sleep(3000);
   }
 }
 
-async function startTuning(s) {
-  if (s.tune.status === 'busy' || s.tune.waiting || !setupModel(state.data, s).done[3]) return;
-  const payload = { build_id: s.buildId, model: s.model, project_id: s.projectId, name: s.agentName.trim() };
-  const pending = tuneAgent(s.tune, payload, api, ms => { renderView(); return sleep(ms); });
-  watchTuning(s.tune);
+async function startControls(s) {
+  if (s.controls.status === 'busy' || s.controls.waiting || !setupModel(state.data, s).signedIn || !s.agentName.trim()) return;
+  const name = s.agentName.trim();
+  const payload = { build_id: s.buildId, project_id: s.projectId, name };
+  const pending = getControls(s.controls, payload, api, ms => { renderView(); return sleep(ms); });
+  watchControls(s.controls);
   renderView();
   syncDirty();
   await pending;
-  if (s.tune.status === 'done') {
-    s.agent = s.tune.value;
+  if (s.controls.status === 'done') {
+    s.agent = s.controls.value;
     state.data.agents = [s.agent, ...state.data.agents.filter(a => a.id !== s.agent.id)];
-    if (state.route.name === 'setup' && setupKey(state.route) === s.projectId && s.step === 5) s.step = 6;
-    else toast(`Agent ${s.agent.name || s.agent.id} is tuned.`, 'ok');
+    if (!(state.route.name === 'setup' && setupKey(state.route) === s.projectId && s.step === 4)) toast(`Game controls ready for ${name}.`, 'ok');
     poll();
   }
   syncDirty();
@@ -460,7 +460,7 @@ async function startTuning(s) {
 }
 
 // ── Settings and Usage (C9) ─────────────────────────────────────────────────
-const tuningActive = () => [...state.setups.values()].map(s => s.tune).concat([...state.overviews.values()].flatMap(ov => [...ov.retunes.values()]))
+const controlsActive = () => [...state.setups.values()].map(s => s.controls).concat([...state.overviews.values()].flatMap(ov => [...(ov.refreshes?.values() || [])]))
   .some(op => op.status === 'busy' || op.waiting);
 
 function renderSettings(view) {
@@ -470,7 +470,7 @@ function renderSettings(view) {
   let key = `settings:${section}`, inner, regions;
   if (section === 'account') {
     inner = accountSkeleton();
-    regions = accountRegions({ ai: state.data.ai, claude: state.data.ai_claude, ...state.account, blocker: accountBlocker(state.data, tuningActive()), modelLabel: (state.data.model_options || []).find(m => m.id === state.data.ai?.model)?.label });
+    regions = accountRegions({ ai: state.data.ai, claude: state.data.ai_claude, ...state.account, blocker: accountBlocker(state.data, controlsActive()), modelLabel: (state.data.model_options || []).find(m => m.id === state.data.ai?.model)?.label });
   } else if (section === 'desktops') {
     const edit = (state.data.workers || []).some(w => w.id === query.edit) ? query.edit : '';
     key += `:${edit}`;
@@ -1335,10 +1335,9 @@ document.addEventListener('change', event => {
     renderView();
     return;
   }
-  if (field === 'setup-model' || field === 'setup-build') {
+  if (field === 'setup-build') {
     const s = setupFor(state.route);
-    if (field === 'setup-model') Object.assign(s, { model: event.target.value, edited: true });
-    else Object.assign(s, { buildId: event.target.value, readiness: null });
+    Object.assign(s, { buildId: event.target.value, readiness: null });
     syncDirty();
     renderView();
     return;

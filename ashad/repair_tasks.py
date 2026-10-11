@@ -195,6 +195,7 @@ def run_issues(store, run_id):
         groups.setdefault(payload["issue_id"], (event["kind"], []))[1].append({
             "at": event["timestamp"], "example_id": payload.get("example_id"), "player_id": payload.get("player_id"),
             "source": payload.get("source"), "kept": payload.get("kept"), "save_before": payload.get("save_before")})
+    # Events are newest first, so dict order already puts the issue with the latest hit first.
     issues = []
     for issue_id, (kind, hits) in groups.items():
         record = store.get("issues", issue_id)

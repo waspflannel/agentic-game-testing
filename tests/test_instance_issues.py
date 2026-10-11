@@ -157,7 +157,7 @@ async def test_run_detail_without_hits_has_empty_issues(environment, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_delete_run_drops_history_keeps_issue_file(environment, monkeypatch, api):
+async def test_delete_run_drops_history_keeps_issue_file(environment, monkeypatch):
     env = await running(environment, monkeypatch, reject_verbs={"interact"})
     await act(env)
     [issue_path] = list(issue_directory(env.store).glob("*.json"))

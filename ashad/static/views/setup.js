@@ -126,6 +126,9 @@ export function controlsProgressHTML(op, now) {
 export const elapsed = seconds => { const s = Math.max(0, Math.floor(seconds)); return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
 const noteHTML = (kind, text, extra = '') => `<p class="note${kind ? ` note-${kind}` : ''}"${kind === 'error' ? ' data-announce' : ''}>${icon(kind === 'error' ? 'alert' : 'info')}<span>${text}</span>${extra}</p>`;
 
+const PROVIDER_LABELS = { claude: 'Claude', codex: 'Codex' };
+const providersSetText = ids => ids?.length ? `${ids.map(id => PROVIDER_LABELS[id] || id).join(' and ')} set` : 'AI provider set';
+
 // Desktop readiness checklist, shared with the project overview. record: { loading, result, error, at }.
 export function readinessHTML(record, now) {
   if (!record || record.loading) return `<p class="note">${icon('loader', 'icon spin')}<span>Checking this computer. This probes each desktop and can take a few seconds.</span></p>`;
@@ -135,7 +138,7 @@ export function readinessHTML(record, now) {
     + `<span class="check-text"><span>${esc(label)}</span><span class="check-detail">${esc(detail)}</span></span></li>`;
   const envs = r.environments || [];
   const rows = [
-    row(r.provider?.ready === true, 'Provider and model', r.provider?.ready ? `${r.provider.model || 'Model'} available` : r.provider?.message || 'Not available'),
+    row(r.provider?.ready === true, 'AI provider', r.provider?.ready ? providersSetText(r.provider.providers) : r.provider?.message || 'Not available'),
     row(r.build_validation?.ready === true, 'Build validation', r.build_validation?.reason || 'Not validated'),
     ...(envs.length ? envs.map(e => row(e.ready === true, e.name || e.id, e.ready ? 'Ready' : e.reason || 'Not ready'))
       : [row(false, 'Desktops', r.build_validation?.ready ? 'No desktop is registered. Prepare one, or add one under Settings › Desktops.' : 'Checked once the build validates')]),

@@ -111,6 +111,71 @@ class Coordinator:
         await self.collect_evidence(run_id)  # Downloads must not hold the admission lock.
         return self.store.require("runs", run_id)
 
+    async def delete_run(self, run_id):
+        """Forget one released instance: its records now, its run directory after commit. Usage rows are kept."""
+        async with self.lock:
+            run = self.store.require("runs", run_id)
+            self._require_deletable([run_id], "Stop this instance and confirm its teardown before deleting it.")
+            with self.store.transaction():
+                self._forget_run_records(run)
+            return {"deleted": run_id, "files_removed": self._remove_run_dir(run_id)}
+
+    async def delete_project(self, project_id):
+        """Forget a project with its instances, agents and build registrations; build files on disk are kept."""
+        from .projects import Projects
+        async with self.lock:
+            self.store.require("projects", project_id)
+            runs = [run for run in self.store.list("runs") if run.get("project_id") == project_id]
+            self._require_deletable([run["id"] for run in runs], "Stop its active instance before deleting this project.")
+            with self.store.transaction():
+                for run in runs:
+                    self._forget_run_records(run)
+                Projects(self.store).delete(project_id)
+            files_removed = all([self._remove_run_dir(run["id"]) for run in runs])
+            return {"deleted": project_id, "instances": len(runs), "files_removed": files_removed}
+
+    def _require_deletable(self, run_ids, message):
+        targets = set(run_ids)
+        if any(owner["run_id"] in targets for owner in self.occupied_instances()):
+            raise ValueError(message)
+        # finish() releases the slot before collect_evidence saves the run again.
+        pending = [self.finishing.get(run_id) for run_id in targets]
+        if any(task is not None and not task.done() for task in pending) or \
+                any(key[0] in targets and not task.done() for key, task in self.tasks.items()):
+            raise ValueError("This instance is still saving its evidence. Try again in a moment.")
+
+    def _forget_run_records(self, run):
+        """Caller holds store.transaction(). Usage, provider_requests and leases are left alone."""
+        db, rid = self.store.db, run["id"]
+        db.execute("DELETE FROM commands WHERE scope='instance' AND (json_extract(result,'$.run_id')=? OR "
+                   "'instance_' || id IN (SELECT id FROM commands WHERE scope='launch' AND json_extract(result,'$.run_id')=?))",
+                   (rid, rid))
+        db.execute("DELETE FROM commands WHERE scope='launch' AND json_extract(result,'$.run_id')=?", (rid,))
+        db.execute("DELETE FROM events WHERE run_id=?", (rid,))
+        db.execute("DELETE FROM records WHERE kind IN ('incidents','repair_task_exports') AND json_extract(data,'$.run_id')=?", (rid,))
+        db.execute("DELETE FROM records WHERE kind='runs' AND id=?", (rid,))
+        scenario_id = run.get("scenario_id")
+        if scenario_id and not db.execute("SELECT 1 FROM records WHERE kind='runs' AND json_extract(data,'$.scenario_id')=? LIMIT 1",
+                                          (scenario_id,)).fetchone():
+            db.execute("DELETE FROM records WHERE kind='scenarios' AND json_extract(data,'$.id')=?", (scenario_id,))
+        self.ticks.pop(rid, None)
+        self.command_locks.pop(rid, None)
+        self.storage.pop(rid, None)
+        self.finishing.pop(rid, None)
+        for key in [key for key in self.tasks if key[0] == rid]:
+            del self.tasks[key]
+
+    def _remove_run_dir(self, run_id):
+        path = self.store.root / "runs" / run_id
+        try:
+            shutil.rmtree(path)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            # The records are already gone; a leftover directory is harmless and reported to the user.
+            return False
+        return True
+
     def save_run(self, run):
         if self.ticks.get(run["id"]) is asyncio.current_task():
             latest = self.store.require("runs", run["id"])

@@ -155,6 +155,21 @@ class Projects:
             self.store.command("project", request_id, {"request": {"name": name}, "project_id": project["id"]})
             return project
 
+    def delete(self, project_id):
+        """Remove a project and its agents and build registrations; the caller holds the transaction and has removed its runs."""
+        self.store.require("projects", project_id)
+        db = self.store.db
+        agent_ids = [row[0] for row in db.execute("SELECT id FROM records WHERE kind='agents' AND json_extract(data,'$.project_id')=?", (project_id,))]
+        build_ids = [row[0] for row in db.execute("SELECT id FROM records WHERE kind='builds' AND json_extract(data,'$.project_id')=?", (project_id,))]
+        for agent_id in agent_ids:
+            db.execute("DELETE FROM commands WHERE scope='tuning' AND json_extract(result,'$.agent_id')=?", (agent_id,))
+        for build_id in build_ids:
+            db.execute("DELETE FROM records WHERE kind='tuning_notes' AND json_extract(data,'$.build_id')=?", (build_id,))
+        db.execute("DELETE FROM records WHERE kind IN ('agents','builds') AND json_extract(data,'$.project_id')=?", (project_id,))
+        db.execute("DELETE FROM records WHERE kind='environment_preparations' AND json_extract(data,'$.request.project_id')=?", (project_id,))
+        db.execute("DELETE FROM commands WHERE scope='project' AND json_extract(result,'$.project_id')=?", (project_id,))
+        db.execute("DELETE FROM records WHERE kind='projects' AND id=?", (project_id,))
+
     def project_for_build(self, build_id, project_id=None, *, allow_unassigned=False):
         build = self.store.require("builds", build_id)
         assigned = build.get("project_id")

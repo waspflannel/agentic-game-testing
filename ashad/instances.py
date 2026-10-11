@@ -17,7 +17,7 @@ def default_model(ai):
 
 
 class InstanceRequest(Contract):
-    agent_id: str = Field(min_length=1, max_length=100)
+    configuration_id: str = Field(min_length=1, max_length=100)
     project_id: str | None = Field(default=None, pattern=r"^[a-zA-Z0-9_-]{1,100}$")
     primary_goal: str = Field(min_length=1, max_length=4000)
     transport: Literal["enet", "steam"] = "enet"
@@ -46,8 +46,8 @@ class Instances:
             if self.coordinator.draining or self.coordinator.stopping:
                 raise ValueError("The controller is draining; new instances are blocked.")
             self.coordinator.require_instance_slot()
-            record, _ = GameControls(self.store, self.coordinator.ai).validated(request.agent_id)
-            Projects(self.store).project_for_agent(request.agent_id, request.project_id)
+            record, _ = GameControls(self.store, self.coordinator.ai).validated(request.configuration_id)
+            Projects(self.store).project_for_configuration(request.configuration_id, request.project_id)
             model = request.model or default_model(self.coordinator.ai)
             build = self.coordinator.validated_build(record["build_id"])
             worker, accounts = await self._allocate_worker(build, request.transport)

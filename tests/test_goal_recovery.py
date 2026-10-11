@@ -52,7 +52,7 @@ def test_retiring_obsolete_setup_refocuses_without_fabricating_completion():
 async def recovery_instance(environment, profile):
     store, coordinator, _, _ = environment
     run = await Instances(coordinator).start(InstanceRequest(
-        agent_id=profile["id"], primary_goal="Have at least 10 wheat in your inventory.", request_id="recover"))
+        configuration_id=profile["id"], primary_goal="Have at least 10 wheat in your inventory.", request_id="recover"))
     await coordinator.admit(run)
     run = store.require("runs", run["id"])
     plan = stale_setup()
@@ -105,7 +105,7 @@ async def test_manual_recalculation_archives_old_plan_reobserves_and_never_resum
     assert revised["goal_recalculation"]["status"] == "completed"
     assert revised["players"]["player-1"]["pending_action"] is None
     assert goals.active_goal(revised["subgoal_plan"])["objective"] == "Obtain 10 wheat"
-    for field in ("plan", "approved_plan", "agent_profile", "model", "build"):
+    for field in ("plan", "approved_plan", "configuration", "model", "build"):
         assert revised[field] == run[field]
     assert revised["subgoal_plan"]["revision"] > run["subgoal_plan"]["revision"]
     assert [body["operation"] for path, body in calls if path == "/game"] == ["get_action_status", "observe", "observe"]

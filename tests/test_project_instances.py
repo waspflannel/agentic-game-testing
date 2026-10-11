@@ -22,8 +22,8 @@ async def test_competing_projects_share_atomic_slot_across_independent_callers(e
     store.put("projects", {"id": "project-2", "name": "Another game"})
     second_build = {**store.require("builds", "build-1"), "id": "build-2", "project_id": "project-2"}
     store.put("builds", second_build)
-    store.put("agents", {**profile, "id": "agent-two", "build_id": "build-2", "project_id": "project-2"})
-    monkeypatch.setattr(GameControls, "validated", lambda self, agent_id: (self.store.require("agents", agent_id), {"controls": "controls text"}))
+    store.put("configurations", {**profile, "id": "agent-two", "build_id": "build-2", "project_id": "project-2"})
+    monkeypatch.setattr(GameControls, "validated", lambda self, configuration_id: (self.store.require("configurations", configuration_id), {"controls": "controls text"}))
     second_coord = Coordinator(store, first_coord.credentials, first_coord.ai, first_coord.client_factory)
     # Make both callers reach a genuine suspended preflight before either commits.
     ready, count = asyncio.Event(), 0
@@ -38,8 +38,8 @@ async def test_competing_projects_share_atomic_slot_across_independent_callers(e
         return await original(*args)
 
     monkeypatch.setattr(first_coord.ai, "validate", concurrent_status)
-    requests = [InstanceRequest(agent_id=profile["id"], project_id="project-1", primary_goal="Explore A", request_id="race-a"),
-                InstanceRequest(agent_id="agent-two", project_id="project-2", primary_goal="Explore B", request_id="race-b")]
+    requests = [InstanceRequest(configuration_id=profile["id"], project_id="project-1", primary_goal="Explore A", request_id="race-a"),
+                InstanceRequest(configuration_id="agent-two", project_id="project-2", primary_goal="Explore B", request_id="race-b")]
     results = await asyncio.wait_for(asyncio.gather(
         Instances(first_coord).start(requests[0]), Instances(second_coord).start(requests[1]),
         return_exceptions=True), 5)
@@ -55,13 +55,13 @@ async def test_competing_projects_share_atomic_slot_across_independent_callers(e
 @pytest.mark.parametrize("state", ["Queued", "Starting", "Running", "Paused", "Investigating", "Stopping", "Ended"])
 async def test_every_occupied_phase_blocks_before_worker_or_provider_preflight(environment, profile, state):
     store, coord, _, desktops = environment
-    first = await Instances(coord).start(InstanceRequest(agent_id=profile["id"], primary_goal="First", request_id="first"))
+    first = await Instances(coord).start(InstanceRequest(configuration_id=profile["id"], primary_goal="First", request_id="first"))
     first["state"] = state
     store.put("runs", first)
     calls = {worker: list(desktop.calls) for worker, desktop in desktops.items()}
     coord.ai.validate = AsyncMock()
     with pytest.raises(InstanceConflict) as conflict:
-        await Instances(coord).start(InstanceRequest(agent_id=profile["id"], primary_goal="Second", request_id="second"))
+        await Instances(coord).start(InstanceRequest(configuration_id=profile["id"], primary_goal="Second", request_id="second"))
     assert conflict.value.owners[0]["run_id"] == first["id"]
     assert len(store.list("runs")) == 1
     coord.ai.validate.assert_not_awaited()
@@ -72,7 +72,7 @@ async def test_every_occupied_phase_blocks_before_worker_or_provider_preflight(e
 async def test_exact_retry_can_read_frozen_ended_run_while_another_owns_slot(environment, profile):
     store, coord, _, _ = environment
     facade = Instances(coord)
-    original = InstanceRequest(agent_id=profile["id"], primary_goal="Frozen first", request_id="first")
+    original = InstanceRequest(configuration_id=profile["id"], primary_goal="Frozen first", request_id="first")
     first = await facade.start(original)
     await coord.finish(first["id"], "user_stopped")
     second = await facade.start(original.model_copy(update={"request_id": "second", "primary_goal": "New execution"}))
@@ -89,13 +89,13 @@ async def test_project_mismatch_or_unassigned_agent_fails_without_side_effects(e
     store.put("projects", {"id": "project-other", "name": "Same name allowed"})
     for project_id in ("project-other", "absent-project"):
         with pytest.raises(ValueError):
-            await Instances(coord).start(InstanceRequest(agent_id=profile["id"], project_id=project_id,
+            await Instances(coord).start(InstanceRequest(configuration_id=profile["id"], project_id=project_id,
                 primary_goal="Wrong project", request_id="invalid"))
     build = store.require("builds", "build-1")
     build.pop("project_id")
     store.put("builds", build)
     with pytest.raises(ValueError, match="no project"):
-        await Instances(coord).start(InstanceRequest(agent_id=profile["id"], primary_goal="Unassigned", request_id="invalid"))
+        await Instances(coord).start(InstanceRequest(configuration_id=profile["id"], primary_goal="Unassigned", request_id="invalid"))
     assert not store.list("runs") and not store.leases()
     assert not any(desktop.calls for desktop in desktops.values())
 
@@ -106,7 +106,7 @@ async def test_unvalidated_current_account_cannot_launch_from_imported_ready_cac
     store.put("settings", {"id": "ai_status", "configured": True, "status": "ready"})
     coord.ai.validate = AsyncMock(return_value={"configured": False, "status": "configuration_required", "message": "Sign in in the new controller home"})
     with pytest.raises(ValueError, match="new controller home"):
-        await Instances(coord).start(InstanceRequest(agent_id=profile["id"], primary_goal="Not allowed", request_id="no-auth"))
+        await Instances(coord).start(InstanceRequest(configuration_id=profile["id"], primary_goal="Not allowed", request_id="no-auth"))
     assert not store.list("runs") and not store.leases()
     assert all(path in {"/prepare/probe", "/status"} for desktop in desktops.values() for path, _ in desktop.calls)
 
@@ -131,7 +131,7 @@ async def test_get_controls_retry_returns_saved_configuration_without_inference_
     store.delete("builds", build["id"])
     async with controls.lock:  # Reading a completed retry is not another Get game controls run.
         assert await controls.gather(build["id"], **kwargs) == first
-    assert backend.write_controls.await_count == 1 and len(store.list("agents")) == 1
+    assert backend.write_controls.await_count == 1 and len(store.list("configurations")) == 1
     with pytest.raises(ValueError, match="different inputs"):
         await controls.gather(build["id"], **{**kwargs, "name": "Changed"})
     store.put("builds", build)
@@ -183,7 +183,7 @@ async def test_request_lookup_reports_real_inflight_tasks_before_durable_prepara
     requests = []
     try:
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
-            payload = {"agent_id": "fixture", "primary_goal": "Fixture", "request_id": "same-inflight"}
+            payload = {"configuration_id": "fixture", "primary_goal": "Fixture", "request_id": "same-inflight"}
             for index in range(2):
                 requests.append(asyncio.create_task(client.post("/api/instances", json=payload, headers={"X-ASHAD-Request": "1"})))
                 await asyncio.wait_for(started[index].wait(), 2)
@@ -204,36 +204,36 @@ async def test_request_lookup_reports_real_inflight_tasks_before_durable_prepara
 
 def test_request_reconciliation_apis_return_saved_outputs_without_work(tmp_path):
     app = offline_app(tmp_path)
-    app.state.store.put("agents", {"id": "saved", "instructions": "Immutable manual"})
-    app.state.store.command("tuning", "tune-saved", {"agent_id": "saved", "request": {"build_id": "missing", "name": None, "project_id": None}})
+    app.state.store.put("configurations", {"id": "saved", "instructions": "Immutable manual"})
+    app.state.store.command("tuning", "tune-saved", {"configuration_id": "saved", "request": {"build_id": "missing", "name": None, "project_id": None}})
     app.state.store.put("runs", {"id": "saved-run", "state": "Ended", "players": {}})
     app.state.store.command("launch", "instance_start-saved", {"run_id": "saved-run"})  # Instances.start's real key.
     app.state.store.command("instance", "start-legacy", {"run_id": "saved-run"})
-    app.state.store.command("instance", "prepared", {"request": {"agent_id": "saved", "primary_goal": "Retained draft", "token": "fixture-private"}})
+    app.state.store.command("instance", "prepared", {"request": {"configuration_id": "saved", "primary_goal": "Retained draft", "token": "fixture-private"}})
     with TestClient(app) as client:
-        assert client.get("/api/agents/controls/tune-saved").json()["agent"]["id"] == "saved"
+        assert client.get("/api/configurations/controls/tune-saved").json()["configuration"]["id"] == "saved"
         assert client.get("/api/instances/requests/start-saved").json()["run"]["id"] == "saved-run"
         assert client.get("/api/instances/requests/start-legacy").json()["run"]["id"] == "saved-run"
         prepared = client.get("/api/instances/requests/prepared").json()
-        assert prepared["status"] == "prepared" and prepared["request"] == {"agent_id": "saved", "primary_goal": "Retained draft"}
-        assert client.get("/api/agents/controls/missing").json()["status"] == "unknown"
+        assert prepared["status"] == "prepared" and prepared["request"] == {"configuration_id": "saved", "primary_goal": "Retained draft"}
+        assert client.get("/api/configurations/controls/missing").json()["status"] == "unknown"
         app.state.controls_task = object()
         app.state.controls_request_id = "active-request"
-        assert client.get("/api/agents/controls/active-request").json()["status"] == "in_progress"
+        assert client.get("/api/configurations/controls/active-request").json()["status"] == "in_progress"
         # Progress: stage and batch from the running Get game controls, model calls since it started from usage rows.
         app.state.controls.progress = {"stage": "exploring", "batches_done": 3, "batch_count": 8, "workers": 4, "started_at": 1000.0}
         for i, status in enumerate(["completed", "invalid_tuning", "completed"]):
             app.state.store.put("usage", {"id": f"u{i}", "purpose": "tuning", "status": status, "timestamp": 1001.0 + i})
         app.state.store.put("usage", {"id": "old", "purpose": "tuning", "status": "completed", "timestamp": 999.0})
         app.state.store.put("usage", {"id": "play", "purpose": "player", "status": "completed", "timestamp": 1005.0})
-        progress = client.get("/api/agents/controls/active-request").json()["progress"]
+        progress = client.get("/api/configurations/controls/active-request").json()["progress"]
         assert progress == {"stage": "exploring", "batches_done": 3, "batch_count": 8, "workers": 4, "started_at": 1000.0,
                             "model_calls": 3, "rejected_replies": 1, "last_call_at": 1003.0}
-        assert "progress" not in client.get("/api/agents/controls/missing").json()
+        assert "progress" not in client.get("/api/configurations/controls/missing").json()
         app.state.controls.progress = None
         for record in ("u0", "u1", "u2", "old", "play"):
             app.state.store.delete("usage", record)  # The rest of this test asserts that no work was recorded.
-        saved = client.post("/api/agents/controls", json={"build_id": "missing", "request_id": "tune-saved"}, headers={"X-ASHAD-Request": "1"})
+        saved = client.post("/api/configurations/controls", json={"build_id": "missing", "request_id": "tune-saved"}, headers={"X-ASHAD-Request": "1"})
         assert saved.status_code == 200 and saved.json()["id"] == "saved"
         assert app.state.controls_task is not None  # Never clear the other live Get game controls task.
         app.state.controls_task = None
@@ -243,7 +243,7 @@ def test_request_reconciliation_apis_return_saved_outputs_without_work(tmp_path)
 @pytest.mark.asyncio
 async def test_lost_reply_lookup_finds_run_accepted_through_real_instance_start(environment, profile):
     store, coord, _, _ = environment
-    run = await Instances(coord).start(InstanceRequest(agent_id=profile["id"], primary_goal="Lost reply", request_id="lost-reply"))
+    run = await Instances(coord).start(InstanceRequest(configuration_id=profile["id"], primary_goal="Lost reply", request_id="lost-reply"))
     app = offline_app(store.root)
     try:
         transport = httpx.ASGITransport(app=app)
@@ -271,7 +271,7 @@ def test_http_conflict_exposes_actual_owner_before_requiring_agent(tmp_path):
     app = offline_app(tmp_path)
     app.state.store.put("runs", {"id": "legacy-owned", "state": "Paused", "players": {}})
     with TestClient(app) as client:
-        result = client.post("/api/instances", json={"agent_id": "absent", "primary_goal": "Blocked", "request_id": "attempt"},
+        result = client.post("/api/instances", json={"configuration_id": "absent", "primary_goal": "Blocked", "request_id": "attempt"},
                              headers={"X-ASHAD-Request": "1"})
         assert result.status_code == 409 and result.json()["code"] == "active_instance_conflict"
         assert result.json()["owning_instances"][0]["run_id"] == "legacy-owned"
@@ -367,7 +367,7 @@ async def test_final_shared_guard_reprobes_after_instance_selection(environment,
         return result
     monkeypatch.setattr(desktop, "request", became_unavailable)
     with pytest.raises(ValueError, match="input_ready"):
-        await Instances(coord).start(InstanceRequest(agent_id=profile["id"], primary_goal="Probe again", request_id="recheck"))
+        await Instances(coord).start(InstanceRequest(configuration_id=profile["id"], primary_goal="Probe again", request_id="recheck"))
     assert count == 2
     assert not store.list("runs") and not store.leases() and not store.command("instance", "recheck")
     assert not coord.ai.backend.requests
@@ -424,7 +424,7 @@ async def test_drain_beginning_during_probe_prevents_acceptance(environment, mon
 def test_instance_http_cannot_bypass_positive_probe_with_registered_metadata(environment, profile, tmp_path):
     store, _, _, desktops = environment
     app = offline_app(tmp_path / "http-controller")
-    for kind in ("settings", "projects", "builds", "workers", "agents"):
+    for kind in ("settings", "projects", "builds", "workers", "configurations"):
         for record in store.list(kind):
             if record.get("id"):
                 app.state.store.put(kind, record)
@@ -432,9 +432,55 @@ def test_instance_http_cannot_bypass_positive_probe_with_registered_metadata(env
         desktop.probe = {"ok": True}
     app.state.coordinator.client_factory = lambda record: desktops[record["id"]]
     with TestClient(app) as client:
-        result = client.post("/api/instances", json={"agent_id": profile["id"], "primary_goal": "Bypass metadata", "request_id": "http-no-probe"},
+        result = client.post("/api/instances", json={"configuration_id": profile["id"], "primary_goal": "Bypass metadata", "request_id": "http-no-probe"},
                              headers={"X-ASHAD-Request": "1"})
         assert result.status_code == 422 and "fresh positive" in result.json()["detail"]
         assert not app.state.store.list("runs") and not app.state.store.leases()
         assert not app.state.store.list("usage")
     assert all(path in {"/prepare/probe", "/status"} for desktop in desktops.values() for path, _ in desktop.calls)
+
+
+def legacy_app(store):
+    store.db.execute("UPDATE records SET kind='agents' WHERE kind='configurations'")
+    return create_app(store.root, credentials=MemoryCredentials(), start_services=False, ai_backend=FakeCodexBackend())
+
+
+@pytest.mark.asyncio
+async def test_legacy_start_request_replays_after_migration(environment, profile):
+    store, coord, _, _ = environment
+    first = await Instances(coord).start(InstanceRequest(configuration_id=profile["id"], primary_goal="Replay me", request_id="legacy-replay"))
+    await coord.finish(first["id"], "user_stopped")
+    store.db.execute("UPDATE commands SET result=json_remove(json_set(result,'$.request.agent_id',json_extract(result,'$.request.configuration_id')),'$.request.configuration_id') "
+                     "WHERE scope='instance'")
+    assert store.command("instance", "legacy-replay")["request"]["agent_id"] == profile["id"]
+    app = legacy_app(store)
+    try:
+        with TestClient(app) as client:
+            replayed = client.post("/api/instances", json={"configuration_id": profile["id"], "primary_goal": "Replay me", "request_id": "legacy-replay"},
+                                   headers={"X-ASHAD-Request": "1"})
+            assert replayed.status_code == 200 and replayed.json()["id"] == first["id"]
+            assert len(app.state.store.list("runs")) == 1
+            assert "agent_id" not in app.state.store.command("instance", "legacy-replay")["request"]
+    finally:
+        app.state.store.close()
+
+
+@pytest.mark.asyncio
+async def test_legacy_run_after_migration_counts_blocked_and_keeps_context(environment, profile):
+    store, coord, _, _ = environment
+    run = await Instances(coord).start(InstanceRequest(configuration_id=profile["id"], primary_goal="Old run", request_id="legacy-run"))
+    await coord.finish(run["id"], "user_stopped")
+    run = store.require("runs", run["id"])
+    run["agent_id"], run["agent_profile"] = run.pop("configuration_id"), run.pop("configuration")
+    run["game_controls"] = {"controls": "frozen legacy controls"}
+    store.put("runs", run)
+    app = legacy_app(store)
+    try:
+        context = coord.structured.decision_context(run, run["plan"]["players"][0], {"state": {}, "entities": []})
+        assert context["game_controls"] == "frozen legacy controls" and context["configuration_id"] == profile["id"]
+        with TestClient(app) as client:
+            response = client.delete(f"/api/configurations/{profile['id']}", headers={"X-ASHAD-Request": "1"})
+            assert response.status_code == 200 and response.json()["instances_blocked"] == 1
+            assert app.state.store.get("runs", run["id"])["agent_id"] == profile["id"]
+    finally:
+        app.state.store.close()

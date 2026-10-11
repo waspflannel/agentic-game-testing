@@ -70,7 +70,7 @@ async def test_get_controls_writes_versioned_file_and_modelless_configuration(se
     assert len(artifact["source_files"]) == 2 and "text" not in artifact["source_files"][0]
     assert "model" not in record and "instructions" not in record
     assert record["controls_sha256"] == hashlib.sha256(data).hexdigest() and record["status"] == "ready"
-    assert store.get("agents", record["id"]) == record and controls.validated(record["id"]) == (record, artifact)
+    assert store.get("configurations", record["id"]) == record and controls.validated(record["id"]) == (record, artifact)
     evidence = json.loads(claude.write_controls.call_args.args[0])
     assert evidence["sources"][1]["path"] == "scripts/ui/player_tablet.gd"
     assert 'event.is_action_pressed("exit_menu")' in evidence["sources"][1]["text"]
@@ -144,7 +144,7 @@ async def test_one_failed_worker_cancels_siblings_saves_nothing_and_keeps_finish
     with pytest.raises(ProviderError) as caught:
         await controls.gather(build["id"], request_id="r1")
     assert caught.value.status == "rate_limited"
-    assert not store.list("agents") and store.command("tuning", "r1") is None and not (store.root / "controls").exists()
+    assert not store.list("configurations") and store.command("tuning", "r1") is None and not (store.root / "controls").exists()
     saved = len(store.list("tuning_notes"))
     assert saved == 1
     claude.write_controls.reset_mock(side_effect=True)
@@ -160,7 +160,7 @@ async def test_claude_not_ready_refuses_before_any_request(setup):
     with pytest.raises(ValueError, match="uses Claude Sonnet"):
         await controls.gather(build["id"])
     claude.write_controls.assert_not_awaited()
-    assert not store.list("agents")
+    assert not store.list("configurations")
 
 
 @pytest.mark.asyncio
@@ -195,7 +195,7 @@ def rehash(store, record, artifact=None, **changes):
     artifact = {**json.loads(path.read_bytes()), **changes} if artifact is None else artifact
     data = json.dumps(artifact, ensure_ascii=False, sort_keys=True, indent=1).encode()
     path.write_bytes(data)
-    store.put("agents", {**record, "controls_sha256": hashlib.sha256(data).hexdigest()})
+    store.put("configurations", {**record, "controls_sha256": hashlib.sha256(data).hexdigest()})
 
 
 @pytest.mark.asyncio
@@ -229,7 +229,7 @@ def test_deleted_or_retired_configuration_is_refused_with_reconfigure_message(se
     with pytest.raises(ValueError) as caught:
         controls.validated("agent_gone")
     assert str(caught.value) == CONFIGURATION_DELETED
-    store.put("agents", {"id": "agent_old", "build_id": "build-1", "status": "retired"})
+    store.put("configurations", {"id": "agent_old", "build_id": "build-1", "status": "retired"})
     with pytest.raises(ValueError) as caught:
         controls.validated("agent_old")
     assert str(caught.value) == CONFIGURATION_RETIRED
@@ -242,7 +242,7 @@ async def test_source_tampering_is_rejected_before_provider_request(setup):
     with pytest.raises(ValueError, match="Pinned source changed"):
         await controls.gather(build["id"])
     claude.write_controls.assert_not_awaited()
-    assert not store.list("agents")
+    assert not store.list("configurations")
 
 
 @pytest.mark.asyncio
@@ -252,7 +252,7 @@ async def test_invalid_manual_is_not_saved_and_usage_is_retained(setup, value):
     claude.write_controls.return_value["answers"]["instructions"] = value
     with pytest.raises(ProviderError, match="controls manual"):
         await controls.gather(build["id"])
-    assert not store.list("agents") and not (store.root / "controls").exists()
+    assert not store.list("configurations") and not (store.root / "controls").exists()
     assert store.list("usage")[0]["status"] == "invalid_tuning"
     assert store.list("usage")[0]["usage"]["output_tokens"] == 60
     assert claude.write_controls.await_count == (2 if isinstance(value, str) and len(value) > TUNING_MANUAL_LIMIT else 1)
@@ -289,7 +289,7 @@ async def test_valid_size_controls_with_wrong_schema_are_not_repaired(setup):
     claude.write_controls.return_value["answers"]["unexpected"] = "extra"
     with pytest.raises(ProviderError, match="expected one instructions string"):
         await controls.ai.write_controls({"sources": []}, stage="source_notes")
-    assert claude.write_controls.await_count == 1 and not store.list("agents")
+    assert claude.write_controls.await_count == 1 and not store.list("configurations")
 
 
 @pytest.mark.asyncio
@@ -307,7 +307,7 @@ async def test_get_controls_is_fail_fast_when_busy_and_releases_lock_on_cancella
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
-    assert not controls.lock.locked() and not store.list("agents") and not (store.root / "controls").exists()
+    assert not controls.lock.locked() and not store.list("configurations") and not (store.root / "controls").exists()
     assert store.list("usage")[0]["status"] == "request_cancelled"
 
 
@@ -347,8 +347,8 @@ def test_migration_converts_valid_tuned_configurations_and_retires_invalid_ones(
         "instructions_sha256": hashlib.sha256(MANUAL.encode()).hexdigest(), "source_files": files,
         "source_inventory_sha256": inventory, "source_coverage": {"scanned_files": 2}, "limitations": ["kept"],
         "created_at": 12.5, "status": "ready"}
-    store.put("agents", legacy)
-    store.put("agents", {**legacy, "id": "agent_bad", "instructions_sha256": "0" * 64})
+    store.put("configurations", legacy)
+    store.put("configurations", {**legacy, "id": "agent_bad", "instructions_sha256": "0" * 64})
     store.put("tuning_notes", {"id": "n1", "build_id": build["id"], "model": "gpt-6-sol", "instructions": MANUAL})
     store.put("tuning_notes", {"id": "n2", "build_id": build["id"], "model": "sonnet", "instructions": MANUAL})
     run = {"id": "run-1", "agent_id": "agent_valid", "agent_profile": dict(legacy)}
@@ -358,14 +358,14 @@ def test_migration_converts_valid_tuned_configurations_and_retires_invalid_ones(
     assert artifact["generated_by"] == {"method": "legacy_tuning", "provider": "codex", "model": "gpt-6-sol", "prompt_version": None}
     assert artifact["controls"] == MANUAL and artifact["limitations"] == ["kept"] and artifact["created_at"] == 12.5
     assert not {"model", "instructions", "instructions_sha256", "source_files"} & set(record) and record["controls_version"] == 1
-    bad = store.get("agents", "agent_bad")
+    bad = store.get("configurations", "agent_bad")
     assert bad["status"] == "retired" and bad["retired_reason"] == RETIRED_REASON and "instructions" not in bad
     assert not controls_file(store, "agent_bad").exists()
     assert [n["id"] for n in store.list("tuning_notes")] == ["n2"]
     assert store.get("runs", "run-1") == run
-    agents, stamp = store.list("agents"), controls_file(store, "agent_valid").stat().st_mtime_ns
+    agents, stamp = store.list("configurations"), controls_file(store, "agent_valid").stat().st_mtime_ns
     migrate_tuned_configurations(store)
-    assert store.list("agents") == agents and controls_file(store, "agent_valid").stat().st_mtime_ns == stamp
+    assert store.list("configurations") == agents and controls_file(store, "agent_valid").stat().st_mtime_ns == stamp
 
 
 def snapshot(store):

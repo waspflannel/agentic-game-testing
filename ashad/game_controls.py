@@ -99,8 +99,8 @@ def source_evidence(build):
             "coverage": coverage}, inventory_hash
 
 
-def controls_file(store, agent_id):
-    return store.root / "controls" / f"{agent_id}.json"
+def controls_file(store, configuration_id):
+    return store.root / "controls" / f"{configuration_id}.json"
 
 
 def _write_file(store, record, artifact):
@@ -115,9 +115,9 @@ def _write_file(store, record, artifact):
     record["controls_sha256"] = hashlib.sha256(data).hexdigest()
 
 
-def remove_controls_file(store, agent_id):
+def remove_controls_file(store, configuration_id):
     try:
-        controls_file(store, agent_id).unlink(missing_ok=True)
+        controls_file(store, configuration_id).unlink(missing_ok=True)
     except OSError:
         return False
     return True
@@ -127,7 +127,7 @@ class GameControls:
     def __init__(self, store, ai):
         self.store, self.ai = store, ai
         self.lock = asyncio.Lock()
-        self.progress = None  # The running Get game controls stage and batches, for GET /api/agents/controls/<id>.
+        self.progress = None  # The running Get game controls stage and batches, for GET /api/configurations/controls/<id>.
 
     async def gather(self, build_id, *, request_id=None, name=None, project_id=None):
         if request_id is not None:
@@ -139,7 +139,7 @@ class GameControls:
         if previous:
             if previous["request"] != payload:
                 raise ValueError("Get game controls request ID already belongs to different inputs; Get controls again needs a new ID")
-            return self.store.require("agents", previous["agent_id"])
+            return self.store.require("configurations", previous["configuration_id"])
         if self.lock.locked():
             raise ValueError(BUSY)
         async with self.lock:
@@ -163,7 +163,7 @@ class GameControls:
                     self.progress["stage"] = "writing"
                     controls = await self.ai.write_controls({"build_id": build_id, "source_revision": build["source_revision"],
                         "source_notes": notes, "coverage": evidence["coverage"]})
-                record = {"id": uid("agent_"), "name": name or f"{build.get('name', build_id)} controls",
+                record = {"id": uid("config_"), "name": name or f"{build.get('name', build_id)} controls",
                     "project_id": assigned_project, "build_id": build_id, "source_revision": build["source_revision"],
                     "status": "ready", "created_at": time.time(), "controls_version": CONTROLS_VERSION}
                 artifact = {"format": CONTROLS_FORMAT, "version": CONTROLS_VERSION, "configuration_id": record["id"],
@@ -177,9 +177,9 @@ class GameControls:
                 _write_file(self.store, record, artifact)
                 self._validate(record)
                 with self.store.transaction():
-                    self.store.put("agents", record)
+                    self.store.put("configurations", record)
                     if request_id:
-                        self.store.command("tuning", request_id, {"request": payload, "agent_id": record["id"]})
+                        self.store.command("tuning", request_id, {"request": payload, "configuration_id": record["id"]})
                 return record
             except BaseException:
                 if record:
@@ -230,8 +230,8 @@ class GameControls:
             raise failures.exceptions[0]
         return notes
 
-    def validated(self, agent_id):
-        record = self.store.get("agents", agent_id)
+    def validated(self, configuration_id):
+        record = self.store.get("configurations", configuration_id)
         if record is None:
             raise ValueError(CONFIGURATION_DELETED)
         if record.get("status") != "ready":
@@ -301,7 +301,7 @@ def run_configuration(run):
 
 def migrate_tuned_configurations(store):
     """One-way, idempotent startup conversion of tuned agent configurations into v1 game controls files."""
-    for record in store.list("agents"):
+    for record in store.list("configurations"):
         if "controls_version" in record:
             continue
         instructions = record.get("instructions")
@@ -322,6 +322,6 @@ def migrate_tuned_configurations(store):
         else:
             converted.update(status="retired", retired_reason=RETIRED_REASON)
         with store.transaction():
-            store.put("agents", converted)
+            store.put("configurations", converted)
     with store.transaction() as db:
         db.execute("DELETE FROM records WHERE kind='tuning_notes' AND json_extract(data,'$.model') != 'sonnet'")

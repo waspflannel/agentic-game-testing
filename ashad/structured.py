@@ -7,6 +7,7 @@ import json
 import time
 
 from .ai import ProviderError
+from .game_controls import run_configuration
 from .models import MODEL, PROVIDERS, provider_of
 from .repository import Repository
 from .store import uid
@@ -229,8 +230,9 @@ class StructuredPlayers:
         own = [e for e in recent if e["payload"].get("player_id") == player["id"] and e["kind"] in
                {"decision_selected", "structured_action_intent", "action_result", "structured_action_outcome", "goal_changed"}][-20:]
         team = [e for e in recent if e["kind"] == "team_message"][-12:] if player.get("cooperation") == "team" else []
+        configuration_id, snapshot = run_configuration(run)
         context = {"play_mode": run["plan"]["play_mode"], "player": player, "goal": player["goal"],
-            "game_controls": (run.get("game_controls") or {}).get("controls") or run.get("agent_profile", {}).get("instructions", ""), "agent_profile_id": run.get("agent_id"),
+            "game_controls": (run.get("game_controls") or {}).get("controls") or (snapshot or {}).get("instructions", ""), "configuration_id": configuration_id,
             "observation": prompt_observation(observation), "guidance": self.guidance(run, player, observation),
             "memory": ps.get("agent_memory", ""), "recent_own_actions": own, "team_messages": team,
             "setup": run["plan"]["world_setup"], "transport": run["plan"]["transport"],

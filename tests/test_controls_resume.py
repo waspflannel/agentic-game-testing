@@ -20,7 +20,7 @@ async def test_failed_later_batch_resumes_from_persisted_notes(setup, monkeypatc
     backend.write_controls.side_effect = [backend.write_controls.return_value, ClaudeError("connection_failure", "Later batch failed")]
     with pytest.raises(ProviderError, match="Later batch failed"):
         await controls.gather(build["id"])
-    assert len(store.list("tuning_notes")) == 1 and not store.list("agents")
+    assert len(store.list("tuning_notes")) == 1 and not store.list("configurations")
     first_batch = json.loads(backend.write_controls.call_args_list[0].args[0])
     backend.write_controls.reset_mock(side_effect=True)
     reopened = Store(store.root)

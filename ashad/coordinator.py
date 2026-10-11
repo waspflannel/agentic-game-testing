@@ -11,7 +11,7 @@ import shutil
 import time
 import uuid
 from .models import Plan, MODEL, PROVIDERS, provider_of, CONTROLLER_VERSION, ACTIVE_STATES, TERMINAL_QUEST, require_same_provider
-from .game_controls import remove_controls_file
+from .game_controls import remove_controls_file, run_configuration
 from .reports import generate_report
 from .repair_tasks import record_task, publish_pending
 from .store import uid
@@ -130,7 +130,7 @@ class Coordinator:
             self.store.require("projects", project_id)
             runs = [run for run in self.store.list("runs") if run.get("project_id") == project_id]
             self._require_deletable([run["id"] for run in runs], "Stop its active instance before deleting this project.")
-            config_ids = [a["id"] for a in self.store.list("agents") if a.get("project_id") == project_id]
+            config_ids = [a["id"] for a in self.store.list("configurations") if a.get("project_id") == project_id]
             with self.store.transaction():
                 for run in runs:
                     self._forget_run_records(run)
@@ -140,18 +140,18 @@ class Coordinator:
                                  *(remove_controls_file(self.store, i) for i in config_ids)])
             return {"deleted": project_id, "instances": len(runs), "files_removed": files_removed}
 
-    async def delete_agent(self, agent_id):
+    async def delete_configuration(self, configuration_id):
         """Forget one project configuration and its game controls file; instances that used it stay in history and are blocked until the project is reconfigured."""
         from .projects import Projects
         async with self.lock:
-            self.store.require("agents", agent_id)
+            self.store.require("configurations", configuration_id)
             users = [run["id"] for run in self.store.list("runs")
-                     if agent_id in (run.get("agent_id"), (run.get("plan") or {}).get("agent_id"))]
+                     if run_configuration(run)[0] == configuration_id]
             self._require_deletable(users, "Stop the instance using this project configuration before deleting it.")
             with self.store.transaction():
-                Projects(self.store).delete_agent(agent_id)
-            files_removed = remove_controls_file(self.store, agent_id)
-            return {"deleted": agent_id, "instances_blocked": len(users), "files_removed": files_removed}
+                Projects(self.store).delete_configuration(configuration_id)
+            files_removed = remove_controls_file(self.store, configuration_id)
+            return {"deleted": configuration_id, "instances_blocked": len(users), "files_removed": files_removed}
 
     def _require_deletable(self, run_ids, message):
         targets = set(run_ids)
@@ -346,7 +346,7 @@ class Coordinator:
                 from .game_controls import GameControls
                 record, controls = GameControls(self.store, self.ai).validated(plan["configuration_id"])
                 from .projects import Projects
-                Projects(self.store).project_for_agent(plan["configuration_id"])
+                Projects(self.store).project_for_configuration(plan["configuration_id"])
                 if record["build_id"] != plan["build_id"]:
                     raise ValueError("Instance build must match its project configuration.")
             for player in plan["players"]:
@@ -369,7 +369,7 @@ class Coordinator:
             run = {"id": run_id, "session_id": run_id, "scenario_id": scenario_id, "scenario_revision": revision, "state": "Queued", "created_at": time.time(), "plan": copy.deepcopy(plan), "build": copy.deepcopy(build), "players": players, "events": {e["id"]: {"status": "pending", "attempts": 0} for e in plan["events"]}, "model": plan["model"], "controller_version": CONTROLLER_VERSION, "world_namespace": run_id, "progress": {"completed_quests": [], "handler": None, "disagreement": [], "world_simulating": "unknown"}, "starting_milestones": [], "investigation_deadline": None, "goal_complete": False, "demo_complete": False, "validity": "unknown", "evidence_status": "collecting", "limitations": [], "interventions": [], "evidence": [], "launch_record": {"explicit": True, "timestamp": time.time(), "scenario_revision": revision, "idempotency_key": idempotency_key}}
             run["approved_plan"] = copy.deepcopy(plan)
             if record:
-                run.update(agent_id=record["id"], agent_profile=copy.deepcopy(record), game_controls=copy.deepcopy(controls))
+                run.update(configuration_id=record["id"], configuration=copy.deepcopy(record), game_controls=copy.deepcopy(controls))
                 if len(plan["players"]) == 1:
                     run["subgoal_plan"] = new_plan(plan["players"][0]["goal"], plan["players"][0]["id"], run_id)
             run.update(api=PROVIDERS[provider_of(plan["model"])]["pricing"]["api"], billing="subscription")

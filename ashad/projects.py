@@ -45,9 +45,10 @@ def _safe_path(value, error=ValueError, *, regular_only=True):
 
 def _build_refs(run):
     """Only stable recorded IDs; never infer identity from a label or a path."""
+    from .game_controls import run_configuration
     return {value for value in [run.get("build_id"), (run.get("plan") or {}).get("build_id"),
         (run.get("approved_plan") or {}).get("build_id"), (run.get("build") or {}).get("id"),
-        (run.get("agent_profile") or {}).get("build_id")] if isinstance(value, str) and value}
+        (run_configuration(run)[1] or {}).get("build_id")] if isinstance(value, str) and value}
 
 
 class Projects:
@@ -73,21 +74,21 @@ class Projects:
         """Remove a project and its project configurations and build registrations; the caller holds the transaction and has removed its runs."""
         self.store.require("projects", project_id)
         db = self.store.db
-        db.execute("DELETE FROM commands WHERE scope='tuning' AND json_extract(result,'$.agent_id') IN "
-                   "(SELECT id FROM records WHERE kind='agents' AND json_extract(data,'$.project_id')=?)", (project_id,))
+        db.execute("DELETE FROM commands WHERE scope='tuning' AND json_extract(result,'$.configuration_id') IN "
+                   "(SELECT id FROM records WHERE kind='configurations' AND json_extract(data,'$.project_id')=?)", (project_id,))
         db.execute("DELETE FROM records WHERE kind='tuning_notes' AND json_extract(data,'$.build_id') IN "
                    "(SELECT id FROM records WHERE kind='builds' AND json_extract(data,'$.project_id')=?)", (project_id,))
-        db.execute("DELETE FROM records WHERE kind IN ('agents','builds') AND json_extract(data,'$.project_id')=?", (project_id,))
+        db.execute("DELETE FROM records WHERE kind IN ('configurations','builds') AND json_extract(data,'$.project_id')=?", (project_id,))
         db.execute("DELETE FROM records WHERE kind='environment_preparations' AND json_extract(data,'$.request.project_id')=?", (project_id,))
         db.execute("DELETE FROM commands WHERE scope='project' AND json_extract(result,'$.project_id')=?", (project_id,))
         db.execute("DELETE FROM records WHERE kind='projects' AND id=?", (project_id,))
 
-    def delete_agent(self, agent_id):
+    def delete_configuration(self, configuration_id):
         """Remove one project configuration and its request rows; the caller holds the transaction. Tuning notes are a per-build cache and stay."""
-        self.store.require("agents", agent_id)
+        self.store.require("configurations", configuration_id)
         db = self.store.db
-        db.execute("DELETE FROM commands WHERE scope='tuning' AND json_extract(result,'$.agent_id')=?", (agent_id,))
-        db.execute("DELETE FROM records WHERE kind='agents' AND id=?", (agent_id,))
+        db.execute("DELETE FROM commands WHERE scope='tuning' AND json_extract(result,'$.configuration_id')=?", (configuration_id,))
+        db.execute("DELETE FROM records WHERE kind='configurations' AND id=?", (configuration_id,))
 
     def project_for_build(self, build_id, project_id=None, *, allow_unassigned=False):
         build = self.store.require("builds", build_id)
@@ -102,8 +103,8 @@ class Projects:
             raise ValueError("Build has no project; explicitly migrate or register it first")
         return assigned
 
-    def project_for_agent(self, agent_id, project_id=None, *, allow_unassigned=False):
-        profile = self.store.require("agents", agent_id)
+    def project_for_configuration(self, configuration_id, project_id=None, *, allow_unassigned=False):
+        profile = self.store.require("configurations", configuration_id)
         assigned = self.project_for_build(profile["build_id"], project_id, allow_unassigned=allow_unassigned)
         if profile.get("project_id") not in (None, assigned):
             raise ValueError("Project configuration and build belong to different projects")
@@ -129,7 +130,7 @@ class Projects:
                 identity = lambda item: {key: value for key, value in item.items() if key not in presentation}
                 if identity(previous) != identity(record):
                     raise ValueError("Pinned build identity changed; register the revision under a new build ID")
-            for profile in self.store.list("agents"):
+            for profile in self.store.list("configurations"):
                 if profile.get("build_id") == record["id"] and profile.get("project_id") not in (None, assigned):
                     raise ValueError("Referenced project configuration belongs to another project")
             for run in self.store.list("runs"):

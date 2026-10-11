@@ -7,14 +7,16 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+from pydantic import ValidationError
 
 import ashad.game_controls as controls_module
 from ashad.ai import OpenAI, ProviderError
 from ashad.claude_backend import ClaudeError
 from ashad.game_controls import (CONFIGURATION_DELETED, CONFIGURATION_RETIRED, CONTROLS_FILE_LIMIT, CONTROLS_KEYS,
-    RETIRED_REASON, GameControls, controls_file, migrate_tuned_configurations, source_evidence)
+    RETIRED_REASON, GameControls, controls_file, migrate_configuration_names, migrate_tuned_configurations, run_configuration,
+    source_evidence)
 from ashad.prompts import SOURCE_NOTES_LIMIT, TUNING_MANUAL_LIMIT
-from ashad.models import MODEL
+from ashad.models import MODEL, Plan
 from ashad.store import Store
 from test_claude_backend import backend, invocation
 from test_controller import FakeClaudeBackend
@@ -364,3 +366,59 @@ def test_migration_converts_valid_tuned_configurations_and_retires_invalid_ones(
     agents, stamp = store.list("agents"), controls_file(store, "agent_valid").stat().st_mtime_ns
     migrate_tuned_configurations(store)
     assert store.list("agents") == agents and controls_file(store, "agent_valid").stat().st_mtime_ns == stamp
+
+
+def snapshot(store):
+    return [store.db.execute(f"SELECT * FROM {table} ORDER BY 1, 2").fetchall() for table in ("records", "commands")]
+
+
+def test_configuration_rename_migration_moves_kinds_and_command_keys_once(tmp_path):
+    store = Store(tmp_path)
+    store.put("agents", {"id": "agent_x", "name": "Old", "build_id": "build-1"})
+    run = {"id": "run-1", "agent_id": "agent_x", "agent_profile": {"id": "agent_x"}, "game_controls": {"controls": "kept"}}
+    store.put("runs", run)
+    store.db.execute("INSERT INTO commands VALUES ('tuning','t1',?)", (json.dumps({"request": {"x": 1}, "agent_id": "agent_x"}),))
+    store.db.execute("INSERT INTO commands VALUES ('instance','i1',?)", (json.dumps({"request": {"agent_id": "agent_x", "project_id": "p"}, "status": "ok"}),))
+    run_row = store.db.execute("SELECT * FROM records WHERE kind='runs'").fetchall()
+    migrate_configuration_names(store)
+    first = snapshot(store)
+    migrate_configuration_names(store)
+    assert snapshot(store) == first
+    assert store.get("configurations", "agent_x")["name"] == "Old" and store.list("agents") == []
+    tuning = json.loads(store.db.execute("SELECT result FROM commands WHERE scope='tuning'").fetchone()[0])
+    assert tuning == {"request": {"x": 1}, "configuration_id": "agent_x"}
+    instance = json.loads(store.db.execute("SELECT result FROM commands WHERE scope='instance'").fetchone()[0])
+    assert instance == {"request": {"configuration_id": "agent_x", "project_id": "p"}, "status": "ok"}
+    assert store.db.execute("SELECT * FROM records WHERE kind='runs'").fetchall() == run_row
+    assert store.get("runs", "run-1") == run
+    store.close()
+
+
+def test_configuration_rename_migration_aborts_on_id_collision(tmp_path):
+    store = Store(tmp_path)
+    store.put("agents", {"id": "agent_x", "name": "Old"})
+    store.put("agents", {"id": "agent_y", "name": "Other"})
+    store.put("configurations", {"id": "agent_x", "name": "New"})
+    store.db.execute("INSERT INTO commands VALUES ('tuning','t1',?)", (json.dumps({"agent_id": "agent_x"}),))
+    before = snapshot(store)
+    with pytest.raises(RuntimeError, match="agent_x exists under both 'agents' and 'configurations'; ASHAD stopped without changing data."):
+        migrate_configuration_names(store)
+    assert snapshot(store) == before
+    store.close()
+
+
+def test_run_configuration_reads_new_then_legacy_keys():
+    assert run_configuration({"configuration_id": "new", "agent_id": "old", "configuration": {"id": "new"}, "agent_profile": {"id": "old"}}) == ("new", {"id": "new"})
+    assert run_configuration({"agent_id": "old", "agent_profile": {"id": "old"}}) == ("old", {"id": "old"})
+    assert run_configuration({"plan": {"configuration_id": "p-new", "agent_id": "p-old"}}) == ("p-new", None)
+    assert run_configuration({"plan": {"agent_id": "p-old"}}) == ("p-old", None)
+    assert run_configuration({}) == (None, None)
+    assert run_configuration({"plan": None}) == (None, None)
+
+
+def test_plan_maps_legacy_agent_id_and_refuses_both():
+    assert Plan.model_validate({"agent_id": "a"}).configuration_id == "a"
+    assert "agent_id" not in Plan.model_validate({"agent_id": "a"}).model_dump()
+    assert Plan.model_validate({"configuration_id": "c"}).configuration_id == "c"
+    with pytest.raises(ValidationError, match="Use configuration_id, not agent_id."):
+        Plan.model_validate({"agent_id": "a", "configuration_id": "c"})

@@ -342,11 +342,11 @@ class Coordinator:
             plan = checked["plan"]
             build = self.validated_build(plan["build_id"])
             record = controls = None
-            if plan.get("agent_id"):
+            if plan.get("configuration_id"):
                 from .game_controls import GameControls
-                record, controls = GameControls(self.store, self.ai).validated(plan["agent_id"])
+                record, controls = GameControls(self.store, self.ai).validated(plan["configuration_id"])
                 from .projects import Projects
-                Projects(self.store).project_for_agent(plan["agent_id"])
+                Projects(self.store).project_for_agent(plan["configuration_id"])
                 if record["build_id"] != plan["build_id"]:
                     raise ValueError("Instance build must match its project configuration.")
             for player in plan["players"]:

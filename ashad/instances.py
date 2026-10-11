@@ -51,7 +51,7 @@ class Instances:
             model = request.model or default_model(self.coordinator.ai)
             build = self.coordinator.validated_build(record["build_id"])
             worker, accounts = await self._allocate_worker(build, request.transport)
-            plan = Plan(agent_id=record["id"], build_id=record["build_id"], model=model,
+            plan = Plan(configuration_id=record["id"], build_id=record["build_id"], model=model,
                         title=payload["primary_goal"][:100], intent=payload["primary_goal"], primary_goal=payload["primary_goal"]).model_dump()
             plan["players"][0].update(name="Player 1", goal=payload["primary_goal"], goal_id="", worker_id=worker["id"],
                                      account_id=accounts[worker["id"]]["id"] if request.transport == "steam" else None)

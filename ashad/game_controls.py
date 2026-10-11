@@ -279,6 +279,26 @@ class GameControls:
         return artifact
 
 
+def migrate_configuration_names(store):
+    """One-way, idempotent startup rename of stored agent records and command keys to configuration names."""
+    with store.transaction() as db:
+        clash = db.execute("SELECT id FROM records WHERE kind='agents' AND id IN (SELECT id FROM records WHERE kind='configurations')").fetchone()
+        if clash:
+            raise RuntimeError(f"Stored project configuration {clash[0]} exists under both 'agents' and 'configurations'; ASHAD stopped without changing data.")
+        db.execute("UPDATE records SET kind='configurations' WHERE kind='agents'")
+        db.execute("UPDATE commands SET result=json_remove(json_set(result,'$.configuration_id',json_extract(result,'$.agent_id')),'$.agent_id') "
+                   "WHERE scope='tuning' AND json_type(result,'$.agent_id') IS NOT NULL")
+        db.execute("UPDATE commands SET result=json_remove(json_set(result,'$.request.configuration_id',json_extract(result,'$.request.agent_id')),'$.request.agent_id') "
+                   "WHERE scope='instance' AND json_type(result,'$.request.agent_id') IS NOT NULL")
+
+
+def run_configuration(run):
+    """Return a stored run's (configuration id, configuration snapshot), reading legacy agent keys too."""
+    plan = run.get("plan") or {}
+    return (run.get("configuration_id") or run.get("agent_id") or plan.get("configuration_id") or plan.get("agent_id"),
+            run.get("configuration") or run.get("agent_profile"))
+
+
 def migrate_tuned_configurations(store):
     """One-way, idempotent startup conversion of tuned agent configurations into v1 game controls files."""
     for record in store.list("agents"):

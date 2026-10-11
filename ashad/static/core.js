@@ -103,6 +103,13 @@ export const since = (t, now) => { const a = ago(t, now); return !a ? 'never' : 
 
 export const modelLabel = (data, id) => (data?.model_options || []).find(m => m.id === id)?.label || id || 'Unknown model';
 
+// Model options sharing the given model's provider.
+export const providerModels = (data, model) => {
+  const options = data?.model_options || [];
+  const provider = options.find(m => m.id === model)?.provider;
+  return options.filter(m => m.provider === provider);
+};
+
 export const badge = ({ tone, label }) => `<span class="badge badge-${tone}"><span class="dot dot-${tone}" aria-hidden="true"></span>${esc(label)}</span>`;
 
 // §12 drawers: below a breakpoint a pane moves into a modal <dialog> (focus trap, Esc) and goes back to the layout

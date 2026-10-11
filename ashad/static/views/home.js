@@ -1,5 +1,5 @@
 // Empty workspace and the new-instance composer (spec §8.1, §8.2). Markup and the start flow are pure; app.js owns the DOM.
-import { esc, icon, href, newId, modelLabel, ApiError } from '../core.js';
+import { esc, icon, href, newId, modelLabel, providerModels, ApiError } from '../core.js';
 
 const enc = encodeURIComponent;
 const chipDot = tone => `<span class="dot dot-${tone}" aria-hidden="true"></span>`;
@@ -29,8 +29,10 @@ export function projectAgents(data, projectId) {
     && [undefined, 'ready', 'completed'].includes(a.status));
 }
 
-export const readinessKey = (projectId, agent) => `${projectId}|${agent?.build_id}|${agent?.id}`;
-export const newDraft = () => ({ goal: '', agentId: '', transport: 'enet', requestId: null, sent: null, busy: false, result: null });
+export const readinessKey = (projectId, agent, model) => `${projectId}|${agent?.build_id}|${agent?.id}|${model}`;
+export const newDraft = () => ({ goal: '', agentId: '', model: '', transport: 'enet', requestId: null, sent: null, busy: false, result: null });
+
+export const draftModel = (data, agent, draft) => (providerModels(data, agent?.model).some(m => m.id === draft.model) ? draft.model : agent?.model);
 
 function desktopReason(r) {
   if (r.build_validation?.ready !== true) return r.build_validation?.reason || 'Build is not validated';
@@ -45,7 +47,8 @@ export function composerModel(data, projectId, draft, readiness) {
   const agents = projectAgents(data, projectId);
   const agent = agents.find(a => a.id === draft.agentId) || agents[0];
   const build = agent && (data.builds || []).find(b => b.id === agent.build_id);
-  const check = agent && readiness?.key === readinessKey(projectId, agent) ? readiness : null;
+  const model = agent && draftModel(data, agent, draft);
+  const check = agent && readiness?.key === readinessKey(projectId, agent, model) ? readiness : null;
   const r = check && !check.loading && !check.error ? check.result : null;
   const slot = data?.instance_slot || {};
   const owner = slot.owners?.[0];
@@ -73,10 +76,10 @@ export function composerModel(data, projectId, draft, readiness) {
   if (draft.transport === 'steam' && !steam.enabled) blockers.push(`${steam.reason}. No ENet fallback.`);
 
   return {
-    project, agents, agent, build, steam, desktop, blockers,
+    project, agents, agent, build, model, modelOptions: agent ? providerModels(data, agent.model) : [], steam, desktop, blockers,
     projects: data?.projects || [],
     agentOptions: agents.map(a => ({ id: a.id, label: a.name || a.id, title: `${a.name || a.id} · ${modelLabel(data, a.model)}` })),
-    summary: agent ? `${modelLabel(data, agent.model)} · build ${build?.name || agent.build_id} · Fresh world` : '',
+    summary: agent ? `${modelLabel(data, model)} · build ${build?.name || agent.build_id} · Fresh world` : '',
     canStart: !blockers.length && !draft.busy,
   };
 }
@@ -112,6 +115,8 @@ export function composerRegions(m, draft) {
 
   const agentChip = `<label class="chip chip-select" title="${esc(m.agentOptions.find(o => o.id === m.agent.id)?.title || '')}">${icon('bot')}<span class="sr-only">Agent</span>`
     + `<select data-field="agent" data-key="c-agent" aria-label="Agent configuration">${m.agentOptions.map(o => `<option value="${esc(o.id)}"${o.id === m.agent.id ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>`;
+  const modelChip = `<label class="chip chip-select">${icon('sliders')}<span class="sr-only">Model</span><select data-field="model" data-key="c-model" aria-label="Model">`
+    + `${m.modelOptions.map(o => `<option value="${esc(o.id)}"${o.id === m.model ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>`;
   const transportChip = `<label class="chip chip-select"${m.steam.enabled ? '' : ` title="${esc(m.steam.reason)}"`}>${icon('network')}<span class="sr-only">Transport</span>`
     + `<select data-field="transport" data-key="c-transport" aria-label="Transport" aria-describedby="composer-steam-note">`
     + `<option value="enet"${draft.transport === 'enet' ? ' selected' : ''}>ENet</option>`
@@ -132,7 +137,7 @@ export function composerRegions(m, draft) {
     hero: `What should the agent do in <strong>${name}</strong>?`,
     chips: projectChip + desktopChip + recheck,
     'goal-error': goalError,
-    bar: `<div class="composer-bar-left">${agentChip}${transportChip}</div><div class="composer-bar-right"><span class="composer-summary" title="${esc(m.summary)}">${esc(m.summary)}</span>${start}</div>`,
+    bar: `<div class="composer-bar-left">${agentChip}${modelChip}${transportChip}</div><div class="composer-bar-right"><span class="composer-summary" title="${esc(m.summary)}">${esc(m.summary)}</span>${start}</div>`,
     status: notes.join(''),
   };
 }
@@ -159,7 +164,7 @@ function resultHTML(res) {
 // what happened to the earlier one, so an accepted start is never silently resubmitted with different inputs.
 // Returns { kind: 'accepted' | 'in-progress' | 'not-started' | 'conflict' | 'earlier-accepted' | 'error', ... }.
 export async function startInstance(draft, projectId, api) {
-  const payload = { agent_id: draft.agentId, project_id: projectId, primary_goal: draft.goal.trim(), transport: draft.transport };
+  const payload = { agent_id: draft.agentId, project_id: projectId, primary_goal: draft.goal.trim(), transport: draft.transport, model: draft.model };
   if (!payload.agent_id) return { kind: 'error', field: 'agent', message: 'Choose an agent configuration.' };
   if (!payload.primary_goal) return { kind: 'error', field: 'goal', message: 'Describe the goal before starting.' };
   const signature = JSON.stringify(payload);

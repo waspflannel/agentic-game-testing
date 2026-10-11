@@ -1,6 +1,6 @@
 import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, createDrawer, patchHTML, dirtyBridge, runGoal, ago } from './core.js';
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
-import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
+import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, draftModel, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
 import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions, defaultTab, nextTab } from './views/instance.js';
 import { panelRegions, mergeEvents, latestObservation } from './views/inspector.js';
 import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discardSetup, tuneAgent, setupSkeleton, setupRegions, prepareDialogText, prepareDesktop, registerBuild, elapsed } from './views/setup.js';
@@ -186,14 +186,15 @@ function renderComposer(view, projectId) {
   const agents = projectAgents(state.data, projectId);
   if (!agents.some(a => a.id === draft.agentId)) draft.agentId = agents[0].id;
   const agent = agents.find(a => a.id === draft.agentId);
-  if (state.readiness?.key !== readinessKey(projectId, agent)) loadReadiness(projectId, agent);
+  draft.model = draftModel(state.data, agent, draft);
+  if (state.readiness?.key !== readinessKey(projectId, agent, draft.model)) loadReadiness(projectId, agent, draft.model);
   mount(view, `composer:${projectId}`, composerSkeleton(projectId, draft));
   patchRegions(view, composerRegions(composerModel(state.data, projectId, draft, state.readiness), draft));
 }
 
-async function loadReadiness(projectId, agent) {
-  const record = state.readiness = { key: readinessKey(projectId, agent), loading: true };
-  try { record.result = await api(`/api/projects/${enc(projectId)}/readiness?build_id=${enc(agent.build_id)}&agent_id=${enc(agent.id)}`); }
+async function loadReadiness(projectId, agent, model) {
+  const record = state.readiness = { key: readinessKey(projectId, agent, model), loading: true };
+  try { record.result = await api(`/api/projects/${enc(projectId)}/readiness?build_id=${enc(agent.build_id)}&agent_id=${enc(agent.id)}&model=${enc(model)}`); }
   catch (error) { record.error = error.message; }
   record.loading = false;
   if (state.readiness === record) renderView();
@@ -1347,9 +1348,11 @@ document.addEventListener('change', event => {
     return;
   }
   const projectId = composerProject(state.route, state.data);
-  if (!projectId || !['agent', 'transport', 'project'].includes(field)) return;
+  if (!projectId || !['agent', 'transport', 'project', 'model'].includes(field)) return;
   if (field === 'project') { location.hash = href('p', event.target.value, 'new'); return; }
-  draftFor(projectId)[field === 'agent' ? 'agentId' : 'transport'] = event.target.value;
+  const draft = draftFor(projectId);
+  if (field === 'agent') Object.assign(draft, { agentId: event.target.value, model: '' });
+  else draft[field] = event.target.value;
   renderView();
 });
 

@@ -1,6 +1,8 @@
 """Improvement loop fixer: fakes and temporary data only; no real gh, jr, claude, network or keyring."""
 import asyncio
 from collections import namedtuple
+import io
+import json
 import os
 import signal
 import sys
@@ -9,13 +11,18 @@ from types import SimpleNamespace
 
 import keyring.errors
 import pytest
+from fastapi.testclient import TestClient
 
 from ashad import fixer, repair_tasks
 from ashad.claude_backend import TOKEN_REFERENCE
 from ashad.fixer import Fixer
 from ashad.repair_tasks import issue_directory, record_issue, set_issue_status
 from ashad.store import Store
-from test_controller import MemoryCredentials
+from ashad.app import create_app
+from ashad.desktop import read_launch_config
+from test_controller import FakeCodexBackend, MemoryCredentials, environment  # noqa: F401
+from test_desktop_lifecycle import lifecycle
+from test_saves import PLAYER, act, events, no_http_inference, running  # noqa: F401
 from test_unsupported_actions import basis, example
 
 Call = namedtuple("Call", "argv cwd env timeout log_path")
@@ -213,3 +220,89 @@ def test_stubs_are_safe_no_ops(tmp_path):
     instance._add_minutes(5)
     instance._add_minutes(7)
     assert instance.minutes_today() == 12
+
+
+@pytest.mark.asyncio
+async def test_intent_event_carries_target_kind(environment, monkeypatch):
+    env = await running(environment, monkeypatch)
+    await act(env)
+    assert events(env, "structured_action_intent")[-1]["payload"]["target_kind"] == "chest"
+
+
+@pytest.mark.asyncio
+async def test_fixing_run_refuses_control_and_delete(environment, monkeypatch):
+    env = await running(environment, monkeypatch)
+    await env.coord.finish(env.rid, "issue_fix", final_state="Fixing")
+    run = env.store.require("runs", env.rid)
+    assert run["state"] == "Fixing"
+    assert [(o["run_id"], o["reason"]) for o in env.coord.occupied_instances()] == [(env.rid, "fixing")]
+    with pytest.raises(ValueError, match="This instance is fixing an issue. Use Cancel fix in the Improvement loop section."):
+        await env.coord.control(env.rid, "stop", command_id="stop-fixing")
+    with pytest.raises(ValueError):
+        await env.coord.delete_run(env.rid)
+    task = asyncio.create_task(env.coord.loop())
+    await asyncio.sleep(0.1)
+    env.coord.stopping = True
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert env.rid not in env.coord.ticks and env.store.require("runs", env.rid)["state"] == "Fixing"
+
+
+@pytest.mark.asyncio
+async def test_finish_default_still_ends(environment, monkeypatch):
+    env = await running(environment, monkeypatch)
+    await env.coord.finish(env.rid, "user_stopped")
+    assert env.store.require("runs", env.rid)["state"] == "Ended"
+    assert events(env, "run_ended")[-1]["payload"]["final_state"] == "Ended"
+
+
+def test_launch_config_accepts_optional_checkout_root(tmp_path):
+    config = {"data_root": str(tmp_path), "session_key": "s" * 43, "owner_key": "o" * 43, "instance_id": "launch-id"}
+
+    def read(value):
+        return read_launch_config(io.StringIO(json.dumps(value)))
+
+    assert read(config) == config
+    assert read({**config, "checkout_root": str(tmp_path)})["checkout_root"] == str(tmp_path)
+    assert read({**config, "checkout_root": None})["checkout_root"] is None
+    for changed in ({**config, "checkout_root": "relative"}, {**config, "checkout_root": str(tmp_path / "missing")},
+                    {**config, "checkout_root": 5}, {**config, "checkout_root": str(tmp_path), "extra": 1}):
+        with pytest.raises(ValueError, match="Invalid desktop launch configuration"):
+            read(changed)
+
+
+@pytest.mark.asyncio
+async def test_desktop_status_hides_fixing_owner_and_flags_restart(environment, monkeypatch, tmp_path):
+    env = await running(environment, monkeypatch)
+    await env.coord.finish(env.rid, "issue_fix", final_state="Fixing")
+    fixer_ = env.coord.fixer
+    fixer_.checkout_root = tmp_path
+    restart = fixer_.create_loop("auto")
+    env.store.put("loops", {**restart, "phase": "restart_required"})
+    busy = fixer_.create_loop("auto")
+    env.store.put("loops", {**busy, "phase": "fixing"})
+    sleeper = asyncio.create_task(asyncio.sleep(60))
+    fixer_.tasks[busy["id"]] = sleeper
+    quit, _, server = lifecycle(environment)
+    try:
+        status = quit.status()
+        assert status["owners"] == [] and status["restart_for_fix"] == restart["id"]
+        assert {"kind": "fixer"} in status["operations"]
+        result = await quit.shutdown(stop_runs=False, cancel_operations=True, expected_run_ids=[])
+        assert result["drained"] is True and server.should_exit
+        assert env.store.require("runs", env.rid)["state"] == "Fixing"
+    finally:
+        sleeper.cancel()
+        await asyncio.gather(sleeper, return_exceptions=True)
+
+
+def test_settings_fixer_daily_minutes(tmp_path):
+    app = create_app(tmp_path / "data", credentials=MemoryCredentials(), start_services=False, ai_backend=FakeCodexBackend())
+    headers = {"X-ASHAD-Request": "1"}
+    with TestClient(app) as client:
+        assert client.get("/api/bootstrap").json()["settings"]["fixer_daily_minutes"] == 240
+        for bad in (0, 1441, True, "5"):
+            assert client.post("/api/settings", json={"fixer_daily_minutes": bad}, headers=headers).status_code == 422
+        assert app.state.store.require("settings", "main")["fixer_daily_minutes"] == 240
+        assert client.post("/api/settings", json={"fixer_daily_minutes": 30}, headers=headers).status_code == 200
+        assert app.state.store.require("settings", "main")["fixer_daily_minutes"] == 30

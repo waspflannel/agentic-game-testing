@@ -199,6 +199,12 @@ a.row:hover { text-decoration: none; }
 .row-tool:hover { background: var(--surface-3); color: var(--text); }
 .row-tool .icon { width: 14px; height: 14px; }
 .group-row:hover .row-tool, .group-row:focus-within .row-tool { opacity: 1; }
+.thread-item { display: flex; align-items: center; padding-right: 4px; }
+.thread-item > .thread { flex: 1; min-width: 0; }
+button.row-tool { border: 0; background: transparent; cursor: pointer; }
+.thread-item:hover .thread-tool, .thread-item:focus-within .thread-tool { opacity: 1; }
+.row-tool[aria-disabled="true"] { cursor: not-allowed; }
+.link-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .threads { padding: 2px 0 4px; }
 .threads .row { padding-left: 30px; min-height: 28px; }
 .thread .row-label { color: var(--text-2); }

@@ -104,3 +104,63 @@ test('patchHTML skips identical markup and restores focus and scroll after a rea
   assert.equal(region.nodes[0].scrollTop, 240);
   assert.equal(region.nodes[1].focused, true);
 });
+
+const MODEL_OPTS = [{ id: 'gpt-6-sol', label: 'GPT-6 Sol' }, { id: 'gpt-6-astra', label: 'GPT-6 Astra' }];
+const menuArgs = (over = {}) => ({ key: 'c-model', field: 'model', options: MODEL_OPTS, selected: 'gpt-6-astra', defaultModel: 'gpt-6-sol', ...over });
+const optionButtons = html => html.match(/<button type="button" role="option"[\s\S]*?<\/button>/g) || [];
+
+test('modelMenuHTML renders a trigger and a listbox of the given options', async () => {
+  const { modelMenuHTML } = await load();
+  const html = modelMenuHTML(menuArgs());
+  assert.match(html, /popovertarget="c-model-menu"/);
+  assert.match(html, /aria-haspopup="listbox"/);
+  assert.match(html, /data-key="c-model"/);
+  assert.match(html, /<span class="chip-text">GPT-6 Astra<\/span>/);
+  assert.match(html, /id="c-model-menu" popover/);
+  assert.match(html, /role="listbox"/);
+  assert.match(html, /aria-label="Model"/);
+  assert.deepEqual([...html.matchAll(/data-value="([^"]*)"/g)].map(m => m[1]), ['gpt-6-sol', 'gpt-6-astra']);
+  const opts = optionButtons(html);
+  assert.equal(opts.length, 2);
+  for (const o of opts) assert.match(o, /data-action="pick-model" data-field="model"/);
+  assert.doesNotMatch(html, /<select/);
+});
+
+test('modelMenuHTML marks exactly one selected option with a check and the default with a pill', async () => {
+  const { modelMenuHTML } = await load();
+  const html = modelMenuHTML(menuArgs());
+  const opts = optionButtons(html);
+  const selected = opts.filter(o => o.includes('aria-selected="true"'));
+  assert.equal(selected.length, 1);
+  assert.match(selected[0], /data-value="gpt-6-astra"/);
+  assert.equal(html.split('#i-check').length - 1, 1);
+  assert.match(selected[0], /#i-check/);
+  assert.equal(html.split('model-default').length - 1, 1);
+  assert.match(opts.find(o => o.includes('model-default')), /data-value="gpt-6-sol"/);
+  assert.doesNotMatch(modelMenuHTML(menuArgs({ defaultModel: undefined })), /model-default/);
+});
+
+test('modelMenuHTML escapes labels and ids', async () => {
+  const { modelMenuHTML } = await load();
+  const html = modelMenuHTML(menuArgs({ options: [{ id: 'a"b', label: '<b>"x"</b>' }], selected: 'a"b', defaultModel: undefined }));
+  assert.ok(html.includes('&lt;b&gt;&quot;x&quot;&lt;/b&gt;'));
+  assert.ok(html.includes('data-value="a&quot;b"'));
+  assert.ok(!html.includes('<b>'));
+});
+
+test('modelMenuHTML falls back to the raw id when the selected model is not listed', async () => {
+  const { modelMenuHTML } = await load();
+  const html = modelMenuHTML(menuArgs({ selected: 'opus' }));
+  assert.match(html, /<span class="chip-text">opus<\/span>/);
+  assert.doesNotMatch(html, /aria-selected="true"/);
+});
+
+test('nextOptionIndex clamps arrows and jumps with Home/End', async () => {
+  const { nextOptionIndex } = await load();
+  assert.equal(nextOptionIndex('ArrowDown', 3, 4), 3);
+  assert.equal(nextOptionIndex('ArrowDown', 1, 4), 2);
+  assert.equal(nextOptionIndex('ArrowUp', 0, 4), 0);
+  assert.equal(nextOptionIndex('Home', 2, 4), 0);
+  assert.equal(nextOptionIndex('End', 0, 4), 3);
+  assert.equal(nextOptionIndex('Tab', 1, 4), -1);
+});

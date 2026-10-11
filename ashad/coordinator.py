@@ -11,6 +11,7 @@ import shutil
 import time
 import uuid
 from .models import Plan, MODEL, PROVIDERS, provider_of, CONTROLLER_VERSION, ACTIVE_STATES, TERMINAL_QUEST, require_same_provider
+from .game_controls import remove_controls_file
 from .reports import generate_report
 from .repair_tasks import record_task, publish_pending
 from .store import uid
@@ -123,31 +124,34 @@ class Coordinator:
             return {"deleted": run_id, "files_removed": self._remove_run_dir(run_id)}
 
     async def delete_project(self, project_id):
-        """Forget a project with its instances, agents and build registrations; build files on disk are kept."""
+        """Forget a project with its instances, project configurations, game controls files and build registrations; build files on disk are kept."""
         from .projects import Projects
         async with self.lock:
             self.store.require("projects", project_id)
             runs = [run for run in self.store.list("runs") if run.get("project_id") == project_id]
             self._require_deletable([run["id"] for run in runs], "Stop its active instance before deleting this project.")
+            config_ids = [a["id"] for a in self.store.list("agents") if a.get("project_id") == project_id]
             with self.store.transaction():
                 for run in runs:
                     self._forget_run_records(run)
                 Projects(self.store).delete(project_id)
             # A list, not a generator: every directory is attempted even after one fails.
-            files_removed = all([self._remove_run_dir(run["id"]) for run in runs])
+            files_removed = all([*(self._remove_run_dir(run["id"]) for run in runs),
+                                 *(remove_controls_file(self.store, i) for i in config_ids)])
             return {"deleted": project_id, "instances": len(runs), "files_removed": files_removed}
 
     async def delete_agent(self, agent_id):
-        """Forget one agent configuration; instances that used it keep their own copy of it."""
+        """Forget one project configuration and its game controls file; instances that used it stay in history and are blocked until the project is reconfigured."""
         from .projects import Projects
         async with self.lock:
             self.store.require("agents", agent_id)
             users = [run["id"] for run in self.store.list("runs")
                      if agent_id in (run.get("agent_id"), (run.get("plan") or {}).get("agent_id"))]
-            self._require_deletable(users, "Stop the instance using this agent configuration before deleting it.")
+            self._require_deletable(users, "Stop the instance using this project configuration before deleting it.")
             with self.store.transaction():
                 Projects(self.store).delete_agent(agent_id)
-            return {"deleted": agent_id, "instances_kept": len(users)}
+            files_removed = remove_controls_file(self.store, agent_id)
+            return {"deleted": agent_id, "instances_blocked": len(users), "files_removed": files_removed}
 
     def _require_deletable(self, run_ids, message):
         targets = set(run_ids)

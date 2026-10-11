@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 from fastapi.testclient import TestClient
 
-from ashad.game_controls import MODEL_NOT_ALLOWED, GameControls
+from ashad.game_controls import CONFIGURATION_DELETED, MODEL_NOT_ALLOWED, GameControls
 from ashad.instances import InstanceRequest, Instances, default_model
 from ashad.models import MODEL
 from test_controller import FakeClaudeBackend, environment  # noqa: F401
@@ -154,6 +154,47 @@ async def test_rejected_start_can_be_corrected_and_reallocated(environment, prof
     run = await instances.start(request.model_copy(update={"primary_goal": "Learn to fish"}))
     assert run["plan"]["primary_goal"] == "Learn to fish"
     assert run["plan"]["players"][0]["worker_id"] != first["id"]
+
+
+@pytest.mark.asyncio
+async def test_blocked_instance_cannot_start_until_the_project_is_reconfigured(environment, profile, monkeypatch):
+    store, coordinator, _, _ = environment
+    artifact = profile["artifact"]
+
+    def validated(self, agent_id):
+        record = self.store.get("agents", agent_id)
+        if record is None:
+            raise ValueError(CONFIGURATION_DELETED)
+        return record, copy.deepcopy(artifact)
+
+    monkeypatch.setattr(GameControls, "validated", validated)
+    instances = Instances(coordinator)
+    first = await instances.start(InstanceRequest(agent_id="agent-test", primary_goal="Explore", request_id="r1"))
+    await coordinator.finish(first["id"], "user_stopped")
+    coordinator.finishing.pop(first["id"], None)  # finish() ran inline in this task
+    before = copy.deepcopy(store.require("runs", first["id"]))
+    await coordinator.delete_agent("agent-test")
+    scenarios = len(store.list("scenarios"))
+
+    with pytest.raises(ValueError, match="project configuration was deleted") as refused:
+        await instances.start(InstanceRequest(agent_id="agent-test", primary_goal="Explore", request_id="fresh"))
+    assert str(refused.value) == CONFIGURATION_DELETED
+    assert len(store.list("scenarios")) == scenarios and store.command("instance", "fresh") is None
+
+    # A replayed start: the instance command exists but no launch was ever committed.
+    scenario = coordinator.save_scenario(copy.deepcopy(first["plan"]))
+    replay = InstanceRequest(agent_id="agent-test", primary_goal="Explore", request_id="replayed")
+    store.command("instance", "replayed", {"request": replay.model_dump(exclude_none=True),
+                                          "scenario_id": scenario["id"], "revision": scenario["revision"]})
+    with pytest.raises(ValueError) as replayed:
+        await instances.start(replay)
+    assert str(replayed.value) == CONFIGURATION_DELETED
+    assert store.command("launch", "instance_replayed") is None
+
+    store.put("agents", {**{k: v for k, v in profile.items() if k != "artifact"}, "id": "a2"})
+    second = await instances.start(InstanceRequest(agent_id="a2", primary_goal=before["plan"]["primary_goal"], request_id="again"))
+    assert second["agent_id"] == "a2" and second["id"] != first["id"]
+    assert store.require("runs", first["id"]) == before
 
 
 def test_public_workflow_and_retired_routes(tmp_path, monkeypatch):

@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ashad.app import create_app
-from ashad.game_controls import CONFIGURATION_RETIRED
+from ashad.game_controls import CONFIGURATION_RETIRED, controls_file
 from ashad.models import MODEL, CLAUDE_MODEL
 from ashad.projects import Projects
 from test_controller import MemoryCredentials, FakeCodexBackend
@@ -370,9 +370,13 @@ def test_deleting_a_project_removes_its_instances_agents_and_builds_only(tmp_pat
         store.event(f"r_{n}", "seeded")
     rows = lambda n: [("projects", ids[n]), ("builds", f"b_{n}"), ("agents", f"a_{n}"), ("tuning_notes", f"note_{n}"),
                       ("environment_preparations", f"prep_{n}"), ("runs", f"r_{n}")]
+    for n in (1, 2):
+        controls_file(store, f"a_{n}").parent.mkdir(parents=True, exist_ok=True)
+        controls_file(store, f"a_{n}").write_text("{}")
     with TestClient(app) as client:
         deleted = client.delete(f"/api/projects/{ids[1]}", headers=HEADERS)
-        assert deleted.status_code == 200 and deleted.json()["instances"] == 1
+        assert deleted.status_code == 200 and deleted.json()["instances"] == 1 and deleted.json()["files_removed"] is True
+        assert not controls_file(store, "a_1").exists() and controls_file(store, "a_2").exists()
         assert all(store.get(kind, key) is None for kind, key in rows(1))
         assert store.command("project", "req_1") is None and store.command("tuning", "t_1") is None
         assert not (tmp_path / "runs" / "r_1").exists()
@@ -445,22 +449,27 @@ def seed_agents(store):
     store.put("tuning_notes", {"id": "n1", "build_id": "b1"})
 
 
-def test_deleting_an_agent_removes_it_and_its_tuning_rows_and_keeps_instances(tmp_path):
+def test_deleting_a_configuration_removes_its_file_and_blocks_its_instances(tmp_path):
     app = offline_app(tmp_path)
     store = app.state.store
     seed_agents(store)
-    store.put("runs", released_run("r1", project_id="p1", agent_id="a1", agent_profile={"id": "a1", "instructions": "snapshot"}))
+    file = controls_file(store, "a1")
+    file.parent.mkdir(parents=True, exist_ok=True)
+    file.write_text("{}")
+    snapshot = {"controls": "snapshot"}
+    store.put("runs", released_run("r1", project_id="p1", agent_id="a1", agent_profile={"id": "a1"}, game_controls=snapshot))
     with TestClient(app) as client:
         response = client.delete("/api/agents/a1", headers=HEADERS)
         assert response.status_code == 200
-        assert response.json() == {"deleted": "a1", "instances_kept": 1}
+        assert response.json() == {"deleted": "a1", "instances_blocked": 1, "files_removed": True}
+        assert not file.exists()
         assert store.get("agents", "a1") is None
         assert store.command("tuning", "t1") is None
         assert store.get("agents", "a2") is not None
         assert store.command("tuning", "t2") is not None
         assert store.get("tuning_notes", "n1") is not None
         run = store.get("runs", "r1")
-        assert run["agent_profile"] == {"id": "a1", "instructions": "snapshot"} and run["agent_id"] == "a1"
+        assert run["game_controls"] == snapshot and run["agent_id"] == "a1"
 
 
 @pytest.mark.parametrize("case", [{"state": "Running", "agent_id": "a1"}, {"state": "Queued", "plan": {"agent_id": "a1"}}])
@@ -472,7 +481,7 @@ def test_agent_used_by_a_live_or_queued_instance_cannot_be_deleted(tmp_path, cas
     with TestClient(app) as client:
         response = client.delete("/api/agents/a1", headers=HEADERS)
         assert response.status_code == 422
-        assert "Stop the instance using this agent configuration" in response.json()["detail"]
+        assert "Stop the instance using this project configuration" in response.json()["detail"]
         assert store.get("agents", "a1") is not None and store.command("tuning", "t1") is not None
 
 

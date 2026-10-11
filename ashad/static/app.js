@@ -1,4 +1,4 @@
-import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, createDrawer, patchHTML, dirtyBridge, runGoal, ago, modelLabel } from './core.js';
+import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, createDrawer, patchHTML, dirtyBridge, runGoal, ago, modelLabel, since } from './core.js';
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
 import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, draftModel, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
 import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions, defaultTab, nextTab } from './views/instance.js';
@@ -367,9 +367,26 @@ async function deleteProject(id) {
     const result = await api(`/api/projects/${enc(id)}`, { method: 'DELETE' });
     for (const kind of ['runs', 'agents', 'builds']) state.data[kind] = (state.data[kind] || []).filter(r => r.project_id !== id);
     state.data.projects = state.data.projects.filter(p => p.id !== id);
+    if (['project', 'composer'].includes(state.route.name) && state.route.id === id) location.hash = '#/';
     state.setups.delete(id); state.drafts.delete(id); state.overviews.delete(id); state.ui.expanded.delete(id); state.ui.showAll.delete(id);
     if (state.ui.lastProject === id) state.ui.lastProject = null;
     toast(result.files_removed === false ? `${name} deleted. Some files could not be removed.` : `${name} deleted.`, 'ok');
+  } catch (error) { toast(error.message, 'error'); }
+  render();
+  poll();
+}
+
+async function deleteAgent(id) {
+  const agent = (state.data.agents || []).find(a => a.id === id);
+  if (!agent) return;
+  const name = agent.name || id;
+  const tuned = agent.created_at ? `tuned ${since(agent.created_at)}` : 'tuned at an unrecorded time';
+  if (!await confirmDialog({ title: `Delete ${name}?`, body: `${modelLabel(state.data, agent.model)}, ${tuned}. ASHAD forgets this configuration and its tuned instructions. Instances that used it keep their own copy and stay in history. This cannot be undone.`, confirm: 'Delete configuration', danger: true })) return;
+  try {
+    await api(`/api/agents/${enc(id)}`, { method: 'DELETE' });
+    state.data.agents = state.data.agents.filter(a => a.id !== id);
+    for (const ov of state.overviews.values()) ov.retunes.delete(id);
+    toast(`${name} deleted.`, 'ok');
   } catch (error) { toast(error.message, 'error'); }
   render();
   poll();
@@ -404,7 +421,6 @@ function onSetupAction(action, target, event) {
     $('#setup-step-title')?.focus();
   } else if (action === 'setup-create') createProject(s);
   else if (action === 'setup-add-build') addBuild(s, s.projectId, target.dataset.kind);
-  else if (action === 'setup-delete-project') deleteProject(target.dataset.id);
   else if (action === 'setup-recheck') { s.readiness = null; renderView(); }
   else if (action === 'setup-prepare') prepare(s, s.projectId, setupModel(state.data, s).build);
   else if (action === 'setup-tune') startTuning(s);
@@ -774,6 +790,8 @@ function onOverviewAction(action, target) {
   const agent = (state.data.agents || []).find(a => a.id === target.dataset.id);
   if (action === 'ov-add-build') addBuild(ov, ov.projectId, target.dataset.kind);
   else if (action === 'ov-delete-build') deleteBuild(target.dataset.id);
+  else if (action === 'ov-delete-project') deleteProject(ov.projectId);
+  else if (action === 'ov-delete-agent') deleteAgent(target.dataset.id);
   else if (action === 'ov-recheck') { ov.readiness = null; renderView(); }
   else if (action === 'ov-prepare') prepare(ov, ov.projectId, (state.data.builds || []).find(b => b.id === ov.buildId));
   else if (action === 'ov-retune') retune(ov, agent);

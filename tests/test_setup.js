@@ -208,7 +208,7 @@ test('a Claude model is enabled when only Claude is ready and disabled with the 
   assert.equal(fresh.model, 'sonnet');
 });
 
-test('step 1 lists existing projects with a delete button, disabled while one of its instances is live', async () => {
+test('step 1 lists existing projects as links without a delete button', async () => {
   const { newSetup, setupModel, setupRegions } = await load();
   const d = data({
     projects: [{ id: 'p', name: 'Agronauts' }, { id: 'q', name: 'Other' }],
@@ -216,10 +216,8 @@ test('step 1 lists existing projects with a delete button, disabled while one of
     instance_slot: { owners: [{ run_id: 'r1', state: 'Running', reason: 'running' }] },
   });
   const s = newSetup('');
-  const html = setupRegions(d, s, { ...setupModel(d, s), step: 1 }).main;
-  const button = id => html.match(new RegExp(`<button[^>]*data-id="${id}"[^>]*>`))[0];
-  assert.ok(button('p').includes('data-action="setup-delete-project" data-id="p" data-key="sd-p" aria-label="Delete project Agronauts" title="Delete project">'));
-  assert.ok(!button('p').includes('aria-disabled'));
-  assert.ok(button('q').includes('aria-disabled="true"'));
-  assert.ok(button('q').includes('title="Stop its active instance before deleting this project"'));
+  const { main } = setupRegions(d, s, { ...setupModel(d, s), step: 1 });
+  assert.ok(main.includes('href="#/setup?project=p"'));
+  assert.ok(main.includes('href="#/setup?project=q"'));
+  assert.doesNotMatch(main, /setup-delete-project|<button[^>]*data-id="(p|q)"/);
 });

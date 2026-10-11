@@ -1,5 +1,5 @@
 // Instance thread: header, tabs, camera and control bar (spec §8.5 A–C, §9). Markup and state are pure; app.js owns I/O.
-import { esc, icon, newId, runGoal, humanize, badge, modelLabel, providerModels } from '../core.js';
+import { esc, icon, newId, runGoal, humanize, badge, modelLabel, providerModels, modelMenuHTML } from '../core.js';
 
 const enc = encodeURIComponent;
 const LIVE_STATES = new Set(['Starting', 'Running', 'Paused', 'Investigating', 'Stopping']);  // /live serves only these.
@@ -179,10 +179,9 @@ export function threadRegions(run, ctx) {
   const transport = { enet: 'ENet', steam: 'Steam' }[run.plan?.transport?.mode];
   const textChip = text => `<span class="chip" title="${esc(text)}"><span class="chip-text">${esc(text)}</span></span>`;
   const chips = [agent?.name, model, build && `build ${build}`, transport].filter(Boolean).map(textChip).join('');
-  const modelSelect = `<label class="chip chip-select">${icon('sliders')}<span class="sr-only">Model</span><select data-field="run-model" data-key="t-model" aria-label="Model">`
-    + providerModels(data, run.model).map(o => `<option value="${esc(o.id)}"${o.id === run.model ? ' selected' : ''}>${esc(o.label)}</option>`).join('') + `</select></label>`;
+  const modelMenu = modelMenuHTML({ key: 't-model', field: 'run-model', options: providerModels(data, run.model), selected: run.model, defaultModel: run.agent_profile?.model });
   const live = run.model && MODEL_CHANGE_STATES.has(run.state);
-  const metaChips = [agent?.name && textChip(agent.name), model && (live ? modelSelect : textChip(model)), build && textChip(`build ${build}`), transport && textChip(transport)].filter(Boolean).join('');
+  const metaChips = [agent?.name && textChip(agent.name), model && (live ? modelMenu : textChip(model)), build && textChip(`build ${build}`), transport && textChip(transport)].filter(Boolean).join('');
   const head = `<button type="button" class="thread-goal" popovertarget="goal-full" data-key="t-goal" title="Show the full goal">${esc(goal)}</button>`
     + `<div id="goal-full" class="popover goal-pop" popover>${esc(goal)}</div>`
     + badge(status.badge)

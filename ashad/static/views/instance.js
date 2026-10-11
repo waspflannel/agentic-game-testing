@@ -34,6 +34,7 @@ function canRecalculate(run) {
 export function instanceState(run, owner) {
   const launched = playerIds(run).some(id => run.players[id]?.launched);
   const recalc = canRecalculate(run) ? ['recalculate'] : [];
+  const needsYou = run?.loop?.phase === 'needs_you';
   const make = (key, tone, label, left, stop, menu, extra) => ({ key, badge: { tone, label }, left, stop, menu, ...extra });
   if (run?.state === 'Ended' && owner?.reason === 'teardown_unconfirmed') return make('unconfirmed', 'attention', 'Teardown unconfirmed', ['reconcile'], false, ['report', 'evidence']);
   if (run?.human_control && LIVE_STATES.has(run.state)) return make('human', 'attention', 'You have control', ['handback'], true, ['flag']);
@@ -45,6 +46,7 @@ export function instanceState(run, owner) {
     // Extend lives here, not under Running: the backend only extends an open investigation.
     case 'Investigating': return make('investigating', 'attention', 'Needs review', ['resume', ...(launched ? ['takeover'] : [])], true, [...(launched ? ['save'] : []), 'extend', ...recalc, 'flag'], { banner: true });
     case 'Stopping': return make('stopping', 'pending', 'Stopping', [], false, [], { note: 'Waiting for teardown confirmation' });
+    case 'Fixing': return make('fixing', needsYou ? 'attention' : 'pending', needsYou ? 'Needs you' : 'Fixing', [], false, []);
     case 'Ended': return make('ended', 'muted', `Ended · ${humanize(run.ending_reason) || 'reason not recorded'}`, ['report', 'evidence'], false, ['flag']);
     default: return make('unknown', 'muted', 'Unknown', [], Boolean(owner), []);
   }
@@ -145,7 +147,8 @@ export const threadSkeleton = () => `<div class="thread">`
   + panel('bot', `<div data-region="players"></div><div class="camera"><div class="camera-media" data-camera></div><div class="camera-overlay" data-region="overlay"></div></div>`)
   + panel('goals', `<div class="insp-body" data-region="goals"></div>`)
   + panel('world', `<div class="insp-body" data-region="world"></div>`)
-  + panel('actions', `<details class="insp-section" open><summary class="insp-head">${icon('chevron-right', 'icon chevron')}<span data-region="issues-head">Issues</span></summary><div class="insp-body" data-region="issues"></div></details>`
+  + panel('actions', `<details class="insp-section" open><summary class="insp-head">${icon('chevron-right', 'icon chevron')}<span data-region="loop-head">Improvement loop</span></summary><div class="insp-body" data-region="loop"></div></details>`
+    + `<details class="insp-section" open><summary class="insp-head">${icon('chevron-right', 'icon chevron')}<span data-region="issues-head">Issues</span></summary><div class="insp-body" data-region="issues"></div></details>`
     + `<details class="insp-section" open><summary class="insp-head">${icon('chevron-right', 'icon chevron')}Saves</summary><div class="insp-body" data-region="saves"></div></details>`
     + `<details class="insp-section"><summary class="insp-head">${icon('chevron-right', 'icon chevron')}Model usage</summary><div class="insp-body" data-region="usage"></div></details>`
     + `<section class="activity" aria-labelledby="activity-heading"><div class="activity-head"><h2 id="activity-heading" class="section-title">Activity</h2><div class="tl-tools" data-region="tl-tools"></div></div>`
@@ -233,6 +236,91 @@ export function issuesHTML(issues, { saves, slotFree, pending, truncated, issueO
 
 const MODEL_CHANGE_STATES = new Set(['Queued', 'Starting', 'Running', 'Paused', 'Investigating']);
 
+export const PHASE_TEXT = {
+  playing: 'Playing. A fix starts at the next unsupported action.',
+  fixing: 'Fixer is working on a PR',
+  gating: 'Running tests on the PR',
+  merging: 'Merging the PR',
+  applying: 'Updating ASHAD from main',
+  restart_required: 'Restarting to apply the fix',
+  verifying: 'Checking the fix',
+  reverting: 'Reverting the fix',
+  needs_you: 'Needs you',
+  ended: 'Ended',
+};
+
+export const NEEDS_YOU_TEXT = {
+  dispatch: 'An unsupported action stopped the game. Run the fixer to open a PR for it, or cancel.',
+  review_pr: 'Review the PR, merge it on GitHub with a merge commit, then click Apply fix.',
+  review_revert: 'Review the revert PR, merge it on GitHub with a merge commit, then click Apply fix.',
+  attempt_failed: 'The fixer attempt failed. Run the fixer again, or cancel.',
+  issue_attempts: 'This issue has used all its fixer attempts. Run the fixer once more, or cancel.',
+  loop_attempts: 'This loop reached its limit of fixer attempts. Cancel the fix to end it.',
+  loop_fixes: 'This loop reached its limit of merged fixes. Cancel the fix to end it.',
+  repeat_failures: 'Three attempts in a row failed. Cancel the fix, then look at the issue yourself.',
+  budget: 'The fixer used its minutes for today. Raise the limit in Settings, run the fixer anyway, or cancel.',
+  usage_limit: 'Your Claude plan reached its usage limit. Run the fixer again when it resets, or cancel.',
+  fixer_unavailable: 'The fixer could not start. Check that jr, gh and Claude Code are set up, then run the fixer again, or cancel.',
+  needs_worker_change: 'This issue needs a change outside the agent layer, which the fixer may not make. Cancel the fix and change it yourself.',
+  no_save: 'There is no save from before this failure to check the fix against. Cancel the fix.',
+  teardown_unconfirmed: 'The game did not confirm it stopped. Cancel the fix, then reconcile the instance.',
+  checkout_dirty: 'The ASHAD checkout has local changes, so the merged fix cannot be pulled. Clean the checkout, then click Apply fix.',
+  restart_needed: 'Restart ASHAD from the checkout to load the fix: npm --prefix desktop run prepare:runtime, then npm --prefix desktop start.',
+  verify_failed: 'The issue came back after the fix. Revert it, run the fixer again, or cancel.',
+  verify_inconclusive: 'The check ended before it could tell whether the fix works. Revert the fix, or cancel.',
+  verify_launch_failed: 'The check could not start from the saved game. Cancel the fix.',
+  regression: 'The fix caused a new problem. Revert it, or cancel.',
+  reverted: 'The fix was reverted. Run the fixer again, or cancel.',
+  revert_failed: 'The revert did not complete. Revert the merge commit on GitHub yourself, then cancel the fix.',
+  merged_untested: 'The fix was merged but ASHAD could not test it. Revert it, or cancel.',
+};
+
+export const loopHead = loop => (loop ? `Improvement loop · ${loop.mode === 'auto' ? 'Auto' : 'Manual'}` : 'Improvement loop');
+
+const LOOP_BUTTONS = {
+  dispatch: ['Run fixer', 'wrench', 'btn-primary'],
+  apply: ['Apply fix', 'check', 'btn-primary'],
+  revert: ['Revert fix', 'refresh', 'btn-secondary'],
+  cancel: ['Cancel fix', 'stop', 'btn-danger'],
+};
+
+function loopButton(name, pending) {
+  const [label, glyph, cls] = LOOP_BUTTONS[name];
+  const busy = pending.has('loop:' + name);
+  return `<button type="button" class="btn ${cls}" data-action="loop-command" data-command="${name}" data-key="loop-${name}"${busy ? ' aria-busy="true" aria-disabled="true"' : ''}>${icon(busy ? 'loader' : glyph, busy ? 'icon spin' : 'icon')}${label}</button>`;
+}
+
+export function loopHTML(loop, { pending = new Set() } = {}) {
+  if (!loop) return '<p class="hint">Fixes are off for this instance.</p>';
+  const verify = loop.verify;
+  const phase = loop.phase === 'verifying' && verify
+    ? `Checking the fix: ${verify.decisions ?? 0} of 30 decisions${verify.paused ? ', paused. Resume the instance to continue.' : ''}`
+    : PHASE_TEXT[loop.phase] || esc(humanize(loop.phase));
+  const issue = loop.issue ? `<p class="loop-issue">Unsupported action · ${esc(loop.issue.title)}</p>` : '';
+  const a = loop.attempt;
+  const meta = [a && `Attempt ${a.n} of ${a.of}`,
+    a?.pr && `<a href="${esc(a.pr.url)}" target="_blank" rel="noreferrer">PR #${esc(a.pr.number)}</a>`,
+    a && Number.isFinite(a.minutes) && `${a.minutes} min`,
+    Number.isFinite(loop.minutes_today) && `${loop.minutes_today} of ${loop.daily_minutes} fixer minutes today`].filter(Boolean);
+  const needs = loop.phase === 'needs_you' && loop.needs_you;
+  const note = needs ? `<p class="loop-needs">${icon('alert')}<span>Needs you: ${esc(NEEDS_YOU_TEXT[needs.reason] || needs.message)}</span></p>` : '';
+  const offers = needs ? (needs.offers || []).filter(name => name !== 'cancel' && LOOP_BUTTONS[name]) : [];
+  const buttons = loop.phase === 'ended' ? ''
+    : `<div class="loop-actions">${offers.map(name => loopButton(name, pending)).join('')}${loopButton('cancel', pending).replace('class="btn', 'class="loop-cancel btn')}</div>`;
+  return `<p class="loop-phase">${phase}</p>${issue}${meta.length ? `<p class="loop-meta">${meta.join(' · ')}</p>` : ''}${note}${buttons}${progressHTML(loop.progress || [])}`;
+}
+
+const CHANGE_TEXT = { more: 'More', same: 'Same', less: 'Less' };
+
+export function progressHTML(rows) {
+  if (!rows.length) return '<p class="hint">Progress appears after the first instance in this loop stops.</p>';
+  const heads = ['Instance', 'Fix before it', 'Quests', 'Goals', 'Action kinds', 'Stopped by', 'Change'].map(h => `<th scope="col">${h}</th>`).join('');
+  const body = rows.map(r => `<tr><th scope="row">${esc(r.run_id)}</th><td>${r.fix_before ? esc(r.fix_before) : '—'}</td>`
+    + `<td class="num">${esc(r.quests)}</td><td class="num">${esc(r.goals_completed)}</td><td class="num">${esc(r.action_kinds)}</td>`
+    + `<td>${esc(r.stopped_by)}</td><td>${CHANGE_TEXT[r.further] || '—'}</td></tr>`).join('');
+  return `<div class="loop-progress-wrap"><table class="loop-progress"><thead><tr>${heads}</tr></thead><tbody>${body}</tbody></table></div>`;
+}
+
 export function threadRegions(run, ctx) {
   const { status, owner, data, ui, pending, error, cameraStatus, player, tab, issueOpen } = ctx;
   const goal = runGoal(run);
@@ -268,6 +356,8 @@ export function threadRegions(run, ctx) {
   return { head, banner, players, saves,
     issues: issuesHTML(run.issues || [], { saves: run.saves || [], slotFree, pending, truncated: run.issues_truncated, issueOpen }),
     'issues-head': issuesHead(run.issues || []),
+    'loop-head': loopHead(run.loop),
+    loop: loopHTML(run.loop, { pending }),
     overlay: overlayHTML(run, status, cameraStatus), controls: controlsHTML(status, pending, error), tabs: tabsHTML(tab), instruction: instructionHTML(ui, pending) };
 }
 

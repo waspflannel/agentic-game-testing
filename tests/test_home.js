@@ -259,3 +259,34 @@ test('Start sends the chosen model and a changed model is a changed payload', as
   assert.equal(second.body.model, 'gpt-6-luna');
   assert.notEqual(first.body.request_id, second.body.request_id);
 });
+
+test('fix chip disables manual and auto when the fixer is not ready', async () => {
+  const { composerRegions, composerModel, newDraft } = await load();
+  const fixer = { ready: false, reasons: ['gh is not signed in'] };
+  const bar = draft => composerRegions(composerModel(data(), 'p', draft, { key: 'p|b|a|gpt-6-astra', result: ready }, fixer), draft);
+  const draft = { ...newDraft(), configurationId: 'a' };
+  const off = bar(draft);
+  assert.match(off.bar, /data-field="fix"/);
+  assert.match(off.bar, /<option value="manual" disabled>/);
+  assert.match(off.bar, /<option value="auto" disabled>/);
+  assert.match(off.bar, /<option value="off" selected>/);
+  assert.ok(off.bar.indexOf('data-field="transport"') < off.bar.indexOf('data-field="fix"'));
+  assert.match(off.status, /sr-only" id="composer-fix-note">gh is not signed in/);
+  const manual = bar({ ...draft, fix: 'manual' });
+  assert.match(manual.status, /<p class="note" id="composer-fix-note">gh is not signed in<\/p>/);
+  const ok = composerRegions(composerModel(data(), 'p', draft, null, { ready: true, reasons: [] }), draft);
+  assert.doesNotMatch(ok.bar, /<option value="(manual|auto)"[^>]* disabled>/);
+  const waiting = composerRegions(composerModel(data(), 'p', draft, null), draft);
+  assert.match(waiting.status, /Checking the fixer…/);
+});
+
+test('startInstance sends fix_mode', async () => {
+  const { startInstance } = await load();
+  const f = fakeApi({ '/api/instances': { id: 'r1' } });
+  await startInstance(await draftWith('Craft'), 'p', f.api);
+  assert.equal(f.posts()[0].body.fix_mode, 'off');
+  const draft = await draftWith('Craft');
+  draft.fix = 'auto';
+  await startInstance(draft, 'p', f.api);
+  assert.equal(f.posts()[1].body.fix_mode, 'auto');
+});

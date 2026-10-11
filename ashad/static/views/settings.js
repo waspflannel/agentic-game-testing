@@ -198,6 +198,7 @@ export function limitsSkeleton(data) {
     + `<form class="card settings-card settings-form" data-form="settings-limits" novalidate>`
     + field('l-duration', 'Session duration (minutes)', `<input id="l-duration" class="input" name="duration" inputmode="decimal" value="${esc(minutes)}" placeholder="No limit" aria-describedby="l-duration-error">`, 'An instance stops when it runs this long.', 'l-duration-error')
     + field('l-spend', 'Spend cap (USD, API-equivalent estimate)', `<input id="l-spend" class="input" name="spend" inputmode="decimal" value="${esc(s.spend_usd ?? '')}" placeholder="No limit" aria-describedby="l-spend-error">`, 'Estimates only apply to metered rows; subscription turns have no price.', 'l-spend-error')
+    + field('l-fixer', 'Fixer time per day (minutes)', `<input id="l-fixer" class="input" name="fixer" inputmode="numeric" value="${esc(s.fixer_daily_minutes ?? 240)}" aria-describedby="l-fixer-error">`, "The fixer stops for the day when it has run this long. It also stops when your Claude plan's usage limit is reached.", 'l-fixer-error')
     + field('l-reserve', 'Storage reserve (GB)', `<input id="l-reserve" class="input" name="reserve" inputmode="decimal" value="${esc(Number.isFinite(s.storage_reserve_bytes) ? +(s.storage_reserve_bytes / GB).toFixed(2) : '')}" aria-describedby="l-reserve-error">`, 'Free disk space kept back for evidence and saves.', 'l-reserve-error')
     + `<p class="hint">Concurrent instances: 1 (fixed in this release).</p>`
     + `<div data-region="form-status"></div><div class="btn-row"><button type="submit" class="btn btn-primary" data-key="l-save">Save limits</button></div></form>`
@@ -216,8 +217,11 @@ export function limitsPayload(values) {
   const duration = num('duration', 'Duration', 60);
   const spend = num('spend', 'Spend cap');
   const reserve = num('reserve', 'Storage reserve', GB, true);
+  const fixerRaw = String(values.fixer ?? '').trim();
+  const fixer = /^\d+$/.test(fixerRaw) ? Number(fixerRaw) : NaN;
+  if (!(fixer >= 1 && fixer <= 1440)) errors.fixer = 'Fixer time must be a whole number of minutes from 1 to 1440.';
   if (reserve === null) errors.reserve = 'Enter a reserve, or 0 for none.';
-  return { errors, body: { duration_seconds: duration, spend_usd: spend, storage_reserve_bytes: Number.isFinite(reserve) ? Math.round(reserve) : reserve } };
+  return { errors, body: { duration_seconds: duration, spend_usd: spend, storage_reserve_bytes: Number.isFinite(reserve) ? Math.round(reserve) : reserve, fixer_daily_minutes: fixer } };
 }
 
 export function limitsRegions(data, ui) {

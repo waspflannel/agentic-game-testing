@@ -186,6 +186,7 @@ export function runStatus(run, owner) {
     case 'Investigating': return { tone: 'attention', label: 'Needs review' };
     case 'Queued': case 'Starting': return { tone: 'pending', label: 'Starting' };
     case 'Stopping': return { tone: 'pending', label: 'Stopping' };
+    case 'Fixing': return run.loop?.phase === 'needs_you' ? { tone: 'attention', label: 'Needs you' } : { tone: 'pending', label: 'Fixing' };
     case 'Ended': return { tone: 'muted', label: 'Ended' };
     default: return { tone: 'muted', label: 'Unknown' };
   }

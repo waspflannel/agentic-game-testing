@@ -4,6 +4,7 @@
 !/.gitattributes
 !/README.md
 !/DESIGN.md
+!/CLAUDE.md
 !/requirements.txt
 !/ashad/
 !/worker/

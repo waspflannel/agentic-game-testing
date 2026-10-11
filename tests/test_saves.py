@@ -321,7 +321,8 @@ async def test_counted_issue_hit_takes_no_save(environment, monkeypatch):
     await act(env)
     await act(env)
     assert [outcome for outcome, _ in seen] == ["kept", "counted"]
-    assert "saves" in seen[0][1] and "saves" not in seen[1][1]
+    assert "saves" in seen[0][1]
+    assert seen[1][1]["saves"] == {"before": saves_of(env)[0]["id"], "at_issue": None}
     assert len(saves_of(env, "issue")) == 1
 
 

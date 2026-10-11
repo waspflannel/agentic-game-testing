@@ -112,7 +112,8 @@ def record_issue(store, issue_type, basis, example):
             key = "issue_" + signature[:16]
             issue = store.get("issues", key)
             seen = {"at": example["at"], "run_id": example["run_id"], "example_id": example["example_id"],
-                    "build_id": example["build"]["id"], "source_revision": example["build"]["source_revision"]}
+                    "build_id": example["build"]["id"], "source_revision": example["build"]["source_revision"],
+                    "save_before": (example.get("saves") or {}).get("before")}
             if issue is None:
                 with store.lock:
                     total = store.db.execute("SELECT COUNT(*) FROM records WHERE kind='issues'").fetchone()[0]

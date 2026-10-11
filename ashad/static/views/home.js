@@ -1,5 +1,5 @@
 // Empty workspace and the new-instance composer (spec §8.1, §8.2). Markup and the start flow are pure; app.js owns the DOM.
-import { esc, icon, href, newId, modelMenuHTML, ApiError } from '../core.js';
+import { esc, icon, href, newId, menuHTML, modelMenuHTML, ApiError } from '../core.js';
 
 const enc = encodeURIComponent;
 const chipDot = tone => `<span class="dot dot-${tone}" aria-hidden="true"></span>`;
@@ -106,6 +106,19 @@ export function noConfigurationsHTML(project) {
     + `<a class="btn btn-primary" href="#/setup?project=${enc(project.id)}" data-key="add-agent">Add project configuration</a></div>`;
 }
 
+// Fixes picker. While the fixer is not ready (or still being checked) Manual and Auto are aria-disabled and say why.
+function fixMenuHTML(fixer, fix) {
+  const blocked = !fixer.ready;
+  const reason = fixer.reasons[0];
+  const gated = (id, label, secondary) => ({ id, label, chipLabel: `Fixes: ${id}`, disabled: blocked, secondary: blocked ? reason : secondary });
+  return menuHTML({
+    key: 'c-fix', field: 'fix', action: 'pick-fix', label: 'Fixes', iconName: 'wrench', selected: fix || 'off',
+    options: [{ id: 'off', label: 'Off', chipLabel: 'Fixes off' }, gated('manual', 'Manual', 'You merge each fix PR'), gated('auto', 'Auto', 'ASHAD merges, checks and reverts')],
+    // One reason already shows on Manual and Auto; a footer only adds the full list when there are several.
+    footer: blocked && fixer.reasons.length > 1 ? fixer.reasons.map(r => `<p>${esc(r)}</p>`).join('') : '',
+  });
+}
+
 export function composerRegions(m, draft) {
   const name = esc(m.project.name || m.project.id);
   const projectChip = `<label class="chip chip-select">${icon('folder')}<span class="sr-only">Project</span>`
@@ -122,12 +135,7 @@ export function composerRegions(m, draft) {
     + `<select data-field="transport" data-key="c-transport" aria-label="Transport" aria-describedby="composer-steam-note">`
     + `<option value="enet"${draft.transport === 'enet' ? ' selected' : ''}>ENet</option>`
     + `<option value="steam"${draft.transport === 'steam' ? ' selected' : ''}${m.steam.enabled ? '' : ' disabled'}>Steam${m.steam.enabled ? '' : ' (unavailable)'}</option></select></label>`;
-  const fixOff = !m.fixer.ready;
-  const fixChip = `<label class="chip chip-select">${icon('wrench')}<span class="sr-only">Fixes</span>`
-    + `<select data-field="fix" data-key="c-fix" aria-label="Fixes" aria-describedby="composer-fix-note">`
-    + `<option value="off"${!draft.fix || draft.fix === 'off' ? ' selected' : ''}>Fixes off</option>`
-    + `<option value="manual"${draft.fix === 'manual' ? ' selected' : ''}${fixOff ? ' disabled' : ''}>Fixes: manual</option>`
-    + `<option value="auto"${draft.fix === 'auto' ? ' selected' : ''}${fixOff ? ' disabled' : ''}>Fixes: auto</option></select></label>`;
+  const fixChip = fixMenuHTML(m.fixer, draft.fix);
   const start = `<button type="submit" class="btn btn-primary btn-round" data-key="c-start" aria-label="Start instance" title="Start instance (Ctrl+Enter)"`
     + `${m.canStart ? '' : ' aria-disabled="true"'}${draft.busy ? ' aria-busy="true"' : ''}>${icon(draft.busy ? 'loader' : 'arrow-up', draft.busy ? 'icon spin' : 'icon')}</button>`;
 
@@ -137,7 +145,7 @@ export function composerRegions(m, draft) {
   if (draft.busy) notes.push(`<p class="note">${icon('loader', 'icon spin')}Starting… This can take a minute while the desktop is checked.</p>`);
   else if (res) notes.push(resultHTML(res));
   if (!m.steam.enabled) notes.push(draft.transport === 'steam' ? `<p class="note" id="composer-steam-note">${esc(m.steam.reason)}.</p>` : `<span class="sr-only" id="composer-steam-note">${esc(m.steam.reason)}.</span>`);
-  if (fixOff) notes.push(draft.fix && draft.fix !== 'off' ? `<p class="note" id="composer-fix-note">${esc(m.fixer.reasons[0])}</p>` : `<span class="sr-only" id="composer-fix-note">${esc(m.fixer.reasons[0])}</span>`);
+  if (!m.fixer.ready && draft.fix && draft.fix !== 'off') notes.push(`<p class="note">${esc(m.fixer.reasons[0])}</p>`);  // A blocked choice stays explained while the menu is closed.
   if (!draft.busy && m.blockers.length) notes.push(`<div class="note note-blocked"><p>Start is unavailable:</p><ul>${m.blockers.map(b => `<li>${esc(b)}</li>`).join('')}</ul></div>`);
   notes.push(`<p class="note note-hint"><span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> to start</span></p>`);
 

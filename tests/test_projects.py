@@ -94,7 +94,7 @@ def test_registration_rejects_cross_project_references_and_reassignment(workspac
         projects.register_build(build)
     store.put("builds", build)
     store.put("agents", {"id": "agent-a", "build_id": "build-a", "project_id": second["id"]})
-    with pytest.raises(ValueError, match="Referenced agent"):
+    with pytest.raises(ValueError, match="Referenced project configuration"):
         projects.register_build(build, first["id"])
     projects.register_build(build, second["id"])
     with pytest.raises(ValueError, match="cannot move"):

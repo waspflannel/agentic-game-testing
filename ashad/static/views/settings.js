@@ -29,8 +29,8 @@ export function officialLoginUrl(value) {
 export const settleLogin = (login, ai) => (ai?.status === 'login_pending' ? login : null);
 
 // Mirrors the backend's sign-in guard, so the buttons say why before a click is refused.
-export function accountBlocker(data, tuning) {
-  if (tuning) return 'Wait for agent tuning to finish before changing sign-in.';
+export function accountBlocker(data, controls) {
+  if (controls) return 'Wait for Get game controls to finish before changing sign-in.';
   const runs = data?.runs || [];
   if (runs.some(r => ['Queued', 'Starting', 'Running', 'Stopping'].includes(r.state))) return 'Pause or stop the active instance before changing sign-in.';
   if (runs.some(r => r.goal_recalculation?.status === 'planning')) return 'Wait for goal recalculation to finish before changing sign-in.';

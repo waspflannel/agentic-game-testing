@@ -37,10 +37,10 @@ test('ChatGPT sign-in offers only the official HTTPS link, and the link clears a
   assert.match(ready, /Sign out/);
 });
 
-test('sign-in buttons are disabled with the reason while tuning or an instance is active', async () => {
+test('sign-in buttons are disabled with the reason while Get game controls or an instance is active', async () => {
   const { accountBlocker, accountRegions } = await settings();
   assert.equal(accountBlocker(data(), false), '');
-  assert.match(accountBlocker(data(), true), /tuning/);
+  assert.match(accountBlocker(data(), true), /Wait for Get game controls to finish before changing sign-in\./);
   assert.match(accountBlocker(data({ runs: [{ state: 'Running' }] }), false), /active instance/);
   assert.match(accountBlocker(data({ runs: [{ state: 'Paused', goal_recalculation: { status: 'planning' } }] }), false), /recalculation/);
   const html = accountRegions({ ai: { status: 'configuration_required' }, blocker: 'Pause or stop the active instance before changing sign-in.' }).actions;

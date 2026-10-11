@@ -1,4 +1,4 @@
-"""Provider-neutral prompts and output schemas for selection, planning and tuning."""
+"""Provider-neutral prompts and output schemas for selection, planning and game controls."""
 
 TUNING_PROMPT_VERSION = 2
 TUNING_MANUAL_LIMIT = 32000
@@ -59,7 +59,7 @@ def planning_request(evidence, schema):
     return {"evidence": evidence}, schema, instructions
 
 
-def tuning_request(evidence, stage, repair):
+def controls_request(evidence, stage, repair):
     schema = {"type": "object", "properties": {"instructions": {"type": "string"}},
               "required": ["instructions"], "additionalProperties": False}
     if stage not in {"manual", "source_notes"}:

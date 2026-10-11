@@ -1,12 +1,13 @@
-"""Fresh-instance contracts. All desktops, profiles and provider calls are doubles."""
+"""Fresh-instance contracts. All desktops, game controls and provider calls are doubles."""
 import copy
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
 
-from ashad.agent_profiles import AgentProfiles
-from ashad.instances import InstanceRequest, Instances
+from ashad.game_controls import CONFIGURATION_DELETED, MODEL_NOT_ALLOWED, GameControls
+from ashad.instances import InstanceRequest, Instances, default_model
 from ashad.models import MODEL
 from test_controller import FakeClaudeBackend, environment  # noqa: F401
 from test_ui_http import app_at
@@ -15,10 +16,12 @@ from test_ui_http import app_at
 @pytest.fixture
 def profile(monkeypatch, environment):
     record = {"id": "agent-test", "name": "Agronauts", "build_id": "build-1", "source_revision": "test-revision",
-              "model": MODEL, "instructions": "Use next_text to advance cutscenes; check the UI before moving.", "status": "ready"}
+              "status": "ready", "controls_version": 1}
     record["project_id"] = "project-1"
-    environment[0].put("agents", record)
-    monkeypatch.setattr(AgentProfiles, "validated", lambda self, agent_id: copy.deepcopy(record))
+    record["artifact"] = artifact = {"controls": "Use next_text to advance cutscenes; check the UI before moving."}
+    environment[0].put("agents", {k: v for k, v in record.items() if k != "artifact"})
+    monkeypatch.setattr(GameControls, "validated", lambda self, agent_id: (
+        {k: v for k, v in record.items() if k != "artifact"}, copy.deepcopy(record["artifact"])))
     return record
 
 
@@ -29,7 +32,8 @@ async def test_fresh_instance_freezes_profile_and_deduplicates_start(environment
     request = InstanceRequest(agent_id=profile["id"], primary_goal="  Learn to fish  ", request_id="start-one")
     run = await instances.start(request)
     assert run["agent_id"] == profile["id"]
-    assert run["agent_profile"]["instructions"] == profile["instructions"]
+    assert run["game_controls"]["controls"] == profile["artifact"]["controls"]
+    assert run["agent_profile"]["id"] == profile["id"] and "model" not in run["agent_profile"]
     plan = run["plan"]
     assert plan["primary_goal"] == plan["players"][0]["goal"] == "Learn to fish"
     assert len(plan["players"]) == 1 and plan["players"][0]["role"] == "host"
@@ -39,8 +43,8 @@ async def test_fresh_instance_freezes_profile_and_deduplicates_start(environment
     assert (await instances.start(request))["id"] == run["id"]
     assert len(store.list("runs")) == 1
     assert all(path in {"/prepare/probe", "/status"} for desktop in desktops.values() for path, _ in desktop.calls)
-    profile["instructions"] = "new tuning"
-    assert store.require("runs", run["id"])["agent_profile"]["instructions"] != profile["instructions"]
+    profile["artifact"]["controls"] = "new controls"
+    assert store.require("runs", run["id"])["game_controls"]["controls"] != profile["artifact"]["controls"]
     with pytest.raises(ValueError, match="different instance"):
         await instances.start(request.model_copy(update={"primary_goal": "Another objective"}))
     with pytest.raises(ValueError, match="different instance"):
@@ -55,31 +59,40 @@ async def test_fresh_instance_freezes_profile_and_deduplicates_start(environment
 
 
 @pytest.mark.asyncio
-async def test_instance_model_defaults_to_profile_and_accepts_same_provider_override(environment, profile):
+async def test_instance_model_defaults_to_connected_provider_and_accepts_any_supported_model(environment, profile):
     store, coordinator, _, _ = environment
     instances = Instances(coordinator)
+    coordinator.ai.status = {"status": "ready"}
     run = await instances.start(InstanceRequest(agent_id=profile["id"], primary_goal="Explore", request_id="model-default"))
     assert run["model"] == MODEL
     assert "model" not in store.command("instance", "model-default")["request"]
     await coordinator.finish(run["id"], "user_stopped")
-    second = await instances.start(InstanceRequest(agent_id=profile["id"], primary_goal="Explore", request_id="model-override", model="gpt-6-sol"))
-    assert second["model"] == second["plan"]["model"] == "gpt-6-sol"
-    assert second["agent_profile"]["model"] == MODEL
-    assert second["api"] == "codex"
+    coordinator.ai.claude_backend = FakeClaudeBackend()
+    second = await instances.start(InstanceRequest(agent_id=profile["id"], primary_goal="Explore", request_id="model-override", model="sonnet"))
+    assert second["model"] == second["plan"]["model"] == "sonnet"
+    assert second["api"] == "claude" and "model" not in second["agent_profile"]
+
+
+def test_default_model_falls_back_to_claude_when_only_claude_is_ready():
+    ai = SimpleNamespace(status={"status": "login_required"}, claude_status={"status": "ready"})
+    assert default_model(ai) == "sonnet"
+    ai.status = {"status": "ready"}
+    assert default_model(ai) == MODEL
+    ai = SimpleNamespace(status={"status": "login_required"}, claude_status={"status": "configuration_required"})
+    assert default_model(ai) == "gpt-6-luna"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("model", ["sonnet", "nope"])
-async def test_instance_rejects_other_provider_or_unknown_model_without_side_effects(environment, profile, model):
+async def test_instance_rejects_unknown_model_without_side_effects(environment, profile):
     store, coordinator, _, _ = environment
-    with pytest.raises(ValueError, match="Choose a Codex model"):
-        await Instances(coordinator).start(InstanceRequest(agent_id=profile["id"], primary_goal="Explore", request_id="bad-model", model=model))
+    with pytest.raises(ValueError, match="Select a supported model"):
+        await Instances(coordinator).start(InstanceRequest(agent_id=profile["id"], primary_goal="Explore", request_id="bad-model", model="nope"))
     assert store.list("scenarios") == []
     assert store.command("instance", "bad-model") is None
 
 
 @pytest.mark.asyncio
-async def test_launch_requires_profile_provider_not_model(environment, profile):
+async def test_launch_no_longer_requires_matching_provider(environment, profile):
     store, coordinator, _, _ = environment
     run = await Instances(coordinator).start(InstanceRequest(agent_id=profile["id"], primary_goal="Explore", request_id="launch-base"))
     await coordinator.finish(run["id"], "user_stopped")
@@ -92,8 +105,8 @@ async def test_launch_requires_profile_provider_not_model(environment, profile):
     coordinator.ai.claude_backend = FakeClaudeBackend()
     plan["model"] = "sonnet"
     scenario = coordinator.save_scenario(plan)
-    with pytest.raises(ValueError, match="provider must match"):
-        await coordinator.launch(scenario["id"], scenario["revision"], "launch-claude")
+    launched = await coordinator.launch(scenario["id"], scenario["revision"], "launch-claude")
+    assert launched["model"] == "sonnet" and launched["api"] == "claude"
 
 
 @pytest.mark.asyncio
@@ -143,25 +156,77 @@ async def test_rejected_start_can_be_corrected_and_reallocated(environment, prof
     assert run["plan"]["players"][0]["worker_id"] != first["id"]
 
 
+@pytest.mark.asyncio
+async def test_blocked_instance_cannot_start_until_the_project_is_reconfigured(environment, profile, monkeypatch):
+    store, coordinator, _, _ = environment
+    artifact = profile["artifact"]
+
+    def validated(self, agent_id):
+        record = self.store.get("agents", agent_id)
+        if record is None:
+            raise ValueError(CONFIGURATION_DELETED)
+        return record, copy.deepcopy(artifact)
+
+    monkeypatch.setattr(GameControls, "validated", validated)
+    instances = Instances(coordinator)
+    first = await instances.start(InstanceRequest(agent_id="agent-test", primary_goal="Explore", request_id="r1"))
+    await coordinator.finish(first["id"], "user_stopped")
+    coordinator.finishing.pop(first["id"], None)  # finish() ran inline in this task
+    before = copy.deepcopy(store.require("runs", first["id"]))
+    await coordinator.delete_agent("agent-test")
+    scenarios = len(store.list("scenarios"))
+
+    with pytest.raises(ValueError, match="project configuration was deleted") as refused:
+        await instances.start(InstanceRequest(agent_id="agent-test", primary_goal="Explore", request_id="fresh"))
+    assert str(refused.value) == CONFIGURATION_DELETED
+    assert len(store.list("scenarios")) == scenarios and store.command("instance", "fresh") is None
+
+    # A replayed start: the instance command exists but no launch was ever committed.
+    scenario = coordinator.save_scenario(copy.deepcopy(first["plan"]))
+    replay = InstanceRequest(agent_id="agent-test", primary_goal="Explore", request_id="replayed")
+    store.command("instance", "replayed", {"request": replay.model_dump(exclude_none=True),
+                                          "scenario_id": scenario["id"], "revision": scenario["revision"]})
+    with pytest.raises(ValueError) as replayed:
+        await instances.start(replay)
+    assert str(replayed.value) == CONFIGURATION_DELETED
+    assert store.command("launch", "instance_replayed") is None
+
+    store.put("agents", {**{k: v for k, v in profile.items() if k != "artifact"}, "id": "a2"})
+    second = await instances.start(InstanceRequest(agent_id="a2", primary_goal=before["plan"]["primary_goal"], request_id="again"))
+    assert second["agent_id"] == "a2" and second["id"] != first["id"]
+    assert store.require("runs", first["id"]) == before
+
+
 def test_public_workflow_and_retired_routes(tmp_path, monkeypatch):
     app = app_at(tmp_path)
     headers = {"X-ASHAD-Request": "1"}
-    tune = AsyncMock(return_value={"id": "tuned", "model": "gpt-6-sol"})
-    monkeypatch.setattr(AgentProfiles, "tune", tune)
+    gather = AsyncMock(return_value={"id": "controls-1"})
+    monkeypatch.setattr(GameControls, "gather", gather)
     with TestClient(app) as client:
         bootstrap = client.get("/api/bootstrap").json()
         assert bootstrap["agents"] == []
         assert "usage_count" in bootstrap and "usage" not in bootstrap and "leases" in bootstrap
         assert "scenarios" not in bootstrap and "fixtures" not in bootstrap
-        assert client.post("/api/agents/tune", json={"build_id": "build-1"}).status_code == 403
-        result = client.post("/api/agents/tune", json={"build_id": "build-1", "model": "gpt-6-sol"}, headers=headers)
+        assert client.post("/api/agents/controls", json={"build_id": "build-1"}).status_code == 403
+        refused = client.post("/api/agents/controls", json={"build_id": "build-1", "model": "gpt-6-sol"}, headers=headers)
+        assert refused.status_code == 422 and MODEL_NOT_ALLOWED in refused.text
+        gather.assert_not_awaited()
+        result = client.post("/api/agents/controls", json={"build_id": "build-1"}, headers=headers)
         assert result.status_code == 200
-        tune.assert_awaited_once_with("build-1", "gpt-6-sol", project_id=None, name=None, request_id=None)
+        gather.assert_awaited_once_with("build-1", project_id=None, name=None, request_id=None)
         assert client.post("/api/instances", json={"primary_goal": "Explore"}, headers=headers).status_code == 422
         for path in ("/api/plan", "/api/scenarios", "/api/validate", "/api/launch", "/api/fixtures",
                      "/api/runs/old/rerun", "/api/runs/old/review", "/api/findings/old/review"):
             assert client.post(path, json={}, headers=headers).status_code in {404, 405}
         assert client.get("/api/compare?run_ids=old").status_code == 404
+
+
+@pytest.mark.parametrize("old", ["tune", "tuning/x"])
+def test_retired_tuning_routes_are_removed_not_aliased(tmp_path, old):
+    with TestClient(app_at(tmp_path)) as client:
+        headers = {"X-ASHAD-Request": "1"}
+        assert client.post(f"/api/agents/{old}", json={"build_id": "build-1"}, headers=headers).status_code in {404, 405}
+        assert client.get(f"/api/agents/{old}").status_code in {404, 405}
 
 
 @pytest.mark.asyncio
@@ -185,6 +250,17 @@ async def test_frozen_controls_are_in_every_player_context(environment, profile)
     await coordinator.structured.turn(run["id"], "player-1")
     await coordinator.structured.turn(run["id"], "player-1")
     context = coordinator.ai.player_turn.call_args.args[0]
-    assert context["game_controls"] == profile["instructions"]
+    assert context["game_controls"] == profile["artifact"]["controls"]
     assert context["goal"] == "Explore" and context["agent_profile_id"] == profile["id"]
     assert "demo_wrapup_moar" not in context["guidance"]["completion"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_run_with_only_agent_profile_instructions_still_reaches_context(environment, profile):
+    store, coordinator, _, _ = environment
+    run = await Instances(coordinator).start(InstanceRequest(agent_id=profile["id"], primary_goal="Explore", request_id="legacy-one"))
+    run.pop("game_controls")
+    run["agent_profile"]["instructions"] = "legacy instructions"
+    player = run["plan"]["players"][0]
+    context = coordinator.structured.decision_context(run, player, {"state": {}, "entities": []})
+    assert context["game_controls"] == "legacy instructions"

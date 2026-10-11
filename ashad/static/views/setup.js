@@ -1,32 +1,30 @@
-// Setup flow (spec §8.4). Model, markup and the tuning flow are pure; app.js owns the DOM, the chooser and I/O.
-import { esc, icon, href, since, modelLabel, newOp, submitOnce } from '../core.js';
+// Setup flow (spec §8.4). Model, markup and the Get controls flow are pure; app.js owns the DOM, the chooser and I/O.
+import { esc, icon, href, since, newOp, submitOnce } from '../core.js';
 
 const enc = encodeURIComponent;
-export const STEPS = ['Project', 'Build', 'Desktop', 'Agent and model', 'Tuning', 'Instructions'];
+export const STEPS = ['Project', 'Build', 'Desktop', 'Get controls'];
 
 // One setup per project ('' until step 1 creates it). Ops keep their request IDs while the page is closed.
 export const newSetup = projectId => ({
   projectId: projectId || '', step: 0, name: '', project: newOp(),
   buildId: '', chooser: { busy: false, error: '' }, catalog: null, readiness: null, prepare: newOp(),
-  agentName: '', model: '', edited: false, tune: newOp(), agent: null,
+  agentName: '', edited: false, controls: newOp(), agent: null,
 });
 
 export const projectBuilds = (data, projectId) => (data?.builds || []).filter(b => b.project_id === projectId);
 
-// A model is usable when the provider it belongs to is connected.
-const providerReady = (data, model) => ((data?.model_options || []).find(o => o.id === model)?.provider === 'claude' ? data?.ai_claude : data?.ai)?.status === 'ready';
+// Get game controls always runs Claude Sonnet, so only Claude's sign-in matters here.
+const claudeReady = data => data?.ai_claude?.status === 'ready';
 
-// Step 4 starts from "<build> agent" and the signed-in model until the user edits either.
+// Step 4 starts from the project's name until the user edits it.
 export function applyDefaults(data, s) {
   const build = projectBuilds(data, s.projectId).find(b => b.id === s.buildId);
   if (s.edited || !build) return;
   const project = (data?.projects || []).find(p => p.id === s.projectId);
-  s.agentName ||= `${project?.name || build.name || build.id} agent`;
-  const models = (data?.model_options || []).map(m => m.id);
-  s.model ||= data?.ai?.status === 'ready' && models.includes(data.ai.model) ? data.ai.model : data?.ai_claude?.status === 'ready' ? 'sonnet' : models[0] || '';
+  s.agentName ||= `${project?.name || build.name || build.id}`;
 }
 
-// Steps are 1-based. Earlier steps' completion comes from data; desktop readiness and tuning from this session.
+// Steps are 1-based. Earlier steps' completion comes from data; desktop readiness and game controls from this session.
 export function setupModel(data, s) {
   const project = (data?.projects || []).find(p => p.id === s.projectId) || null;
   const builds = project ? projectBuilds(data, project.id) : [];
@@ -34,51 +32,49 @@ export function setupModel(data, s) {
   const check = build && s.readiness?.buildId === build.id ? s.readiness : null;
   const r = check && !check.loading && !check.error ? check.result : null;
   const envReady = (r?.environments || []).some(e => e.ready === true);
-  const signedIn = providerReady(data, s.model);
+  const signedIn = claudeReady(data);
   const done = [Boolean(project), Boolean(build), Boolean(r?.build_validation?.ready && envReady),
-    Boolean(signedIn && s.agentName.trim() && s.model), Boolean(s.agent), false];
-  const first = done.indexOf(false) + 1;
+    Boolean(s.agent)];
+  const first = done.includes(false) ? done.indexOf(false) + 1 : done.length;
   const step = Math.min(Math.max(s.step || first, 1), first);
   const reasons = [
     'Name the project to continue.',
     'Add or choose a build to continue.',
     !check || check.loading ? 'Checking readiness…' : check.error ? 'Re-check readiness to continue.'
       : !r.build_validation?.ready ? 'The build is not validated.' : 'No desktop is ready yet. Prepare one below.',
-    !signedIn ? 'Connect the provider for this model first.' : !s.agentName.trim() ? 'Name the configuration.' : 'Choose a model.',
-    s.tune.status === 'busy' ? 'Tuning is running.' : 'Run tuning to continue.',
-    '',
+    s.controls.status === 'busy' ? 'Getting game controls…' : !signedIn ? 'Connect Claude to get game controls.' : !s.agentName.trim() ? 'Name the configuration.' : '',
   ];
   return { project, builds, build, check, done, first, step, signedIn, blocked: done[step - 1] ? '' : reasons[step - 1] };
 }
 
-// Unsaved input: a typed project name not yet created, or step 4 edits not yet tuned.
+// Unsaved input: a typed project name not yet created, or step 4 edits not yet sent.
 export const setupDirty = s => Boolean(s && ((!s.projectId && s.name.trim() && s.project.status !== 'busy')
-  || (s.edited && !s.agent && s.tune.status !== 'busy')));
+  || (s.edited && !s.agent && s.controls.status !== 'busy')));
 
 export function discardSetup(s) {
-  Object.assign(s, { name: '', agentName: '', model: '', edited: false });
+  Object.assign(s, { name: '', agentName: '', edited: false });
 }
 
-// ── Tuning ──────────────────────────────────────────────────────────────────
-// One tuning runs at a time: "already being tuned" waits and resends the same request until the user stops waiting.
-// A lost reply is recovered through tuning/<request_id> (completed | in_progress | unknown); it is never resent blind.
-export async function tuneAgent(op, payload, api, wait = ms => new Promise(resolve => setTimeout(resolve, ms))) {
-  const send = id => api('/api/agents/tune', { method: 'POST', body: { ...payload, request_id: id } });
+// ── Get game controls ──────────────────────────────────────────────────────────────────
+// One run at a time: "already being gathered" waits and resends the same request until the user stops waiting.
+// A lost reply is recovered through controls/<request_id> (completed | in_progress | unknown); it is never resent blind.
+export async function getControls(op, payload, api, wait = ms => new Promise(resolve => setTimeout(resolve, ms))) {
+  const send = id => api('/api/agents/controls', { method: 'POST', body: { ...payload, request_id: id } });
   const recover = async id => {
     for (;;) {
-      const r = await api(`/api/agents/tuning/${enc(id)}`);
+      const r = await api(`/api/agents/controls/${enc(id)}`);
       if (r?.status === 'completed' && r.agent) return { status: 'done', value: r.agent, error: '' };
-      if (r?.status !== 'in_progress') return { status: 'error', sent: null, error: 'Tuning did not finish and nothing was saved. Retry sends the same request.' };
+      if (r?.status !== 'in_progress') return { status: 'error', sent: null, error: 'Getting game controls did not finish and nothing was saved. Retry sends the same request.' };
       op.status = 'busy';
       await wait(3000);
     }
   };
   for (;;) {
     await submitOnce(op, payload, send, recover);
-    op.waiting = op.status === 'error' && /already being tuned/i.test(op.error);
+    op.waiting = op.status === 'error' && /already being gathered/i.test(op.error);
     if (op.waiting && !op.stopWaiting) await wait(5000);
     if (!op.waiting || op.stopWaiting) {
-      if (op.waiting) Object.assign(op, { waiting: false, error: 'Stopped waiting. Start tuning again when the other tuning has finished.' });
+      if (op.waiting) Object.assign(op, { waiting: false, error: 'Stopped waiting. Get game controls again when the other run has finished.' });
       op.stopWaiting = false;
       return op;
     }
@@ -105,24 +101,24 @@ export async function registerBuild(form, projectId, kind, { bridge, api, onBusy
   return build;
 }
 
-// Live tuning progress from GET /api/agents/tuning/<id> (op.progress), shared with the overview's Retune row.
+// Live progress from GET /api/agents/controls/<id> (op.progress), shared with the overview's refresh row.
 // Batches and the final call are counted steps; a long silence is called out so a stall doesn't look like work.
 export const STALL_SECONDS = 180;
-export function tuningProgressHTML(op, now) {
+export function controlsProgressHTML(op, now) {
   const p = op.progress;
-  const steps = p?.batch_count ? p.batch_count + 1 : p?.stage === 'instructions' ? 1 : 0;
-  const done = p?.stage === 'source_notes' ? p.batch - 1 : p?.stage === 'instructions' ? p.batch_count || 0 : 0;
+  const steps = p?.batch_count ? p.batch_count + 1 : p?.stage === 'writing' ? 1 : 0;
+  const done = p?.stage === 'exploring' ? p.batches_done : p?.stage === 'writing' ? p.batch_count || 0 : 0;
   const stage = !p ? 'Starting…' : p.stage === 'reading_source' ? 'Reading the build source'
-    : p.stage === 'source_notes' ? `Writing source notes: batch ${p.batch} of ${p.batch_count}`
-      : `Writing the final instructions${p.batch_count ? ` from ${p.batch_count} batches of notes` : ''}`;
-  const bar = steps ? `<progress class="progress" max="${steps}" value="${done}" aria-label="Tuning progress, step ${done + 1} of ${steps}"></progress>`
-    : `<progress class="progress" aria-label="Tuning in progress"></progress>`;
+    : p.stage === 'exploring' ? `Reading source: ${p.batches_done} of ${p.batch_count} batches (${p.workers} workers in parallel)`
+      : `Writing the game controls${p.batch_count ? ` from ${p.batch_count} batches of notes` : ''}`;
+  const bar = steps ? `<progress class="progress" max="${steps}" value="${done}" aria-label="Get controls progress, step ${done + 1} of ${steps}"></progress>`
+    : `<progress class="progress" aria-label="Get controls in progress"></progress>`;
   const started = op.startedAt || p?.started_at || now;
   const lastAt = p?.last_call_at || p?.started_at;
   const calls = !p ? '' : `${p.model_calls} model ${p.model_calls === 1 ? 'reply' : 'replies'}${p.rejected_replies ? ` (${p.rejected_replies} rejected and retried)` : ''}`
     + ` · ${p.last_call_at ? 'last reply' : 'started'} <time data-elapsed="${lastAt}">${elapsed(now - lastAt)}</time> ago`;
   const stalled = p && now - lastAt > STALL_SECONDS
-    ? `<p class="note note-attention">${icon('clock')}<span>No model reply for ${Math.floor((now - lastAt) / 60)} minutes. A call usually takes under 2 minutes; the provider may be slow or rate limited. Tuning is still running.</span></p>` : '';
+    ? `<p class="note note-attention">${icon('clock')}<span>No model reply for ${Math.floor((now - lastAt) / 60)} minutes. A call usually takes under 2 minutes; the provider may be slow or rate limited. Getting game controls is still running.</span></p>` : '';
   return `${bar}<p>${esc(stage)} · <time data-elapsed="${started}">${elapsed(now - started)}</time> elapsed</p>${calls ? `<p class="hint">${calls}</p>` : ''}${stalled}`;
 }
 
@@ -167,17 +163,12 @@ export function setupSkeleton(data, s, step) {
   if (step === 1 && !s.projectId) {
     fields = `<form class="setup-form" data-form="setup-project"><div class="field"><label for="setup-name">Project name</label>`
       + `<input id="setup-name" class="input" data-field="setup-name" maxlength="200" autocomplete="off" spellcheck="false" placeholder="For example, Agronauts" value="${esc(s.name)}" aria-describedby="setup-name-hint">`
-      + `<span id="setup-name-hint" class="hint">Usually the game's name. Builds, agent configurations and instances are grouped under it.</span></div></form>`;
+      + `<span id="setup-name-hint" class="hint">Usually the game's name. Builds, project configurations and instances are grouped under it.</span></div></form>`;
   } else if (step === 4) {
-    const models = data?.model_options || [];
     fields = `<form class="setup-form" data-form="setup-agent"><div class="field"><label for="setup-agent-name">Configuration name</label>`
-      + `<input id="setup-agent-name" class="input" data-field="setup-agent-name" maxlength="200" autocomplete="off" value="${esc(s.agentName)}"><span class="hint">Shown in the composer's agent selector.</span></div>`
-      + `<div class="field"><label for="setup-model">Model</label><select id="setup-model" class="select" data-field="setup-model">`
-      + [['codex', 'ChatGPT (Codex)'], ['claude', 'Claude']].map(([p, label]) => `<optgroup label="${label}">`
-        + models.filter(o => o.provider === p).map(o => `<option value="${esc(o.id)}"${o.id === s.model ? ' selected' : ''}>${esc(o.label || o.id)}</option>`).join('') + `</optgroup>`).join('')
-      + `</select><span class="hint">Tuning and every turn of this agent use this model through its provider subscription.</span></div></form>`;
+      + `<input id="setup-agent-name" class="input" data-field="setup-agent-name" maxlength="200" autocomplete="off" value="${esc(s.agentName)}" aria-describedby="setup-agent-name-hint"><span id="setup-agent-name-hint" class="hint">Shown when you start an instance.</span></div></form>`;
   }
-  return `<div class="center-col setup-page"><h1 class="hero">Set up a game agent</h1><nav data-region="stepper" aria-label="Setup progress"></nav>`
+  return `<div class="center-col setup-page"><h1 class="hero">Set up a game</h1><nav data-region="stepper" aria-label="Setup progress"></nav>`
     + `<section class="card setup-card" aria-labelledby="setup-step-title"><h2 id="setup-step-title" class="setup-title" tabindex="-1">${step}. ${esc(STEPS[step - 1])}</h2>`
     + `${fields}<div data-region="main" class="setup-main"></div><div data-region="nav" class="setup-nav"></div></section></div>`;
 }
@@ -194,7 +185,7 @@ function mainHTML(data, s, m, now) {
       const others = (data?.projects || []).map(p => `<li class="link-row"><a href="#/setup?project=${enc(p.id)}" data-key="sp-${esc(p.id)}">${esc(p.name || p.id)}</a></li>`).join('');
       return (op.status === 'busy' ? `<p class="note">${icon('loader', 'icon spin')}<span>Creating the project…</span></p>`
         : op.error ? noteHTML('error', esc(op.error), op.status === 'lost' ? ' <button type="button" class="btn btn-secondary btn-sm" data-action="setup-create" data-key="sp-retry">Retry</button>' : '') : '')
-        + (others ? `<div class="setup-aside"><p class="hint">Or add an agent configuration to an existing project:</p><ul class="link-list">${others}</ul></div>` : '');
+        + (others ? `<div class="setup-aside"><p class="hint">Or add a project configuration to an existing project:</p><ul class="link-list">${others}</ul></div>` : '');
     }
     case 2: {
       const list = m.builds.map(b => `<li><label class="radio-row"><input type="radio" name="setup-build" data-field="setup-build" value="${esc(b.id)}"${b.id === s.buildId ? ' checked' : ''}>`
@@ -218,25 +209,20 @@ function mainHTML(data, s, m, now) {
         + readinessHTML(m.check, now)
         + `<div class="btn-row"><button type="button" class="btn ${m.done[2] ? 'btn-secondary' : 'btn-primary'}" data-action="setup-prepare" data-key="s3-prepare"${op.status === 'busy' || m.check?.loading ? ' aria-disabled="true"' : ''}>${icon('monitor')}Prepare desktop…</button></div>${prep}`;
     }
-    case 4:
-      return m.signedIn ? `<p class="note">${icon('check')}<span>The provider for this model is connected.</span></p>`
-        : `<p class="note note-error">${icon('alert')}<span>The provider for this model is not connected. Tuning and every instance need it. <a href="#/settings/account" data-key="s4-signin">Connect it under Settings › Account</a>, then come back.</span></p>`;
-    case 5: {
-      const op = s.tune;
-      const model = modelLabel(data, s.model);
-      const summary = `<dl class="kv"><dt>Configuration</dt><dd>${esc(s.agentName.trim())}</dd><dt>Model</dt><dd>${esc(model)}</dd><dt>Build</dt><dd>${esc(m.build?.name || s.buildId)}</dd></dl>`;
-      const about = `<p class="hint">Tuning reads the build's source and writes a controls manual for the agent. This prepares instructions, not model weights.</p>`;
-      if (op.waiting) return summary + `<p class="note">${icon('clock')}<span>Another agent is being tuned. Only one tuning runs at a time, so this one starts when that finishes.</span>`
-        + ` <button type="button" class="btn btn-secondary btn-sm" data-action="setup-stop-waiting" data-key="s5-stop">Stop waiting</button></p>`;
-      if (op.status === 'busy') return summary + `<div class="tuning">${tuningProgressHTML(op, now)}<p class="hint">You can leave this page; tuning keeps going.</p></div>` + about;
-      return summary + about + (op.error ? noteHTML('error', esc(op.error)) : '');
-    }
-    case 6: {
-      const a = s.agent || {};
-      const model = modelLabel(data, a.model);
-      return `<dl class="kv"><dt>Configuration</dt><dd>${esc(a.name || a.id)}</dd><dt>Model</dt><dd>${esc(model || 'Unknown')}</dd><dt>Build</dt><dd>${esc(m.build?.name || a.build_id)}</dd>`
-        + `<dt>Tuned</dt><dd>${a.created_at ? esc(new Date(a.created_at * 1000).toLocaleString()) : 'Not recorded'}</dd></dl>`
-        + `<pre class="instructions" tabindex="0" aria-label="Saved instructions">${esc(a.instructions || 'No instructions were returned.')}</pre>`;
+    case 4: {
+      if (s.agent) {
+        const a = s.agent;
+        return `<dl class="kv"><dt>Configuration</dt><dd>${esc(a.name || a.id)}</dd><dt>Build</dt><dd>${esc(m.build?.name || a.build_id)}</dd><dt>Gathered by</dt><dd>Claude Sonnet</dd>`
+          + `<dt>Gathered</dt><dd>${a.created_at ? esc(new Date(a.created_at * 1000).toLocaleString()) : 'Not recorded'}</dd></dl>`
+          + `<div class="btn-row"><button type="button" class="btn btn-secondary btn-sm" data-action="ov-controls" data-id="${esc(a.id)}" data-key="s4-view">View controls</button></div>`;
+      }
+      const op = s.controls;
+      const about = `<p class="hint">ASHAD reads the build source with up to 4 Claude Sonnet workers and writes the game controls file every instance loads, whichever model it uses.</p>`;
+      if (op.waiting) return about + `<p class="note">${icon('clock')}<span>Another Get game controls run is in progress; this one starts when it finishes.</span>`
+        + ` <button type="button" class="btn btn-secondary btn-sm" data-action="setup-stop-waiting" data-key="s4-stop">Stop waiting</button></p>`;
+      if (op.status === 'busy') return about + `<div class="tuning">${controlsProgressHTML(op, now)}<p class="hint">You can leave this page; it keeps going.</p></div>`;
+      if (!m.signedIn) return `<p class="note note-error">${icon('alert')}<span>Getting game controls uses Claude Sonnet. <a href="#/settings/account" data-key="s4-signin">Connect Claude under Settings › Account</a>, then come back. Instances can still use Codex.</span></p>`;
+      return about + (op.error ? noteHTML('error', esc(op.error)) : '');
     }
     default: return '';
   }
@@ -252,10 +238,10 @@ function navHTML(s, m) {
     const busy = s.project.status === 'busy';
     const off1 = !s.name.trim() || busy || s.project.status === 'lost';
     primary = `<button type="button" class="btn btn-primary" data-action="setup-create" data-key="sn-create"${off1 ? ' aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>Create project</button>`;
-  } else if (m.step === 5 && !s.agent && s.tune.status !== 'busy' && !s.tune.waiting) {
-    const off5 = !m.done[3];
-    primary = `<button type="button" class="btn btn-primary" data-action="setup-tune" data-key="sn-tune"${off5 ? ' aria-disabled="true"' : ''}>${icon('play')}${s.tune.status === 'idle' ? 'Start tuning' : 'Retry tuning'}</button>`;
-  } else if (m.step === 6) {
+  } else if (m.step === 4 && !s.agent && s.controls.status !== 'busy' && !s.controls.waiting) {
+    const off4 = !m.signedIn || !s.agentName.trim();
+    primary = `<button type="button" class="btn btn-primary" data-action="setup-controls" data-key="sn-controls"${off4 ? ' aria-disabled="true"' : ''}>${icon('play')}${s.controls.status === 'idle' ? 'Get game controls' : 'Retry'}</button>`;
+  } else if (m.step === 4 && s.agent) {
     primary = `<a class="btn btn-primary" href="${href('p', s.projectId, 'new')}?agent=${enc(s.agent?.id || '')}" data-action="setup-finish" data-key="sn-start">${icon('arrow-up')}Start an instance</a>`;
   } else {
     primary = `<button type="button" class="btn btn-primary" data-action="setup-step" data-step="${m.step + 1}" data-key="sn-next"${off}>Continue</button>`;

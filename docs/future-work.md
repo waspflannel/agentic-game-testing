@@ -1,8 +1,8 @@
 # Deferred work
 
-ASHAD currently supports tuning a reusable agent profile and starting a fresh, one-bot host instance with a primary goal over ENet or Steam. This reduction keeps the next question testable: can the bot use its controls, understand the current state and make progress without getting trapped in ordinary UI?
+ASHAD currently supports getting game controls for a project configuration and starting a fresh, one-bot host instance with a primary goal over ENet or Steam. This reduction keeps the next question testable: can the bot use its controls, understand the current state and make progress without getting trapped in ordinary UI?
 
-Tuning creates instructions from pinned source/control evidence. It does not train weights or establish that the bot can complete the game. Each run freezes its profile and build; its model defaults to the profile's and can be changed within the same provider. Usage, capacity, infrastructure settings, live view, pause, stop, takeover and operational evidence remain in scope.
+Get game controls writes a controls file from pinned source/control evidence. It does not train weights or establish that the bot can complete the game. Each run freezes its project configuration, controls file and build; its model is chosen per instance and can be changed within the same provider. Usage, capacity, infrastructure settings, live view, pause, stop, takeover and operational evidence remain in scope.
 
 ## Before restoring broader features
 
@@ -34,7 +34,7 @@ Reintroducing a feature requires an intentional UI/API decision and its applicab
 
 ## Order of work
 
-1. Verify profile tuning and fresh single-bot startup with the actual account, build and desktop.
+1. Verify Get game controls and fresh single-bot startup with the actual account, build and desktop.
 2. Diagnose and fix observed control/state gaps, especially cutscenes and UI ownership; prove recovery with one focused check and bounded live acceptance.
 3. Verify a meaningful gameplay objective and its evidence before attempting full DEMO completion.
 4. Restore a deferred capability only when a real test requires it, carrying forward the prerequisites above.

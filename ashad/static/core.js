@@ -42,7 +42,7 @@ export async function api(path, { method = 'GET', body, signal, fetchImpl = glob
   return data;
 }
 
-// Long or idempotent operations (create project, prepare desktop, tune): one request ID per operation until it succeeds.
+// Long or idempotent operations (create project, prepare desktop, get game controls): one request ID per operation until it succeeds.
 // A refusal (4xx) stored nothing, so corrected input may reuse the ID. A lost reply (network error or 5xx) locks the
 // payload: only the same request is retried, after recover(id) (the contract's recovery route, when there is one)
 // has had its say. recover resolves to { status, value?, error? } and may throw to leave the reply lost.
@@ -110,7 +110,7 @@ export const providerModels = (data, model) => {
   return options.filter(m => m.provider === provider);
 };
 
-// One model picker: a chip that opens a listbox popover. Rows mark the selected model and the configuration's tuned default.
+// One model picker: a chip that opens a listbox popover. Rows mark the selected model and the default model.
 export function modelMenuHTML({ key, field, options, selected, defaultModel }) {
   const menuId = `${key}-menu`;
   const label = options.find(o => o.id === selected)?.label || selected;

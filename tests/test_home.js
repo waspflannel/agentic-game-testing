@@ -11,7 +11,8 @@ const core = () => import(url('core.js'));
 const data = (extra = {}) => ({
   projects: [{ id: 'p', name: 'Agronauts' }],
   builds: [{ id: 'b', name: '0.3.1', project_id: 'p' }],
-  agents: [{ id: 'a', name: 'Scout', build_id: 'b', project_id: 'p', model: 'gpt-6-astra', status: 'ready' }],
+  agents: [{ id: 'a', name: 'Scout', build_id: 'b', project_id: 'p', status: 'ready' }],
+  default_model: 'gpt-6-astra',
   model_options: [
     { id: 'gpt-6-luna', label: 'GPT-6 Luna', provider: 'codex' }, { id: 'gpt-6-sol', label: 'GPT-6 Sol', provider: 'codex' },
     { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol', provider: 'codex' }, { id: 'gpt-6-astra', label: 'GPT-6 Astra', provider: 'codex' },
@@ -157,8 +158,8 @@ test('long agent and build names stay on one composer row', async () => {
   const draft = { ...newDraft(), agentId: 'a' };
   const r = composerRegions(composerModel(d, 'p', draft, { key: 'p|b|a|gpt-6-astra', result: ready }), draft);
   assert.match(r.bar, /<option value="a" selected>Agronauts DEMO - Decisions and corrected input scaling agent<\/option>/, 'the chip shows the name; the model is in the summary');
-  assert.match(r.bar, /<label class="chip chip-select" title="Agronauts DEMO[^"]* agent · GPT-6 Astra">/);
-  assert.match(r.bar, /<span class="composer-summary" title="GPT-6 Astra · build Agronauts DEMO[^"]*· Fresh world">/);
+  assert.match(r.bar, /<label class="chip chip-select" title="Agronauts DEMO[^"]* agent · build Agronauts DEMO[^"]*">/);
+  assert.match(r.bar, /<span class="composer-summary" title="build Agronauts DEMO[^"]*· Fresh world">/);
   assert.doesNotMatch(r.status, /class="note"[^>]*id="composer-steam-note"/, 'with ENet chosen, the Steam reason is not shown as a note');
   assert.match(r.status, /<span class="sr-only" id="composer-steam-note">/, 'but stays available to assistive tech');
   const css = require('node:fs').readFileSync(require('node:path').join(__dirname, '../ashad/static/app.css'), 'utf8');
@@ -175,6 +176,15 @@ test('composer and empty workspace escape project names, agents and goals', asyn
   const html = Object.values(composerRegions(composerModel(d, 'p', draft, null), draft)).join('') + composerSkeleton('p', draft) + noAgentsHTML(d.projects[0]) + emptyHTML(d);
   assert.doesNotMatch(html, /<img/);
   assert.doesNotMatch(html, /<\/textarea><img/);
+});
+
+test('the empty project state uses project configuration wording', async () => {
+  const { noAgentsHTML, emptyHTML } = await load();
+  const html = noAgentsHTML({ id: 'p', name: 'Agronauts' });
+  assert.match(html, /This project has no project configuration yet/);
+  assert.match(html, /pairs a build of <strong>Agronauts<\/strong> with the game controls gathered from it\./);
+  assert.match(html, />Add project configuration</);
+  assert.match(emptyHTML(data()), /Set up your first game<[\s\S]*gathers the game's controls[\s\S]*Set up a game</);
 });
 
 test('empty workspace lists live prerequisites with fix links', async () => {
@@ -198,22 +208,39 @@ test('the dirty-draft bridge sends only booleans and skips repeats', async () =>
   dirtyBridge(() => ({ setDirtyDraft: () => Promise.reject(new Error('rejected')) }))(true);
 });
 
-test('composer model menu offers only the agent provider models, selects and marks the agent model as Default', async () => {
+test('composer offers every model and marks the server default model as Default', async () => {
   const { composerModel, composerRegions, newDraft } = await load();
   const draft = { ...newDraft(), agentId: 'a' };
   const bar = composerRegions(composerModel(data(), 'p', draft, null), draft).bar;
   assert.doesNotMatch(bar, /<select data-field="model"/);
   const options = [...bar.matchAll(/<button [^>]*role="option"[^>]*>.*?<\/button>/g)].map(x => x[0]);
-  assert.deepEqual(options.map(o => o.match(/data-value="([^"]+)"/)[1]), ['gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-astra']);
-  assert.doesNotMatch(bar, /sonnet|opus|haiku/);
+  assert.deepEqual(options.map(o => o.match(/data-value="([^"]+)"/)[1]), data().model_options.map(m => m.id));
   const astra = options.find(o => o.includes('data-value="gpt-6-astra"'));
   assert.match(astra, /aria-selected="true"/);
   assert.match(astra, /model-default">Default</);
+  assert.equal(options.filter(o => o.includes('model-default')).length, 1);
   assert.match(bar, /<span class="chip-text">GPT-6 Astra<\/span>/);
   const other = { ...draft, model: 'opus' };
   const bar2 = composerRegions(composerModel(data(), 'p', other, null), other).bar;
-  assert.match(bar2, /aria-selected="true"[^>]*data-value="gpt-6-astra"/);
-  assert.doesNotMatch(bar2, /opus/);
+  assert.match(bar2, /aria-selected="true"[^>]*data-value="opus"/);
+  const unknown = { ...draft, model: 'gone' };
+  assert.equal(composerModel(data(), 'p', unknown, null).model, 'gpt-6-astra', 'an unknown model falls back to the server default');
+});
+
+test('changing the configuration keeps the chosen model', async () => {
+  const { composerModel, draftModel } = await load();
+  const d = data({ agents: [...data().agents, { id: 'a2', name: 'Other', build_id: 'b', project_id: 'p', status: 'ready' }] });
+  const draft = { goal: '', agentId: 'a', model: 'sonnet' };
+  assert.equal(composerModel(d, 'p', draft, null).model, 'sonnet');
+  draft.agentId = 'a2';
+  assert.equal(composerModel(d, 'p', draft, null).model, 'sonnet');
+  assert.equal(draftModel(d, draft), 'sonnet');
+});
+
+test('retired configurations are not offered in the composer', async () => {
+  const { projectAgents } = await load();
+  const d = data({ agents: [...data().agents, { id: 'old', name: 'Old', build_id: 'b', project_id: 'p', status: 'retired' }] });
+  assert.deepEqual(projectAgents(d, 'p').map(a => a.id), ['a']);
 });
 
 test('Start sends the chosen model and a changed model is a changed payload', async () => {

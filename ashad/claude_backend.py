@@ -9,14 +9,14 @@ from pathlib import Path
 import keyring.errors
 
 from .models import CLAUDE_MODEL, CLAUDE_MODELS
-from .prompts import planning_request, selection_request, tuning_request
+from .prompts import controls_request, planning_request, selection_request
 
 
 MINIMUM_VERSION = (2, 1, 280)
 PROBE_FAILED = object()  # _cli_version could not run the CLI at all, as opposed to an old or unparseable version.
 TOKEN_REFERENCE = "claude:oauth-token"
 REQUEST_TIMEOUT_SECONDS = 120
-TUNING_TIMEOUT_SECONDS = 300
+CONTROLS_TIMEOUT_SECONDS = 300
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
 INHERITED = ("SystemRoot", "WINDIR", "COMSPEC", "Path", "PATH", "PATHEXT", "USERPROFILE", "LOCALAPPDATA", "APPDATA", "PROGRAMDATA")
 LOCALE = ("LANG", "LC_ALL", "LC_CTYPE")
@@ -135,9 +135,9 @@ class ClaudeBackend:
         payload, schema, instructions = planning_request(evidence, schema)
         return await self._complete(payload, schema, instructions, model, operation="planning")
 
-    async def tune(self, evidence, *, model=CLAUDE_MODEL, stage="manual", repair=False):
-        payload, schema, instructions = tuning_request(evidence, stage, repair)
-        return await self._complete(payload, schema, instructions, model, operation="tuning")
+    async def write_controls(self, evidence, *, model, stage="manual", repair=False):
+        payload, schema, instructions = controls_request(evidence, stage, repair)
+        return await self._complete(payload, schema, instructions, model, operation="controls")
 
     async def _complete(self, payload, schema, instructions, model, *, operation):
         status = await self.status(model)
@@ -157,7 +157,7 @@ class ClaudeBackend:
             raise ClaudeError("provider_failure", "Claude Code could not complete the request; no action was executed.") from None
         output = bytearray()
         try:
-            async with asyncio.timeout(TUNING_TIMEOUT_SECONDS if operation == "tuning" else REQUEST_TIMEOUT_SECONDS):
+            async with asyncio.timeout(CONTROLS_TIMEOUT_SECONDS if operation == "controls" else REQUEST_TIMEOUT_SECONDS):
                 try:
                     proc.stdin.write(json.dumps(payload, ensure_ascii=False).encode())
                     await proc.stdin.drain()

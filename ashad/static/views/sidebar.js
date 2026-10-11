@@ -79,7 +79,7 @@ export function sidebarHTML(m) {
   const tree = m.projects.map(g => groupBlock(g, true)).join('') + (m.unassigned ? groupBlock(m.unassigned, false) : '');
   return `<div class="side-top"><a class="btn btn-secondary btn-block" href="${esc(m.newInstanceHref)}" data-key="new">${icon('square-pen')}New instance</a></div>`
     + `<div class="side-scroll" data-scroll="side">`
-    + `<div class="side-heading"><h2 id="projects-heading">Projects</h2><a class="icon-btn icon-btn-sm" href="#/setup" data-key="setup" aria-label="Set up new game agent" title="Set up new game agent">${icon('plus')}</a></div>`
+    + `<div class="side-heading"><h2 id="projects-heading">Projects</h2><a class="icon-btn icon-btn-sm" href="#/setup" data-key="setup" aria-label="Set up a game" title="Set up a game">${icon('plus')}</a></div>`
     + (tree ? `<ul class="tree" aria-labelledby="projects-heading">${tree}</ul>` : `<p class="side-empty">No game projects yet.</p>`)
     + `</div><div class="side-foot">${active}`
     + `<a class="row foot-link${m.route === 'usage' ? ' is-current' : ''}" href="#/usage" data-key="usage"${m.route === 'usage' ? ' aria-current="page"' : ''}>${icon('chart-column')}<span class="row-label">Usage</span></a>`

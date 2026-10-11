@@ -1,5 +1,5 @@
 // Empty workspace and the new-instance composer (spec §8.1, §8.2). Markup and the start flow are pure; app.js owns the DOM.
-import { esc, icon, href, newId, modelLabel, providerModels, modelMenuHTML, ApiError } from '../core.js';
+import { esc, icon, href, newId, modelMenuHTML, ApiError } from '../core.js';
 
 const enc = encodeURIComponent;
 const chipDot = tone => `<span class="dot dot-${tone}" aria-hidden="true"></span>`;
@@ -11,13 +11,13 @@ export function emptyHTML(data) {
   const item = (ok, label, detail, fix) => `<li class="prereq">${ok === null ? icon('info', 'icon prereq-info') : ok ? icon('check', 'icon prereq-ok') : icon('alert', 'icon prereq-missing')}`
     + `<span class="prereq-text"><span>${esc(label)}</span><span class="prereq-detail">${esc(detail)}</span></span>${fix && !ok ? fix : ''}</li>`;
   return `<div class="center-col empty">`
-    + `<h1 class="hero">Set up your first game agent</h1>`
-    + `<p class="lede">ASHAD prepares a desktop, tunes instructions from your build, then runs one bot against a goal you give it.</p>`
+    + `<h1 class="hero">Set up your first game</h1>`
+    + `<p class="lede">ASHAD prepares a desktop, gathers the game's controls from your build, then runs one bot against a goal you give it.</p>`
     + `<ul class="prereqs" aria-label="Prerequisites">`
     + item(signedIn, 'AI provider connected', signedIn ? 'Ready' : 'Not signed in', `<a href="#/settings/account" data-key="fix-account">Sign in</a>`)
     + item(desktops > 0, 'A worker desktop registered', desktops ? `${desktops} registered` : 'None registered', `<a href="#/settings/desktops" data-key="fix-desktops">Add a desktop</a>`)
     + item(null, 'A build manifest or folder on this computer', 'Checked during setup')
-    + `</ul><a class="btn btn-primary" href="#/setup" data-key="setup-first">Set up new game agent</a></div>`;
+    + `</ul><a class="btn btn-primary" href="#/setup" data-key="setup-first">Set up a game</a></div>`;
 }
 
 // ── Composer model ──────────────────────────────────────────────────────────
@@ -26,13 +26,13 @@ export function projectAgents(data, projectId) {
   const builds = new Map((data?.builds || []).map(b => [b.id, b]));
   return (data?.agents || []).filter(a => builds.has(a.build_id)
     && (a.project_id || builds.get(a.build_id).project_id) === projectId
-    && [undefined, 'ready', 'completed'].includes(a.status));
+    && [undefined, 'ready', 'completed'].includes(a.status));  // Retired configurations are hidden.
 }
 
 export const readinessKey = (projectId, agent, model) => `${projectId}|${agent?.build_id}|${agent?.id}|${model}`;
 export const newDraft = () => ({ goal: '', agentId: '', model: '', transport: 'enet', requestId: null, sent: null, busy: false, result: null });
 
-export const draftModel = (data, agent, draft) => (providerModels(data, agent?.model).some(m => m.id === draft.model) ? draft.model : agent?.model);
+export const draftModel = (data, draft) => ((data?.model_options || []).some(m => m.id === draft.model) ? draft.model : data?.default_model);
 
 function desktopReason(r) {
   if (r.build_validation?.ready !== true) return r.build_validation?.reason || 'Build is not validated';
@@ -47,7 +47,7 @@ export function composerModel(data, projectId, draft, readiness) {
   const agents = projectAgents(data, projectId);
   const agent = agents.find(a => a.id === draft.agentId) || agents[0];
   const build = agent && (data.builds || []).find(b => b.id === agent.build_id);
-  const model = agent && draftModel(data, agent, draft);
+  const model = agent && draftModel(data, draft);
   const check = agent && readiness?.key === readinessKey(projectId, agent, model) ? readiness : null;
   const r = check && !check.loading && !check.error ? check.result : null;
   const slot = data?.instance_slot || {};
@@ -76,10 +76,11 @@ export function composerModel(data, projectId, draft, readiness) {
   if (draft.transport === 'steam' && !steam.enabled) blockers.push(`${steam.reason}. No ENet fallback.`);
 
   return {
-    project, agents, agent, build, model, modelOptions: agent ? providerModels(data, agent.model) : [], steam, desktop, blockers,
+    project, agents, agent, build, model, modelOptions: data?.model_options || [], steam, desktop, blockers,
     projects: data?.projects || [],
-    agentOptions: agents.map(a => ({ id: a.id, label: a.name || a.id, title: `${a.name || a.id} · ${modelLabel(data, a.model)}` })),
-    summary: agent ? `${modelLabel(data, model)} · build ${build?.name || agent.build_id} · Fresh world` : '',
+    agentOptions: agents.map(a => ({ id: a.id, label: a.name || a.id, title: `${a.name || a.id} · build ${(data?.builds || []).find(b => b.id === a.build_id)?.name || a.build_id}` })),
+    summary: agent ? `build ${build?.name || agent.build_id} · Fresh world` : '',
+    defaultModel: data?.default_model,
     canStart: !blockers.length && !draft.busy,
   };
 }
@@ -99,9 +100,9 @@ export function composerSkeleton(projectId, draft) {
 }
 
 export function noAgentsHTML(project) {
-  return `<div class="center-col empty"><h1 class="hero">This project has no agent configuration yet</h1>`
-    + `<p class="lede">An agent configuration pairs a build of <strong>${esc(project.name || project.id)}</strong> with a model and tuned instructions.</p>`
-    + `<a class="btn btn-primary" href="#/setup?project=${enc(project.id)}" data-key="add-agent">Add agent configuration</a></div>`;
+  return `<div class="center-col empty"><h1 class="hero">This project has no project configuration yet</h1>`
+    + `<p class="lede">A project configuration pairs a build of <strong>${esc(project.name || project.id)}</strong> with the game controls gathered from it.</p>`
+    + `<a class="btn btn-primary" href="#/setup?project=${enc(project.id)}" data-key="add-agent">Add project configuration</a></div>`;
 }
 
 export function composerRegions(m, draft) {
@@ -113,9 +114,9 @@ export function composerRegions(m, draft) {
     : `<span class="chip chip-${m.desktop.tone}">${chipDot(m.desktop.tone)}<span class="chip-text">${esc(m.desktop.label)}</span></span>`;
   const recheck = `<button type="button" class="icon-btn icon-btn-sm" data-action="composer-recheck" data-key="c-recheck" aria-label="Re-check readiness" title="Re-check readiness">${icon('refresh')}</button>`;
 
-  const agentChip = `<label class="chip chip-select" title="${esc(m.agentOptions.find(o => o.id === m.agent.id)?.title || '')}">${icon('bot')}<span class="sr-only">Agent</span>`
-    + `<select data-field="agent" data-key="c-agent" aria-label="Agent configuration">${m.agentOptions.map(o => `<option value="${esc(o.id)}"${o.id === m.agent.id ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>`;
-  const modelChip = modelMenuHTML({ key: 'c-model', field: 'model', options: m.modelOptions, selected: m.model, defaultModel: m.agent?.model });
+  const agentChip = `<label class="chip chip-select" title="${esc(m.agentOptions.find(o => o.id === m.agent.id)?.title || '')}">${icon('bot')}<span class="sr-only">Configuration</span>`
+    + `<select data-field="agent" data-key="c-agent" aria-label="Project configuration">${m.agentOptions.map(o => `<option value="${esc(o.id)}"${o.id === m.agent.id ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>`;
+  const modelChip = modelMenuHTML({ key: 'c-model', field: 'model', options: m.modelOptions, selected: m.model, defaultModel: m.defaultModel });
   const transportChip = `<label class="chip chip-select"${m.steam.enabled ? '' : ` title="${esc(m.steam.reason)}"`}>${icon('network')}<span class="sr-only">Transport</span>`
     + `<select data-field="transport" data-key="c-transport" aria-label="Transport" aria-describedby="composer-steam-note">`
     + `<option value="enet"${draft.transport === 'enet' ? ' selected' : ''}>ENet</option>`
@@ -164,7 +165,7 @@ function resultHTML(res) {
 // Returns { kind: 'accepted' | 'in-progress' | 'not-started' | 'conflict' | 'earlier-accepted' | 'error', ... }.
 export async function startInstance(draft, projectId, api) {
   const payload = { agent_id: draft.agentId, project_id: projectId, primary_goal: draft.goal.trim(), transport: draft.transport, model: draft.model };
-  if (!payload.agent_id) return { kind: 'error', field: 'agent', message: 'Choose an agent configuration.' };
+  if (!payload.agent_id) return { kind: 'error', field: 'agent', message: 'Choose a project configuration.' };
   if (!payload.primary_goal) return { kind: 'error', field: 'goal', message: 'Describe the goal before starting.' };
   const signature = JSON.stringify(payload);
   if (draft.sent && draft.sent !== signature) {

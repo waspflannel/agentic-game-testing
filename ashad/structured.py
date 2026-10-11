@@ -230,7 +230,7 @@ class StructuredPlayers:
                {"decision_selected", "structured_action_intent", "action_result", "structured_action_outcome", "goal_changed"}][-20:]
         team = [e for e in recent if e["kind"] == "team_message"][-12:] if player.get("cooperation") == "team" else []
         context = {"play_mode": run["plan"]["play_mode"], "player": player, "goal": player["goal"],
-            "game_controls": run.get("agent_profile", {}).get("instructions", ""), "agent_profile_id": run.get("agent_id"),
+            "game_controls": (run.get("game_controls") or {}).get("controls") or run.get("agent_profile", {}).get("instructions", ""), "agent_profile_id": run.get("agent_id"),
             "observation": prompt_observation(observation), "guidance": self.guidance(run, player, observation),
             "memory": ps.get("agent_memory", ""), "recent_own_actions": own, "team_messages": team,
             "setup": run["plan"]["world_setup"], "transport": run["plan"]["transport"],

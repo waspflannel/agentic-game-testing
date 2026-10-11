@@ -3,7 +3,7 @@ import { sidebarModel, sidebarHTML } from './views/sidebar.js';
 import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, draftModel, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
 import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions, defaultTab, nextTab } from './views/instance.js';
 import { panelRegions, mergeEvents, latestObservation } from './views/inspector.js';
-import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discardSetup, tuneAgent, setupSkeleton, setupRegions, prepareDialogText, prepareDesktop, registerBuild, elapsed } from './views/setup.js';
+import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discardSetup, getControls, setupSkeleton, setupRegions, prepareDialogText, prepareDesktop, registerBuild, elapsed } from './views/setup.js';
 import { settingsSkeleton, accountSkeleton, accountRegions, accountBlocker, settleLogin, desktopsSkeleton, desktopsRegions, workerPayload, steamSkeleton, steamRegions, steamErrors,
   limitsSkeleton, limitsRegions, limitsPayload, SECTIONS } from './views/settings.js';
 import { newUsageUi, usageSkeleton, usageRegions } from './views/usage.js';
@@ -35,7 +35,7 @@ const state = {
   settingsDirty: false,
   account: { checking: false, busy: false, error: '', login: null },  // login: { auth_url, login_id } only while sign-in is pending
   settingsUi: { probing: new Set(), errors: new Map(), saving: false, saved: '', formError: '', steamBusy: new Map(), steamResults: new Map() },
-  overviews: new Map(),      // project ID -> overview state (selected build, readiness, chooser, prepare, retunes)
+  overviews: new Map(),      // project ID -> overview state (selected build, readiness, chooser, prepare, refreshes)
   usage: null,               // { loading, rows, error, at }; fetched on view open and Refresh only
   usageUi: newUsageUi(),
 };
@@ -185,7 +185,7 @@ function renderComposer(view, projectId) {
   const agents = projectAgents(state.data, projectId);
   if (!agents.some(a => a.id === draft.agentId)) draft.agentId = agents[0].id;
   const agent = agents.find(a => a.id === draft.agentId);
-  draft.model = draftModel(state.data, agent, draft);
+  draft.model = draftModel(state.data, draft);
   if (state.readiness?.key !== readinessKey(projectId, agent, draft.model)) loadReadiness(projectId, agent, draft.model);
   mount(view, `composer:${projectId}`, composerSkeleton(projectId, draft));
   patchRegions(view, composerRegions(composerModel(state.data, projectId, draft, state.readiness), draft));
@@ -277,7 +277,7 @@ function renderSetup(view) {
   // Submitted input is locked until its request settles, so a retry can only resend the same payload.
   const name = view.querySelector('#setup-name');
   if (name) name.readOnly = ['busy', 'lost'].includes(s.project.status);
-  for (const field of view.querySelectorAll('#setup-agent-name, #setup-model')) field.disabled = Boolean(s.agent) || ['busy', 'lost'].includes(s.tune.status) || s.tune.waiting;
+  for (const field of view.querySelectorAll('#setup-agent-name')) field.disabled = Boolean(s.agent) || ['busy', 'lost'].includes(s.controls.status) || s.controls.waiting;
 }
 
 // Readiness probes the machine: on view open and explicit Re-check only. owner.readiness is replaced by each probe.
@@ -331,7 +331,7 @@ async function addBuild(form, projectId, kind) {
 
 async function deleteBuild(id) {
   const build = (state.data.builds || []).find(b => b.id === id);
-  if (!await confirmDialog({ title: `Remove ${build?.name || id}?`, body: 'ASHAD forgets this build. Its files and past instances are kept; agents tuned on it can no longer start.', confirm: 'Remove', danger: true })) return;
+  if (!await confirmDialog({ title: `Remove ${build?.name || id}?`, body: 'ASHAD forgets this build. Its files and past instances are kept; project configurations gathered on it can no longer start.', confirm: 'Remove', danger: true })) return;
   try {
     await api(`/api/builds/${enc(id)}`, { method: 'DELETE' });
     state.data.builds = state.data.builds.filter(b => b.id !== id);
@@ -361,7 +361,7 @@ async function deleteProject(id) {
   const name = project?.name || id;
   const count = kind => (state.data[kind] || []).filter(r => r.project_id === id).length;
   const [runs, agents, builds] = [count('runs'), count('agents'), count('builds')];
-  if (!await confirmDialog({ title: `Delete ${name}?`, body: `Deletes the project, its ${runs} instances, ${agents} agent configurations and ${builds} build registrations. Build files on disk and usage totals are kept. This cannot be undone.`, confirm: 'Delete project', danger: true })) return;
+  if (!await confirmDialog({ title: `Delete ${name}?`, body: `Deletes the project, its ${runs} instances, ${agents} project configurations and ${builds} build registrations. Build files on disk and usage totals are kept. This cannot be undone.`, confirm: 'Delete project', danger: true })) return;
   try {
     const result = await api(`/api/projects/${enc(id)}`, { method: 'DELETE' });
     for (const kind of ['runs', 'agents', 'builds']) state.data[kind] = (state.data[kind] || []).filter(r => r.project_id !== id);
@@ -379,12 +379,14 @@ async function deleteAgent(id) {
   const agent = (state.data.agents || []).find(a => a.id === id);
   if (!agent) return;
   const name = agent.name || id;
-  const tuned = agent.created_at ? `tuned ${since(agent.created_at)}` : 'tuned at an unrecorded time';
-  if (!await confirmDialog({ title: `Delete ${name}?`, body: `${modelLabel(state.data, agent.model)}, ${tuned}. ASHAD forgets this configuration and its tuned instructions. Instances that used it keep their own copy and stay in history. This cannot be undone.`, confirm: 'Delete configuration', danger: true })) return;
+  const gathered = agent.created_at ? since(agent.created_at) : 'at an unrecorded time';
+  if (!await confirmDialog({ title: `Delete ${name}?`, body: `Controls gathered ${gathered}. ASHAD forgets this project configuration and its game controls file. Instances that used it stay in history but are blocked until you get game controls again for this project and start them with the new configuration. This cannot be undone.`, confirm: 'Delete configuration', danger: true })) return;
   try {
     await api(`/api/agents/${enc(id)}`, { method: 'DELETE' });
     state.data.agents = state.data.agents.filter(a => a.id !== id);
-    for (const ov of state.overviews.values()) ov.retunes.delete(id);
+    for (const ov of state.overviews.values()) ov.refreshes.delete(id);
+    // A setup that finished while its page was closed still shows this configuration; it starts over at step 4.
+    for (const s of state.setups.values()) if (s.agent?.id === id) Object.assign(s, { agent: null, controls: newOp() });
     toast(`${name} deleted.`, 'ok');
   } catch (error) { toast(error.message, 'error'); }
   render();
@@ -422,37 +424,37 @@ function onSetupAction(action, target, event) {
   else if (action === 'setup-add-build') addBuild(s, s.projectId, target.dataset.kind);
   else if (action === 'setup-recheck') { s.readiness = null; renderView(); }
   else if (action === 'setup-prepare') prepare(s, s.projectId, setupModel(state.data, s).build);
-  else if (action === 'setup-tune') startTuning(s);
-  else if (action === 'setup-stop-waiting') { s.tune.stopWaiting = true; renderView(); }
+  else if (action === 'setup-controls') startControls(s);
+  else if (action === 'setup-stop-waiting') { s.controls.stopWaiting = true; renderView(); }
 }
 
-// While a tuning runs, its progress is read every 3s from the tuning recovery route: no probe, no inference.
-async function watchTuning(op) {
+// While Get game controls runs, its progress is read every 3s from the recovery route: no probe, no inference.
+async function watchControls(op) {
   while (op.status === 'busy' || op.waiting) {
     if (op.status === 'busy' && op.requestId && !document.hidden) {
       try {
-        const r = await api(`/api/agents/tuning/${enc(op.requestId)}`);
+        const r = await api(`/api/agents/controls/${enc(op.requestId)}`);
         if (r?.status === 'in_progress') op.progress = r.progress || null;
-      } catch { /* The next tick retries; the tuning itself is unaffected. */ }
+      } catch { /* The next tick retries; the run itself is unaffected. */ }
       renderView();
     }
     await sleep(3000);
   }
 }
 
-async function startTuning(s) {
-  if (s.tune.status === 'busy' || s.tune.waiting || !setupModel(state.data, s).done[3]) return;
-  const payload = { build_id: s.buildId, model: s.model, project_id: s.projectId, name: s.agentName.trim() };
-  const pending = tuneAgent(s.tune, payload, api, ms => { renderView(); return sleep(ms); });
-  watchTuning(s.tune);
+async function startControls(s) {
+  if (s.controls.status === 'busy' || s.controls.waiting || !setupModel(state.data, s).signedIn || !s.agentName.trim()) return;
+  const name = s.agentName.trim();
+  const payload = { build_id: s.buildId, project_id: s.projectId, name };
+  const pending = getControls(s.controls, payload, api, ms => { renderView(); return sleep(ms); });
+  watchControls(s.controls);
   renderView();
   syncDirty();
   await pending;
-  if (s.tune.status === 'done') {
-    s.agent = s.tune.value;
+  if (s.controls.status === 'done') {
+    s.agent = s.controls.value;
     state.data.agents = [s.agent, ...state.data.agents.filter(a => a.id !== s.agent.id)];
-    if (state.route.name === 'setup' && setupKey(state.route) === s.projectId && s.step === 5) s.step = 6;
-    else toast(`Agent ${s.agent.name || s.agent.id} is tuned.`, 'ok');
+    if (!(state.route.name === 'setup' && setupKey(state.route) === s.projectId && s.step === 4)) toast(`Game controls ready for ${name}.`, 'ok');
     poll();
   }
   syncDirty();
@@ -460,7 +462,7 @@ async function startTuning(s) {
 }
 
 // ── Settings and Usage (C9) ─────────────────────────────────────────────────
-const tuningActive = () => [...state.setups.values()].map(s => s.tune).concat([...state.overviews.values()].flatMap(ov => [...ov.retunes.values()]))
+const controlsActive = () => [...state.setups.values()].map(s => s.controls).concat([...state.overviews.values()].flatMap(ov => [...ov.refreshes.values()]))
   .some(op => op.status === 'busy' || op.waiting);
 
 function renderSettings(view) {
@@ -470,7 +472,7 @@ function renderSettings(view) {
   let key = `settings:${section}`, inner, regions;
   if (section === 'account') {
     inner = accountSkeleton();
-    regions = accountRegions({ ai: state.data.ai, claude: state.data.ai_claude, ...state.account, blocker: accountBlocker(state.data, tuningActive()), modelLabel: (state.data.model_options || []).find(m => m.id === state.data.ai?.model)?.label });
+    regions = accountRegions({ ai: state.data.ai, claude: state.data.ai_claude, ...state.account, blocker: accountBlocker(state.data, controlsActive()), modelLabel: (state.data.model_options || []).find(m => m.id === state.data.ai?.model)?.label });
   } else if (section === 'desktops') {
     const edit = (state.data.workers || []).some(w => w.id === query.edit) ? query.edit : '';
     key += `:${edit}`;
@@ -716,24 +718,36 @@ function renderOverview(view) {
   patchRegions(view, overviewRegions(m, ov));
 }
 
-async function retune(ov, agent) {
-  const running = ov.retunes.get(agent?.id);
+async function refreshControls(ov, agent) {
+  const running = ov.refreshes.get(agent?.id);
   if (!agent || running?.status === 'busy' || running?.waiting) return;
   const build = (state.data.builds || []).find(b => b.id === agent.build_id);
-  if (!await confirmDialog({ title: 'Retune this agent?', confirm: 'Retune',
-    body: `ASHAD re-reads build ${build?.name || agent.build_id} and writes new instructions as a new configuration named “${agent.name || agent.id}”. The current one stays as it is. Tuning uses the selected model's subscription and takes a few minutes.` })) return;
-  const op = newOp();  // An explicit retune is a new request with its own ID.
-  ov.retunes.set(agent.id, op);
-  const pending = tuneAgent(op, { build_id: agent.build_id, model: agent.model, project_id: ov.projectId, name: agent.name || agent.id }, api, ms => { renderView(); return sleep(ms); });
-  watchTuning(op);
+  const name = agent.name || agent.id;
+  if (!await confirmDialog({ title: 'Get game controls again?', confirm: 'Get controls',
+    body: `ASHAD re-reads build ${build?.name || agent.build_id} with Claude Sonnet and saves a new project configuration named “${name}”. The current one stays as it is. This takes a few minutes and uses your Claude subscription.` })) return;
+  const op = newOp();  // An explicit refresh is a new request with its own ID.
+  ov.refreshes.set(agent.id, op);
+  const pending = getControls(op, { build_id: agent.build_id, project_id: ov.projectId, name }, api, ms => { renderView(); return sleep(ms); });
+  watchControls(op);
   renderView();
   await pending;
   if (op.status === 'done') {
     state.data.agents = [op.value, ...state.data.agents.filter(a => a.id !== op.value.id)];
-    toast(`Retuned ${op.value.name || op.value.id}.`, 'ok');
+    toast(`Saved game controls as ${op.value.name || op.value.id}.`, 'ok');
     poll();
   }
   renderView();
+}
+
+// Opens the controls file of one project configuration. Needs only the id, so the overview and the setup page share it.
+async function viewControls(id) {
+  const agent = (state.data.agents || []).find(a => a.id === id);
+  try {
+    const c = await api(`/api/agents/${enc(id)}/controls`);
+    const by = c.generated_by?.method === 'legacy_tuning' ? `Converted from an earlier configuration written by ${modelLabel(state.data, c.generated_by.model)}` : 'Gathered by Claude Sonnet';
+    openDialog({ title: agent?.name || id, confirm: null, cancel: 'Close', wide: true,
+      html: `<p>${esc(by)}</p><pre class="instructions" tabindex="0">${esc(c.controls)}</pre>` });
+  } catch (error) { toast(error.message, 'error'); }
 }
 
 function onOverviewAction(action, target) {
@@ -746,13 +760,8 @@ function onOverviewAction(action, target) {
   else if (action === 'ov-delete-agent') deleteAgent(target.dataset.id);
   else if (action === 'ov-recheck') { ov.readiness = null; renderView(); }
   else if (action === 'ov-prepare') prepare(ov, ov.projectId, (state.data.builds || []).find(b => b.id === ov.buildId));
-  else if (action === 'ov-retune') retune(ov, agent);
-  else if (action === 'ov-instructions' && agent) {
-    const model = (state.data.model_options || []).find(m => m.id === agent.model)?.label || agent.model;
-    openDialog({ title: agent.name || agent.id, confirm: null, cancel: 'Close', wide: true,
-      html: `<p>${esc(model || 'Unknown model')} · tuned ${agent.created_at ? esc(new Date(agent.created_at * 1000).toLocaleString()) : 'at an unrecorded time'}</p>`
-        + `<pre class="instructions" tabindex="0">${esc(agent.instructions || 'No instructions were recorded.')}</pre>` });
-  } else if (action === 'ov-sidebar') {
+  else if (action === 'ov-refresh') refreshControls(ov, agent);
+  else if (action === 'ov-sidebar') {
     state.ui.expanded.set(ov.projectId, true);
     state.ui.showAll.add(ov.projectId);
     if (document.body.classList.contains('nav-collapsed')) toggleSidebar();
@@ -1120,6 +1129,10 @@ async function onRoute() {
   state.isCurrent = epoch.next();  // Any response started for the previous route is now stale.
   if (composerProject(route, state.data)) state.readiness = null;  // Readiness probes on view open, never on the poll.
   if (route.name === 'composer' && route.query.agent) draftFor(route.id).agentId = route.query.agent;
+  if (route.name === 'composer' && route.query.from) {  // "Start again" from a blocked instance prefills its goal and model.
+    const run = (state.data?.runs || []).find(r => r.id === route.query.from);
+    if (run) { const d = draftFor(route.id); d.goal ||= run.plan?.primary_goal || ''; d.model = run.plan?.model || d.model; }
+  }
   if (route.name === 'instance' && state.thread.runId !== route.id) {
     state.thread = { runId: route.id, player: null, instructionOpen: false, instructionText: '', statusKey: null, tl: createTimeline(), worldView: 'latest', lastObs: null, tab: null, scroll: {} };
     state.runSlot.set(null);  // Also drops a late GET for the previous thread.
@@ -1199,6 +1212,8 @@ document.addEventListener('click', async event => {
     renderView();
   } else if (action === 'instance-delete') {
     if (target.getAttribute('aria-disabled') !== 'true') deleteInstance(id);
+  } else if (action === 'ov-controls') {  // Shared by the project overview and the setup step 4 done view.
+    viewControls(id);
   } else if (action.startsWith('setup-')) {
     onSetupAction(action, target, event);
   } else if (action.startsWith('ov-')) {
@@ -1335,10 +1350,9 @@ document.addEventListener('change', event => {
     renderView();
     return;
   }
-  if (field === 'setup-model' || field === 'setup-build') {
+  if (field === 'setup-build') {
     const s = setupFor(state.route);
-    if (field === 'setup-model') Object.assign(s, { model: event.target.value, edited: true });
-    else Object.assign(s, { buildId: event.target.value, readiness: null });
+    Object.assign(s, { buildId: event.target.value, readiness: null });
     syncDirty();
     renderView();
     return;
@@ -1347,7 +1361,7 @@ document.addEventListener('change', event => {
   if (!projectId || !['agent', 'transport', 'project'].includes(field)) return;
   if (field === 'project') { location.hash = href('p', event.target.value, 'new'); return; }
   const draft = draftFor(projectId);
-  if (field === 'agent') Object.assign(draft, { agentId: event.target.value, model: '' });
+  if (field === 'agent') draft.agentId = event.target.value;
   else draft[field] = event.target.value;
   renderView();
 });

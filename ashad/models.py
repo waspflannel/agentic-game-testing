@@ -34,7 +34,7 @@ def provider_of(model):
 
 
 def require_same_provider(model, base, subject):
-    """Instances may switch models only within the provider their agent was tuned for."""
+    """A live instance may switch models only within its current provider."""
     if model not in SUPPORTED_MODELS or provider_of(model) != provider_of(base):
         raise ValueError(f"Choose a {PROVIDERS[provider_of(base)]['label']} model for {subject}.")
 

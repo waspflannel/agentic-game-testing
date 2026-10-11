@@ -82,14 +82,12 @@ def test_missing_or_changed_build_never_probes_or_claims_ready(workspace, monkey
         assert inspect.await_count == 0 and not app.state.store.list("runs")
 
 
-def test_selected_profile_model_is_not_replaced_and_membership_is_checked(workspace, monkeypatch):
+def test_selected_configuration_membership_is_checked(workspace, monkeypatch):
     app, build = workspace
-    app.state.store.put("agents", {"id": "agent", "build_id": "build", "project_id": "project", "model": "gpt-6-sol"})
-    monkeypatch.setattr(app.state.profiles, "validated", lambda key: app.state.store.require("agents", key))
+    app.state.store.put("agents", {"id": "agent", "build_id": "build", "project_id": "project", "status": "ready", "controls_version": 1})
+    monkeypatch.setattr(app.state.controls, "validated", lambda key: (app.state.store.require("agents", key), {}))
     with TestClient(app) as client:
-        result = client.get("/api/projects/project/readiness?build_id=build&agent_id=agent").json()
-        assert result["provider"]["model"] == "gpt-6-sol"
-        app.state.ai.validate.assert_awaited_once_with("gpt-6-sol")
+        assert client.get("/api/projects/project/readiness?build_id=build&agent_id=agent").status_code == 200
         app.state.store.put("projects", {"id": "other", "name": "Same game"})
         assert client.get("/api/projects/other/readiness?build_id=build&agent_id=agent").status_code == 422
         assert not app.state.store.list("runs")

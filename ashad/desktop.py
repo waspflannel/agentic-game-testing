@@ -143,12 +143,12 @@ class DesktopLifecycle:
                 if current["owners"] and not stop_runs:
                     return {"drained": False, "detail": "Confirm Stop and quit for every owned instance.", **current}
                 if current["operations"] and not cancel_operations:
-                    return {"drained": False, "detail": "Wait for operations or explicitly cancel tuning/sign-in.", **current}
-                if any(op["kind"] not in {"tuning", "sign_in"} for op in current["operations"]):
+                    return {"drained": False, "detail": "Wait for operations or explicitly cancel Get game controls/sign-in.", **current}
+                if any(op["kind"] not in {"controls", "sign_in"} for op in current["operations"]):
                     return {"drained": False, "detail": "Wait for desktop/setup/lifecycle mutations to finish.", **current}
                 coord.draining = True
             try:
-                task = self.app.state.tuning_task
+                task = self.app.state.controls_task
                 if task and not task.done():
                     task.cancel()
                     await asyncio.gather(task, return_exceptions=True)

@@ -13,7 +13,7 @@ const NOW = 2_000_000_000;
 const data = (extra = {}) => ({
   projects: [{ id: 'p', name: 'Agronauts' }, { id: 'q', name: 'Other' }],
   builds: [{ id: 'b', name: '0.3.1', project_id: 'p', source_revision: 'merged:abc' }, { id: 'c', name: '0.4.0', project_id: 'p' }],
-  agents: [{ id: 'a', name: 'Scout', build_id: 'b', project_id: 'p', model: 'gpt-6-astra', created_at: NOW - 7200, instructions: 'x' }],
+  agents: [{ id: 'a', name: 'Scout', build_id: 'b', project_id: 'p', status: 'ready', created_at: NOW - 7200 }],
   runs: Array.from({ length: 12 }, (_, i) => ({ id: `r${i}`, project_id: 'p', state: 'Ended', ending_reason: 'stopped_by_user', created_at: NOW - i * 60, started_at: NOW - i * 60, ended_at: NOW - i * 60 + 300, plan: { primary_goal: `Goal ${i}` } })),
   model_options: [{ id: 'gpt-6-astra', label: 'GPT-6 Astra' }], instance_slot: { owners: [] }, ...extra,
 });
@@ -100,7 +100,10 @@ test('the overview lists builds with validation, agents, readiness and the last 
   const r = overviewRegions(m, ov, NOW);
   assert.match(r.builds, /Not validated: Engine SHA-256 does not match/);
   assert.match(r.builds, /Not checked yet/);
-  assert.match(r.agents, /GPT-6 Astra · build 0\.3\.1 · tuned 2h ago/);
+  assert.match(r.agents, /build 0\.3\.1 · controls gathered 2h ago/);
+  assert.doesNotMatch(r.agents, /GPT-6 Astra/, 'configurations carry no model');
+  assert.match(r.agents, /data-action="ov-controls" data-id="a" data-key="ov-ctl-a">View controls</);
+  assert.match(r.agents, /data-action="ov-refresh" data-id="a" data-key="ov-refresh-a">Get controls again…</);
   assert.match(r.agents, /href="#\/p\/p\/new\?agent=a"/);
   assert.match(r.head, /href="#\/setup\?project=p"/);
   assert.match(r.readiness, /data-field="ov-build"/, 'a build picker when there are several');
@@ -120,27 +123,45 @@ test('the overview head offers Delete project, disabled while one of its instanc
   assert.ok(live.includes('aria-disabled="true" title="Stop its active instance before deleting this project"'));
 });
 
-test('each agent row has a Delete action, disabled during its retune or while an instance using it is live', async () => {
+test('each configuration row has a Delete action, disabled during a refresh or while an instance using it is live', async () => {
   const { newOverview, overviewModel, overviewRegions } = await project();
   const button = (d, ov) => overviewRegions(overviewModel(d, ov, NOW), ov, NOW).agents.match(/<button[^>]*data-action="ov-delete-agent"[^>]*>/)[0];
   const ov = newOverview('p');
   const idle = button(data(), ov);
   assert.ok(idle.includes('data-action="ov-delete-agent" data-id="a"'));
   assert.doesNotMatch(idle, /aria-disabled/);
-  ov.retunes.set('a', { status: 'busy' });
-  assert.ok(button(data(), ov).includes('title="Wait for the retune to finish before deleting"'));
+  ov.refreshes.set('a', { status: 'busy' });
+  assert.ok(button(data(), ov).includes('title="Wait for Get game controls to finish before deleting"'));
   const live = data({ runs: [{ id: 'r1', project_id: 'p', state: 'Queued', plan: { agent_id: 'a' } }], instance_slot: { owners: [{ run_id: 'r1' }] } });
-  assert.ok(button(live, newOverview('p')).includes('title="Stop the instance using this configuration before deleting it"'));
+  assert.ok(button(live, newOverview('p')).includes('title="Stop the instance using this project configuration before deleting it"'));
+});
+
+test('a retired configuration shows its reason and only Delete', async () => {
+  const { newOverview, overviewModel, overviewRegions } = await project();
+  const d = data({ agents: [{ id: 'old', name: 'Old', build_id: 'b', project_id: 'p', status: 'retired', retired_reason: 'Saved before game controls existed, and its saved instructions are invalid.', created_at: NOW - 60 }] });
+  const ov = newOverview('p');
+  const html = overviewRegions(overviewModel(d, ov, NOW), ov, NOW).agents;
+  assert.match(html, /Retired: Saved before game controls existed/);
+  assert.deepEqual([...html.matchAll(/data-action="([^"]+)"/g)].map(x => x[1]), ['ov-delete-agent']);
+  assert.doesNotMatch(html, /New instance|View controls|Get controls again/);
+});
+
+test('an empty project says it has no project configuration', async () => {
+  const { newOverview, overviewModel, overviewRegions } = await project();
+  const ov = newOverview('p');
+  const r = overviewRegions(overviewModel(data({ agents: [] }), ov, NOW), ov, NOW);
+  assert.match(r.agents, /No project configuration yet\. <a href="#\/setup\?project=p"[^>]*>Add one<\/a> to start instances\./);
+  assert.match(r.head, />Add project configuration</);
 });
 
 test('overview markup escapes project, build, agent and goal text', async () => {
   const { newOverview, overviewModel, overviewRegions } = await project();
   const evil = '<img src=x onerror=alert(1)>';
-  const d = data({ projects: [{ id: 'p', name: evil }], builds: [{ id: evil, name: evil, project_id: 'p', source_revision: evil }], agents: [{ id: evil, name: evil, build_id: evil, project_id: 'p', model: evil }],
+  const d = data({ projects: [{ id: 'p', name: evil }], builds: [{ id: evil, name: evil, project_id: 'p', source_revision: evil }], agents: [{ id: evil, name: evil, build_id: evil, project_id: 'p' }, { id: 'old', name: evil, build_id: evil, project_id: 'p', status: 'retired', retired_reason: evil }],
     runs: [{ id: evil, project_id: 'p', state: 'Ended', ending_reason: evil, plan: { primary_goal: evil } }] });
   const ov = newOverview('p');
   ov.chooser.error = evil;
-  ov.retunes.set(evil, { status: 'error', error: evil });
+  ov.refreshes.set(evil, { status: 'error', error: evil });
   ov.validation.set(evil, { ready: false, reason: evil });
   assert.doesNotMatch(Object.values(overviewRegions(overviewModel(d, ov, NOW), ov, NOW)).join(''), /<img/);
 });

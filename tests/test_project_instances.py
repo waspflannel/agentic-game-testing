@@ -10,10 +10,10 @@ from fastapi.testclient import TestClient
 from ashad.app import create_app
 from ashad.coordinator import Coordinator, InstanceConflict
 from ashad.instances import Instances, InstanceRequest
-from ashad.agent_profiles import AgentProfiles
+from ashad.game_controls import GameControls
 from test_controller import environment, new_run, MemoryCredentials, FakeCodexBackend
 from test_instances import profile
-from test_agent_profiles import setup
+from test_game_controls import setup
 
 
 @pytest.mark.asyncio
@@ -23,7 +23,7 @@ async def test_competing_projects_share_atomic_slot_across_independent_callers(e
     second_build = {**store.require("builds", "build-1"), "id": "build-2", "project_id": "project-2"}
     store.put("builds", second_build)
     store.put("agents", {**profile, "id": "agent-two", "build_id": "build-2", "project_id": "project-2"})
-    monkeypatch.setattr(AgentProfiles, "validated", lambda self, agent_id: self.store.require("agents", agent_id))
+    monkeypatch.setattr(GameControls, "validated", lambda self, agent_id: (self.store.require("agents", agent_id), {"controls": "controls text"}))
     second_coord = Coordinator(store, first_coord.credentials, first_coord.ai, first_coord.client_factory)
     # Make both callers reach a genuine suspended preflight before either commits.
     ready, count = asyncio.Event(), 0
@@ -123,20 +123,20 @@ async def test_launch_key_cannot_be_rebound_to_different_frozen_revision(environ
 
 
 @pytest.mark.asyncio
-async def test_tuning_retry_returns_saved_profile_without_inference_even_if_build_is_missing(setup):
-    store, build, backend, profiles = setup
-    kwargs = {"request_id": "tune-one", "name": " Beach scout ", "project_id": build["project_id"]}
-    first = await profiles.tune(build["id"], **kwargs)
+async def test_get_controls_retry_returns_saved_configuration_without_inference_even_if_build_is_missing(setup):
+    store, build, backend, controls = setup
+    kwargs = {"request_id": "controls-one", "name": " Beach scout ", "project_id": build["project_id"]}
+    first = await controls.gather(build["id"], **kwargs)
     assert first["name"] == "Beach scout" and first["project_id"] == build["project_id"]
     store.delete("builds", build["id"])
-    async with profiles.lock:  # Reading a completed retry is not another tuning operation.
-        assert await profiles.tune(build["id"], **kwargs) == first
-    assert backend.tune.await_count == 1 and len(store.list("agents")) == 1
+    async with controls.lock:  # Reading a completed retry is not another Get game controls run.
+        assert await controls.gather(build["id"], **kwargs) == first
+    assert backend.write_controls.await_count == 1 and len(store.list("agents")) == 1
     with pytest.raises(ValueError, match="different inputs"):
-        await profiles.tune(build["id"], **{**kwargs, "name": "Changed"})
+        await controls.gather(build["id"], **{**kwargs, "name": "Changed"})
     store.put("builds", build)
-    second = await profiles.tune(build["id"], **{**kwargs, "request_id": "explicit-retune"})
-    assert second["id"] != first["id"] and backend.tune.await_count == 2
+    second = await controls.gather(build["id"], **{**kwargs, "request_id": "explicit-retune"})
+    assert second["id"] != first["id"] and backend.write_controls.await_count == 2
 
 
 def offline_app(root, controller_lock=None):
@@ -205,38 +205,38 @@ async def test_request_lookup_reports_real_inflight_tasks_before_durable_prepara
 def test_request_reconciliation_apis_return_saved_outputs_without_work(tmp_path):
     app = offline_app(tmp_path)
     app.state.store.put("agents", {"id": "saved", "instructions": "Immutable manual"})
-    app.state.store.command("tuning", "tune-saved", {"agent_id": "saved", "request": {"build_id": "missing", "model": "gpt-6-luna", "name": None, "project_id": None}})
+    app.state.store.command("tuning", "tune-saved", {"agent_id": "saved", "request": {"build_id": "missing", "name": None, "project_id": None}})
     app.state.store.put("runs", {"id": "saved-run", "state": "Ended", "players": {}})
     app.state.store.command("launch", "instance_start-saved", {"run_id": "saved-run"})  # Instances.start's real key.
     app.state.store.command("instance", "start-legacy", {"run_id": "saved-run"})
     app.state.store.command("instance", "prepared", {"request": {"agent_id": "saved", "primary_goal": "Retained draft", "token": "fixture-private"}})
     with TestClient(app) as client:
-        assert client.get("/api/agents/tuning/tune-saved").json()["agent"]["id"] == "saved"
+        assert client.get("/api/agents/controls/tune-saved").json()["agent"]["id"] == "saved"
         assert client.get("/api/instances/requests/start-saved").json()["run"]["id"] == "saved-run"
         assert client.get("/api/instances/requests/start-legacy").json()["run"]["id"] == "saved-run"
         prepared = client.get("/api/instances/requests/prepared").json()
         assert prepared["status"] == "prepared" and prepared["request"] == {"agent_id": "saved", "primary_goal": "Retained draft"}
-        assert client.get("/api/agents/tuning/missing").json()["status"] == "unknown"
-        app.state.tuning_task = object()
-        app.state.tuning_request_id = "active-request"
-        assert client.get("/api/agents/tuning/active-request").json()["status"] == "in_progress"
-        # Progress: stage and batch from the running tune, model calls since it started from usage rows.
-        app.state.profiles.progress = {"stage": "source_notes", "batch": 3, "batch_count": 8, "started_at": 1000.0}
+        assert client.get("/api/agents/controls/missing").json()["status"] == "unknown"
+        app.state.controls_task = object()
+        app.state.controls_request_id = "active-request"
+        assert client.get("/api/agents/controls/active-request").json()["status"] == "in_progress"
+        # Progress: stage and batch from the running Get game controls, model calls since it started from usage rows.
+        app.state.controls.progress = {"stage": "exploring", "batches_done": 3, "batch_count": 8, "workers": 4, "started_at": 1000.0}
         for i, status in enumerate(["completed", "invalid_tuning", "completed"]):
             app.state.store.put("usage", {"id": f"u{i}", "purpose": "tuning", "status": status, "timestamp": 1001.0 + i})
         app.state.store.put("usage", {"id": "old", "purpose": "tuning", "status": "completed", "timestamp": 999.0})
         app.state.store.put("usage", {"id": "play", "purpose": "player", "status": "completed", "timestamp": 1005.0})
-        progress = client.get("/api/agents/tuning/active-request").json()["progress"]
-        assert progress == {"stage": "source_notes", "batch": 3, "batch_count": 8, "started_at": 1000.0,
+        progress = client.get("/api/agents/controls/active-request").json()["progress"]
+        assert progress == {"stage": "exploring", "batches_done": 3, "batch_count": 8, "workers": 4, "started_at": 1000.0,
                             "model_calls": 3, "rejected_replies": 1, "last_call_at": 1003.0}
-        assert "progress" not in client.get("/api/agents/tuning/missing").json()
-        app.state.profiles.progress = None
+        assert "progress" not in client.get("/api/agents/controls/missing").json()
+        app.state.controls.progress = None
         for record in ("u0", "u1", "u2", "old", "play"):
             app.state.store.delete("usage", record)  # The rest of this test asserts that no work was recorded.
-        saved = client.post("/api/agents/tune", json={"build_id": "missing", "request_id": "tune-saved"}, headers={"X-ASHAD-Request": "1"})
+        saved = client.post("/api/agents/controls", json={"build_id": "missing", "request_id": "tune-saved"}, headers={"X-ASHAD-Request": "1"})
         assert saved.status_code == 200 and saved.json()["id"] == "saved"
-        assert app.state.tuning_task is not None  # Never clear the other live tuning task.
-        app.state.tuning_task = None
+        assert app.state.controls_task is not None  # Never clear the other live Get game controls task.
+        app.state.controls_task = None
         assert not app.state.store.list("usage") and not app.state.store.leases()
 
 

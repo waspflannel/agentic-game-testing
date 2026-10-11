@@ -87,3 +87,25 @@ test('Settings carries a sign-in marker only when no provider is ready', async (
   assert.doesNotMatch(sidebarHTML(sidebarModel(data(), ui())), /AI sign-in needed/);
   assert.match(sidebarHTML(sidebarModel(data({ ai: { status: 'not_validated' } }), ui())), /AI sign-in needed/);
 });
+
+test('instance rows carry a delete button beside, not inside, the link', async () => {
+  const { sidebarModel, sidebarHTML } = await load();
+  const html = sidebarHTML(sidebarModel(data(), ui({ expanded: new Map([['p', true]]) })));
+  for (const id of ['r1', 'r2']) {
+    assert.ok(html.includes(`data-action="instance-delete" data-id="${id}" data-key="rd:${id}" aria-label="Delete instance: Goal ${id}"`), id);
+  }
+  const anchors = html.match(/<a class="row thread[\s\S]*?<\/a>/g);
+  assert.equal(anchors.length, 2);
+  for (const a of anchors) assert.ok(!a.includes('<button'));
+});
+
+test("the active instance's delete button is disabled with a reason", async () => {
+  const { sidebarModel, sidebarHTML } = await load();
+  const d = data({ instance_slot: { owners: [{ run_id: 'r1', state: 'Running', reason: 'running' }] } });
+  const html = sidebarHTML(sidebarModel(d, ui({ expanded: new Map([['p', true]]) })));
+  const tag = id => html.match(new RegExp(`<button[^>]*data-action="instance-delete" data-id="${id}"[^>]*>`))[0];
+  assert.match(tag('r1'), /aria-disabled="true"/);
+  assert.match(tag('r1'), /title="Stop this instance before deleting it"/);
+  assert.doesNotMatch(tag('r2'), /aria-disabled/);
+  assert.match(tag('r2'), /title="Delete instance"/);
+});

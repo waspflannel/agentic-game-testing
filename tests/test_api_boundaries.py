@@ -394,7 +394,7 @@ def test_readiness_accepts_same_provider_model_only(tmp_path):
     store = app.state.store
     store.put("projects", {"id": "project", "name": "Game"})
     store.put("builds", {"id": "build", "project_id": "project", "name": "Fixture"})
-    store.put("agents", {"id": "agent", "build_id": "build", "project_id": "project", "model": "gpt-6-sol"})
+    store.put("agents", {"id": "agent", "build_id": "build", "project_id": "project", "model": "gpt-6-luna"})
     app.state.ai.validate = AsyncMock(return_value={"configured": True, "status": "ready", "message": "Ready"})
     url = "/api/projects/project/readiness?build_id=build"
     with TestClient(app) as client:

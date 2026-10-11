@@ -79,6 +79,8 @@ class Coordinator:
         self.structured = StructuredPlayers(self)
         from .saves import Saves
         self.saves = Saves(self)
+        from .fixer import Fixer
+        self.fixer = Fixer(self)
 
     def occupied_instances(self):
         """Lifecycle labels cannot release unresolved desktop/account ownership."""
@@ -305,7 +307,7 @@ class Coordinator:
         existing = [s for s in self.store.list("scenarios") if s["id"] == scenario_id]
         revision = max((s["revision"] for s in existing), default=0) + 1
         record = {"id": scenario_id, "revision": revision, "title": plan["title"], "created_at": time.time(), "plan": plan,
-                  **{k: origin[k] for k in ("source_run_id", "rerun_kind", "save_id") if k in origin}}
+                  **{k: origin[k] for k in ("source_run_id", "rerun_kind", "save_id", "loop_id") if k in origin}}
         self.store.put("scenarios", record, f"{scenario_id}:{revision}")
         return record
 
@@ -331,7 +333,7 @@ class Coordinator:
         occupied = any(lease["kind"] == "worker" and lease["resource_id"] == worker_id for lease in self.store.leases())
         return inspect_environment(build, worker, probe, status, occupied=occupied, account=account)
 
-    async def launch(self, scenario_id, revision, idempotency_key):
+    async def launch(self, scenario_id, revision, idempotency_key, *, replacing_run_id=None):
         if not idempotency_key:
             raise ValueError("Launch needs an idempotency key")
         async with self.lock:
@@ -343,7 +345,7 @@ class Coordinator:
                 return previous
             if self.draining or self.stopping:
                 raise ValueError("The controller is draining; new instances are blocked.")
-            self.require_instance_slot()
+            self.require_instance_slot(replacing_run_id)
             scenario = self.store.require("scenarios", f"{scenario_id}:{revision}")
             status = await self.ai.validate(Plan.model_validate(scenario["plan"]).model)
             if status.get("status") != "ready" or status.get("configured") is not True:
@@ -387,6 +389,7 @@ class Coordinator:
             run.update(api=PROVIDERS[provider_of(plan["model"])]["pricing"]["api"], billing="subscription")
             run["source_run_id"] = scenario.get("source_run_id")
             run["rerun_kind"] = scenario.get("rerun_kind")
+            run["loop_id"] = scenario.get("loop_id")
             if scenario.get("save_id"):
                 from .saves import restore_state
                 restore_state(run, self.store.require("saves", scenario["save_id"]))
@@ -396,7 +399,7 @@ class Coordinator:
                 # allocation. SQLite serializes even independently constructed callers.
                 if self.draining or self.stopping:
                     raise ValueError("The controller is draining; new instances are blocked.")
-                self.require_instance_slot()
+                self.require_instance_slot(replacing_run_id)
                 db.execute("INSERT INTO leases VALUES (?,?,?)", ("instance", "global", run_id))
                 self.save_run(run)
                 self.store.command("launch", idempotency_key, {"run_id": run_id})
@@ -533,6 +536,7 @@ class Coordinator:
                         run["limitations"].append(str(exc))
             self.save_run(run)
             generate_report(self.store, run["id"])
+        await self.fixer.recover()
         publish_pending(self.store)
 
     async def loop(self):
@@ -1131,6 +1135,8 @@ class Coordinator:
             run = self.store.require("runs", run_id)
             if run["state"] == "Ended":
                 raise ValueError("Run has ended; create a rerun")
+            if run["state"] == "Fixing":
+                raise ValueError("This instance is fixing an issue. Use Cancel fix in the Improvement loop section.")
             # Rejected commands are not interventions. Resolve their targets and
             # validate options before recording intent or sending worker input.
             if command not in {"stop", "terminate", "pause", "resume", "extend", "manual_event", "goal", "model", "takeover", "takeover_finish"}:
@@ -1335,7 +1341,7 @@ class Coordinator:
         run["state"] = run.get("resume_state", "Running")
         self.save_run(run)
 
-    async def finish(self, run_id, reason, terminate=False, limitation=None):
+    async def finish(self, run_id, reason, terminate=False, limitation=None, final_state="Ended"):
         await self.cancel_tick(run_id)
         run = self.store.require("runs", run_id)
         if run["state"] == "Ended":
@@ -1383,16 +1389,17 @@ class Coordinator:
         if not all_confirmed:
             run["limitations"].append("Teardown was not confirmed; worker/account leases remain reserved pending reconciliation.")
             run["evidence_status"] = "incomplete"
-        run.update(state="Ended", ended_at=time.time(), investigation_deadline=None)
+        run.update(state=final_state, ended_at=time.time(), investigation_deadline=None)
         if run["evidence_status"] == "collecting":
             run["evidence_status"] = "complete" if not run["limitations"] else "partial"
         self.save_run(run)
-        event = self.store.event(run_id, "run_ended", {"reason": reason, "validity": run["validity"], "goal_complete": run["goal_complete"], "demo_complete": run["demo_complete"], "evidence_status": run["evidence_status"]})
+        event = self.store.event(run_id, "run_ended", {"reason": reason, "validity": run["validity"], "goal_complete": run["goal_complete"], "demo_complete": run["demo_complete"], "evidence_status": run["evidence_status"], "final_state": final_state})
         if not all_confirmed:
             record_task(self.store, run_id, "teardown_failed", "Game teardown was not confirmed; worker/account leases remain reserved.",
                 key="teardown_failed", category="infrastructure_failure", event_id=event["id"])
         publish_pending(self.store)
         generate_report(self.store, run_id)
+        self.fixer.run_finished(run)
         await self.collect_evidence(run_id)
         return run
 

@@ -25,6 +25,7 @@ class InstanceRequest(Contract):
     transport: Literal["enet", "steam"] = "enet"
     request_id: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,100}$")
     model: str | None = Field(default=None, max_length=100)
+    fix_mode: Literal["off", "manual", "auto"] = "off"
 
 
 class SaveLoadRequest(Contract):
@@ -52,6 +53,12 @@ class Instances:
             if self.coordinator.draining or self.coordinator.stopping:
                 raise ValueError("The controller is draining; new instances are blocked.")
             self.coordinator.require_instance_slot()
+            loop = None
+            if request.fix_mode != "off":
+                status = await self.coordinator.fixer.status_payload(refresh=True)
+                if not status["ready"]:
+                    raise ValueError("Fixes are unavailable: " + status["reasons"][0])
+                loop = self.coordinator.fixer.create_loop(request.fix_mode)
             record, _ = GameControls(self.store, self.coordinator.ai).validated(request.configuration_id)
             Projects(self.store).project_for_configuration(request.configuration_id, request.project_id)
             model = request.model or default_model(self.coordinator.ai)
@@ -65,7 +72,7 @@ class Instances:
                                       app_id=build.get("steam_app_id") if request.transport == "steam" else None)
             plan["success_criteria"].update(predicate="manual", target="")
             plan["limits"]["duration_seconds"] = self.store.require("settings", "main").get("duration_seconds")
-            scenario = self.coordinator.save_scenario(plan)
+            scenario = self.coordinator.save_scenario(plan, **({"loop_id": loop["id"]} if loop else {}))
             self.store.command("instance", request.request_id, {"request": payload, "scenario_id": scenario["id"], "revision": scenario["revision"]})
             return await self._launch(scenario["id"], scenario["revision"], request.request_id)
 
@@ -87,7 +94,7 @@ class Instances:
             raise ValueError("No available desktop with a fresh verified, licensed Steam identity for this build. Steam readiness is unknown or unverified; cached account readiness is insufficient. No ENet fallback is allowed.")
         raise ValueError("No available desktop with fresh positive build, rendering, capture, input and idle probes. Check Settings and the mounted build, or stop an existing instance.")
 
-    async def load_save(self, save_id, request: SaveLoadRequest):
+    async def load_save(self, save_id, request: SaveLoadRequest, *, replacing_run_id=None, loop_id=None):
         payload = {"save_id": save_id}
         async with self.lock:
             previous = self.store.command("instance", request.request_id)
@@ -97,7 +104,7 @@ class Instances:
                 return await self._launch(previous["scenario_id"], previous["revision"], request.request_id)
             if self.coordinator.draining or self.coordinator.stopping:
                 raise ValueError("The controller is draining; new instances are blocked.")
-            self.coordinator.require_instance_slot()
+            self.coordinator.require_instance_slot(replacing_run_id)
             save = self.store.require("saves", save_id)
             state = save["state"]
             if state["transport"] != "enet":
@@ -118,13 +125,14 @@ class Instances:
             plan["players"][0].update(worker_id=worker["id"], identity=state["identity"], account_id=None)
             plan["transport"].update(mode="enet", host_address=worker.get("host_address"), app_id=None)
             plan["limits"]["duration_seconds"] = self.store.require("settings", "main").get("duration_seconds")
-            scenario = self.coordinator.save_scenario(plan, source_run_id=save["run_id"], rerun_kind="save_load", save_id=save_id)
+            scenario = self.coordinator.save_scenario(plan, source_run_id=save["run_id"], rerun_kind="save_load", save_id=save_id,
+                                                    **({"loop_id": loop_id} if loop_id else {}))
             self.store.command("instance", request.request_id, {"request": payload, "scenario_id": scenario["id"], "revision": scenario["revision"]})
-            return await self._launch(scenario["id"], scenario["revision"], request.request_id)
+            return await self._launch(scenario["id"], scenario["revision"], request.request_id, replacing_run_id)
 
-    async def _launch(self, scenario_id, revision, request_id):
+    async def _launch(self, scenario_id, revision, request_id, replacing_run_id=None):
         try:
-            return await self.coordinator.launch(scenario_id, revision, "instance_" + request_id)
+            return await self.coordinator.launch(scenario_id, revision, "instance_" + request_id, replacing_run_id=replacing_run_id)
         except BaseException:
             # Keep retries bound to any committed run, but let a rejected start be corrected.
             if not self.store.command("launch", "instance_" + request_id):

@@ -381,7 +381,7 @@ async def test_no_action_candidate_returns_to_planner_and_bad_plan_never_execute
     coordinator.plan_response = invalid
     await service.turn("run", "p")
     assert coordinator.investigation[1] == "provider_failure"
-    assert not any(op["operation"] == "perform_action" for op in coordinator.ops)
+    assert not any(op.get("operation") == "perform_action" for op in coordinator.ops)
     store.close()
 
 

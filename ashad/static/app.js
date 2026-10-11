@@ -1,4 +1,4 @@
-import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, createDrawer, patchHTML, dirtyBridge, runGoal, ago } from './core.js';
+import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, createDrawer, patchHTML, dirtyBridge, runGoal, ago, modelLabel } from './core.js';
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
 import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, draftModel, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
 import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions, defaultTab, nextTab } from './views/instance.js';
@@ -1329,6 +1329,12 @@ document.addEventListener('input', event => {
 document.addEventListener('change', event => {
   const field = event.target.dataset?.field;
   if (field === 'player') { state.thread.player = event.target.value; renderView(); return; }
+  if (field === 'run-model') {
+    const run = threadRun();
+    const model = event.target.value;
+    command(`model:${model}`, control(run, 'model', { model }), `Model set to ${modelLabel(state.data, model)}. Applies from the next decision.`);
+    return;
+  }
   if (field === 'ov-build') {
     overviewFor(state.route.id).buildId = event.target.value;  // A chosen build is checked at once; that is the user's request, not a poll.
     renderView();

@@ -105,7 +105,6 @@ test('the overview lists builds with validation, agents, readiness and the last 
   assert.match(r.agents, /data-action="ov-controls" data-id="a" data-key="ov-ctl-a">View controls</);
   assert.match(r.agents, /data-action="ov-refresh" data-id="a" data-key="ov-refresh-a">Get controls again…</);
   assert.match(r.agents, /href="#\/p\/p\/new\?configuration=a"/);
-  assert.match(r.head, /href="#\/setup\?project=p"/);
   assert.match(r.readiness, /data-field="ov-build"/, 'a build picker when there are several');
   assert.match(r.readiness, /Checking this computer/);
   assert.equal(m.recent.length, 10);
@@ -148,6 +147,17 @@ test('an empty project says it has no project configuration', async () => {
   const r = overviewRegions(overviewModel(data({ configurations: [] }), ov, NOW), ov, NOW);
   assert.match(r.agents, /No project configuration yet\. <a href="#\/setup\?project=p"[^>]*>Add one<\/a> to start instances\./);
   assert.match(r.head, />Add project configuration</);
+});
+
+test('the overview head offers Add project configuration only while no configuration is ready', async () => {
+  const { newOverview, overviewModel, overviewRegions } = await project();
+  const head = configurations => { const ov = newOverview('p'); return overviewRegions(overviewModel(data({ configurations }), ov, NOW), ov, NOW).head; };
+  const retired = { id: 'old', build_id: 'b', project_id: 'p', status: 'retired' };
+  assert.doesNotMatch(head(data().configurations), /ov-add-agent/);
+  assert.doesNotMatch(head([{ id: 'n', build_id: 'b', project_id: 'p' }]), /ov-add-agent/, 'no status counts as ready');
+  assert.doesNotMatch(head([retired, ...data().configurations]), /ov-add-agent/);
+  assert.match(head([]), /href="#\/setup\?project=p"[^>]*data-key="ov-add-agent"/);
+  assert.match(head([retired]), /data-key="ov-add-agent"/);
 });
 
 test('overview markup escapes project, build, agent and goal text', async () => {

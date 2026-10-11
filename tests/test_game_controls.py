@@ -12,7 +12,7 @@ from pydantic import ValidationError
 import ashad.game_controls as controls_module
 from ashad.ai import OpenAI, ProviderError
 from ashad.claude_backend import ClaudeError
-from ashad.game_controls import (CONFIGURATION_DELETED, CONFIGURATION_RETIRED, CONTROLS_FILE_LIMIT, CONTROLS_KEYS,
+from ashad.game_controls import (CONFIGURATION_RETIRED, CONTROLS_FILE_LIMIT, CONTROLS_KEYS,
     RETIRED_REASON, GameControls, controls_file, migrate_configuration_names, migrate_tuned_configurations, run_configuration,
     source_evidence)
 from ashad.prompts import SOURCE_NOTES_LIMIT, TUNING_MANUAL_LIMIT
@@ -224,11 +224,11 @@ async def test_tampered_missing_oversized_or_unknown_file_cannot_launch(setup, d
         controls.validated(record["id"])
 
 
-def test_deleted_or_retired_configuration_is_refused_with_reconfigure_message(setup):
+def test_missing_or_retired_configuration_is_refused(setup):
     store, _, _, controls = setup
     with pytest.raises(ValueError) as caught:
         controls.validated("agent_gone")
-    assert str(caught.value) == CONFIGURATION_DELETED
+    assert str(caught.value) == "Unknown project configuration."
     store.put("configurations", {"id": "agent_old", "build_id": "build-1", "status": "retired"})
     with pytest.raises(ValueError) as caught:
         controls.validated("agent_old")

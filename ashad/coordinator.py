@@ -11,7 +11,7 @@ import shutil
 import time
 import uuid
 from .models import Plan, MODEL, PROVIDERS, provider_of, CONTROLLER_VERSION, ACTIVE_STATES, TERMINAL_QUEST, require_same_provider
-from .game_controls import remove_controls_file, run_configuration
+from .game_controls import remove_controls_file
 from .reports import generate_report
 from .repair_tasks import record_task, publish_pending
 from .store import uid
@@ -139,19 +139,6 @@ class Coordinator:
             files_removed = all([*(self._remove_run_dir(run["id"]) for run in runs),
                                  *(remove_controls_file(self.store, i) for i in config_ids)])
             return {"deleted": project_id, "instances": len(runs), "files_removed": files_removed}
-
-    async def delete_configuration(self, configuration_id):
-        """Forget one project configuration and its game controls file; instances that used it stay in history and are blocked until the project is reconfigured."""
-        from .projects import Projects
-        async with self.lock:
-            self.store.require("configurations", configuration_id)
-            users = [run["id"] for run in self.store.list("runs")
-                     if run_configuration(run)[0] == configuration_id]
-            self._require_deletable(users, "Stop the instance using this project configuration before deleting it.")
-            with self.store.transaction():
-                Projects(self.store).delete_configuration(configuration_id)
-            files_removed = remove_controls_file(self.store, configuration_id)
-            return {"deleted": configuration_id, "instances_blocked": len(users), "files_removed": files_removed}
 
     def _require_deletable(self, run_ids, message):
         targets = set(run_ids)

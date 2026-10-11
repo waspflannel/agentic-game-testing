@@ -780,12 +780,6 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             raise ValueError("Wait for the current operation to finish before deleting.")
         return await coordinator.delete_project(project_id)
 
-    @app.delete("/api/configurations/{configuration_id}")
-    async def delete_configuration(configuration_id: str):
-        if operations_active():
-            raise ValueError("Wait for the current operation to finish before deleting.")
-        return await coordinator.delete_configuration(configuration_id)
-
     @app.delete("/api/{kind}/{record_id}")
     async def delete_catalog(kind: str, record_id: str):
         if kind not in {"builds", "workers", "accounts"}:

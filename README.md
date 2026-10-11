@@ -84,7 +84,7 @@ Interrupted imports from older ASHAD versions block editing and admission until 
 3. Explicitly **Start instance**. ASHAD freshly revalidates authentication, exact supported build pins and actual idle desktop/render/capture/input capabilities, then accepts one host bot in a fresh world. Failed/blocked drafts never auto-launch. Lost replies reconcile the same request; restoring prepared inputs asks first and still requires another Start click.
 4. Follow the live view. Pause, resume, stop, or take over if the bot needs help. Each instance retains its own run ID and evidence.
 
-Configurations from earlier versions are converted once on upgrade to controls files; any that cannot be converted are retired. The conversion is one-way. Deleting a project configuration blocks its instances until the project is reconfigured.
+Configurations from earlier versions are converted once on upgrade to controls files; any that cannot be converted are retired. The conversion is one-way.
 
 **Desktop prerequisites:** Docker Desktop's Linux engine (Windows) or Docker Engine (Linux), and separately supplied supported game files are required. Confirmed preparation may build a content-addressed bundled worker image and create one owner-labelled desktop, persistent volumes and local service/desktop credential references; it never starts gameplay or recreates/adopts unrelated containers. Changed/legacy artifacts lacking exact supported pins require a new registration. Each Prepare request reconciles one desktop per project and build. Provisioning completion alone is not readiness.
 

@@ -314,7 +314,7 @@ def runtime(tmp_path, plan=None):
     seed_run(store)
     run = store.require("runs", "run")
     run["plan"]["players"][0]["goal"] = "Make an apple pie"
-    run["agent_profile"] = {"instructions": context()["game_controls"]}
+    run["configuration"] = {"instructions": context()["game_controls"]}
     run["build"] = {"source_root": str(tmp_path)}
     run["subgoal_plan"] = plan or hierarchy()
     store.put("runs", run)
@@ -388,10 +388,10 @@ async def test_no_action_candidate_returns_to_planner_and_bad_plan_never_execute
 @pytest.mark.asyncio
 async def test_new_instances_are_isolated_and_monitor_cannot_erase_plan(environment, profile):
     store, coordinator, _, _ = environment
-    first = await Instances(coordinator).start(InstanceRequest(agent_id=profile["id"], primary_goal="Make pie", request_id="pie"))
+    first = await Instances(coordinator).start(InstanceRequest(configuration_id=profile["id"], primary_goal="Make pie", request_id="pie"))
     await coordinator.finish(first["id"], "user_stopped")
     first = store.require("runs", first["id"])
-    second = await Instances(coordinator).start(InstanceRequest(agent_id=profile["id"], primary_goal="Harvest wheat", request_id="wheat"))
+    second = await Instances(coordinator).start(InstanceRequest(configuration_id=profile["id"], primary_goal="Harvest wheat", request_id="wheat"))
     assert first["subgoal_plan"]["primary_goal"] == "Make pie"
     assert second["subgoal_plan"]["primary_goal"] == "Harvest wheat"
     stale = copy.deepcopy(first)
@@ -405,14 +405,14 @@ async def test_new_instances_are_isolated_and_monitor_cannot_erase_plan(environm
         coordinator.ticks.pop(first["id"])
     assert store.require("runs", first["id"])["subgoal_plan"]["revision"] == 4
     assert store.require("runs", second["id"])["subgoal_plan"]["revision"] == 0
-    assert "subgoal_plan" not in first["agent_profile"] and first["plan"]["success_criteria"]["predicate"] == "manual"
+    assert "subgoal_plan" not in first["configuration"] and first["plan"]["success_criteria"]["predicate"] == "manual"
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("pin_fails", [False, True])
 async def test_manual_flag_merges_evidence_without_rolling_back_live_planner(environment, profile, pin_fails):
     store, coordinator, _, _ = environment
-    run = await Instances(coordinator).start(InstanceRequest(agent_id=profile["id"], primary_goal="Make pie", request_id="flag-plan"))
+    run = await Instances(coordinator).start(InstanceRequest(configuration_id=profile["id"], primary_goal="Make pie", request_id="flag-plan"))
     await coordinator.admit(run)
     async def pin(worker_id, method, path, body):
         assert path == "/pin"

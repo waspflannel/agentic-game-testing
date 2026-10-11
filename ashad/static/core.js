@@ -71,6 +71,8 @@ export function parseRoute(hash) {
   let parts;
   try { parts = path.split('/').filter(Boolean).map(decodeURIComponent); } catch { return { name: 'redirect', to: '#/' }; }
   const query = Object.fromEntries(new URLSearchParams(search));
+  if ('agent' in query && !('configuration' in query)) query.configuration = query.agent;  // Old bookmarks.
+  delete query.agent;
   const [head, id, sub] = parts;
   const n = parts.length;
   if (!n) return { name: 'home', query };
@@ -80,14 +82,19 @@ export function parseRoute(hash) {
   if (head === 'setup' && n === 1) return { name: 'setup', query };
   if (head === 'usage' && n === 1) return { name: 'usage', query };
   if (head === 'settings' && n <= 2) return { name: 'settings', section: id || 'account', query };
-  if (head === 'new' && n === 2) return { name: 'legacy-new', agent: id };
+  if (head === 'new' && n === 2) return { name: 'legacy-new', configuration: id };
   return { name: 'redirect', to: '#/' };  // Includes legacy #/sessions and #/agents.
 }
 
-export function legacyNewTarget(agentId, data) {
-  const agent = (data?.agents || []).find(a => a.id === agentId);
-  const project = agent && (data.projects || []).find(p => p.id === agent.project_id);
-  return project ? href('p', project.id, 'new') + '?agent=' + encodeURIComponent(agent.id) : '#/';
+export function legacyNewTarget(configurationId, data) {
+  const configuration = (data?.configurations || []).find(a => a.id === configurationId);
+  const project = configuration && (data.projects || []).find(p => p.id === configuration.project_id);
+  return project ? href('p', project.id, 'new') + '?configuration=' + encodeURIComponent(configuration.id) : '#/';
+}
+
+// The project configuration id of a stored run. Old runs keep agent_id, on the run or on its plan.
+export function runConfigurationId(run) {
+  return run?.configuration_id || run?.agent_id || run?.plan?.configuration_id || run?.plan?.agent_id;
 }
 
 export function ago(seconds, now = Date.now() / 1000) {

@@ -23,7 +23,7 @@ from .credentials import Credentials
 from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, AI_API, ACTIVE_STATES, RecalculateGoalsRequest
 from .repository import Repository, sha256_file
 from .reports import generate_report
-from .game_controls import BUSY, MODEL_NOT_ALLOWED, SIGN_IN_WAIT, GameControls, migrate_tuned_configurations
+from .game_controls import BUSY, MODEL_NOT_ALLOWED, SIGN_IN_WAIT, GameControls, migrate_configuration_names, migrate_tuned_configurations
 from .projects import Projects
 from .workspace_environment import inspect_fresh_environment, prepare_environment, validate_build
 from .instances import Instances, InstanceRequest, default_model
@@ -90,6 +90,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
                   "api": AI_API, "auth_method": "chatgpt", "billing": "subscription",
                   "message": "Sign in with ChatGPT in AI Settings to connect your Codex subscription."}, "ai_status")
     ai = OpenAI(store, credentials, backend=ai_backend, claude_backend=claude_backend)
+    migrate_configuration_names(store)
     migrate_tuned_configurations(store)
     controls = GameControls(store, ai)
     coordinator = Coordinator(store, credentials, ai)
@@ -173,7 +174,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             return JSONResponse({"detail": "The controller is draining; wait for shutdown or retry afterward."}, status_code=409)
         operation = asyncio.current_task() if mutation else None
         if operation:
-            app.state.operations[operation] = {"kind": "controls" if request.url.path == "/api/agents/controls" else "mutation",
+            app.state.operations[operation] = {"kind": "controls" if request.url.path == "/api/configurations/controls" else "mutation",
                                                "path": request.url.path}
         try:
             response = await call_next(request)
@@ -257,7 +258,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         # In particular an import/restart must validate this backend's own home.
         ai_status = {**ai.status, "api": AI_API}
         model_options = [dict(o) for o in MODEL_OPTIONS]
-        return {"settings": settings, "ai": ai_status, "ai_claude": ai.claude_status, "model_options": model_options, "default_model": default_model(ai), "builds": builds, "workers": workers, "accounts": store.list("accounts"), "agents": store.list("agents"), "runs": store.list("runs"), "usage_count": store.count("usage"), "leases": store.leases(), "projects": store.list("projects"),
+        return {"settings": settings, "ai": ai_status, "ai_claude": ai.claude_status, "model_options": model_options, "default_model": default_model(ai), "builds": builds, "workers": workers, "accounts": store.list("accounts"), "configurations": store.list("configurations"), "runs": store.list("runs"), "usage_count": store.count("usage"), "leases": store.leases(), "projects": store.list("projects"),
                 "instance_slot": instance_slot(),
                 "workspace_import": {"interrupted": coordinator.import_interrupted()}}
 
@@ -271,10 +272,10 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
     async def project_detail(project_id: str):
         return {**store.require("projects", project_id),
                 **{kind: [record for record in store.list(kind) if record.get("project_id") == project_id]
-                   for kind in ("builds", "agents", "runs")}}
+                   for kind in ("builds", "configurations", "runs")}}
 
     @app.get("/api/projects/{project_id}/readiness")
-    async def project_readiness(project_id: str, build_id: str, agent_id: str | None = None, model: str | None = None):
+    async def project_readiness(project_id: str, build_id: str, configuration_id: str | None = None, model: str | None = None):
         async def provider_check(model):
             try:
                 status = await ai.validate(model)
@@ -285,17 +286,17 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
 
         Projects(store).project_for_build(build_id, project_id)
         build = store.require("builds", build_id)
-        if agent_id:
-            Projects(store).project_for_agent(agent_id, project_id)
-            selected = store.require("agents", agent_id)
+        if configuration_id:
+            Projects(store).project_for_configuration(configuration_id, project_id)
+            selected = store.require("configurations", configuration_id)
             if selected["build_id"] != build_id:
                 raise ValueError("Saved configuration belongs to a different build")
         build_validation = {"ready": False, "reason": "Build has not been validated"}
         try:
             await asyncio.to_thread(validate_build, build)
             Repository(build)  # Play reads the pinned source snapshot; validate_build does not check it.
-            if agent_id:
-                await asyncio.to_thread(controls.validated, agent_id)
+            if configuration_id:
+                await asyncio.to_thread(controls.validated, configuration_id)
             build_validation = {"ready": True, "reason": "Exact supported manifest, engine and artifact pins verified"}
         except (OSError, ValueError, KeyError) as exc:
             build_validation["reason"] = str(exc)
@@ -339,7 +340,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             finally:
                 coordinator.draining = False
 
-    @app.post("/api/agents/controls")
+    @app.post("/api/configurations/controls")
     async def get_controls(body: dict):
         if "model" in body:
             raise ValueError(MODEL_NOT_ALLOWED)
@@ -366,11 +367,11 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             app.state.controls_task = None
             app.state.controls_request_id = None
 
-    @app.get("/api/agents/controls/{request_id}")
+    @app.get("/api/configurations/controls/{request_id}")
     async def controls_request(request_id: str):
         saved = store.command("tuning", request_id)
         if saved:
-            return {"status": "completed", "request_id": request_id, "agent": store.require("agents", saved["agent_id"])}
+            return {"status": "completed", "request_id": request_id, "configuration": store.require("configurations", saved["configuration_id"])}
         running = bool(app.state.controls_task and app.state.controls_request_id == request_id)
         if not running:
             return {"status": "unknown", "request_id": request_id}
@@ -385,9 +386,9 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         return {**progress, "model_calls": len(rows), "rejected_replies": sum(status != "completed" for status, _ in rows),
                 "last_call_at": max((at for _, at in rows), default=None)}
 
-    @app.get("/api/agents/{agent_id}/controls")
-    async def agent_controls(agent_id: str):
-        return (await asyncio.to_thread(controls.validated, agent_id))[1]
+    @app.get("/api/configurations/{configuration_id}/controls")
+    async def configuration_controls(configuration_id: str):
+        return (await asyncio.to_thread(controls.validated, configuration_id))[1]
 
     @app.get("/api/instances/requests/{request_id}")
     async def instance_request(request_id: str):
@@ -402,7 +403,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         status = ("in_progress" if app.state.instance_requests.get(request_id) else
                   "prepared" if prepared else "unknown")
         original = prepared.get("request") if prepared else None
-        original = {key: original[key] for key in ("agent_id", "project_id", "primary_goal", "transport", "request_id") if key in original} if isinstance(original, dict) else None
+        original = {key: original[key] for key in ("configuration_id", "project_id", "primary_goal", "transport", "request_id") if key in original} if isinstance(original, dict) else None
         return {"status": status, "request_id": request_id, "request": original}
 
     @app.post("/api/instances")
@@ -777,11 +778,11 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             raise ValueError("Wait for the current operation to finish before deleting.")
         return await coordinator.delete_project(project_id)
 
-    @app.delete("/api/agents/{agent_id}")
-    async def delete_agent(agent_id: str):
+    @app.delete("/api/configurations/{configuration_id}")
+    async def delete_configuration(configuration_id: str):
         if operations_active():
             raise ValueError("Wait for the current operation to finish before deleting.")
-        return await coordinator.delete_agent(agent_id)
+        return await coordinator.delete_configuration(configuration_id)
 
     @app.delete("/api/{kind}/{record_id}")
     async def delete_catalog(kind: str, record_id: str):

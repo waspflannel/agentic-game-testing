@@ -53,23 +53,23 @@ def test_membership_derived_from_build_and_rejects_cross_project_or_absent_recor
     store, projects = workspace
     first, second = projects.create("One", "one"), projects.create("Two", "two")
     store.put("builds", {"id": "build-a", "project_id": first["id"]})
-    store.put("agents", {"id": "agent-a", "build_id": "build-a"})
-    assert projects.project_for_agent("agent-a") == first["id"]
+    store.put("configurations", {"id": "agent-a", "build_id": "build-a"})
+    assert projects.project_for_configuration("agent-a") == first["id"]
     assert projects.project_for_build("build-a", first["id"]) == first["id"]
     with pytest.raises(ValueError, match="selected project"):
-        projects.project_for_agent("agent-a", second["id"])
-    store.put("agents", {"id": "agent-a", "build_id": "build-a", "project_id": second["id"]})
+        projects.project_for_configuration("agent-a", second["id"])
+    store.put("configurations", {"id": "agent-a", "build_id": "build-a", "project_id": second["id"]})
     with pytest.raises(ValueError, match="different projects"):
-        projects.project_for_agent("agent-a")
+        projects.project_for_configuration("agent-a")
     with pytest.raises(ValueError, match="Unknown builds"):
         projects.project_for_build("absent")
     store.put("builds", {"id": "legacy"})
     with pytest.raises(ValueError, match="no project"):
         projects.project_for_build("legacy")
     assert projects.project_for_build("legacy", allow_unassigned=True) is None
-    store.put("agents", {"id": "legacy-agent", "build_id": "legacy", "project_id": first["id"]})
+    store.put("configurations", {"id": "legacy-agent", "build_id": "legacy", "project_id": first["id"]})
     with pytest.raises(ValueError, match="different projects"):
-        projects.project_for_agent("legacy-agent", allow_unassigned=True)
+        projects.project_for_configuration("legacy-agent", allow_unassigned=True)
 
 
 @pytest.mark.parametrize("field,value", [("artifact_sha256", "changed"), ("source_revision", "rev-2"),
@@ -93,7 +93,7 @@ def test_registration_rejects_cross_project_references_and_reassignment(workspac
     with pytest.raises(ValueError, match="Select a project"):
         projects.register_build(build)
     store.put("builds", build)
-    store.put("agents", {"id": "agent-a", "build_id": "build-a", "project_id": second["id"]})
+    store.put("configurations", {"id": "agent-a", "build_id": "build-a", "project_id": second["id"]})
     with pytest.raises(ValueError, match="Referenced project configuration"):
         projects.register_build(build, first["id"])
     projects.register_build(build, second["id"])

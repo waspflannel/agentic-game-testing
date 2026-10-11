@@ -84,12 +84,12 @@ def test_missing_or_changed_build_never_probes_or_claims_ready(workspace, monkey
 
 def test_selected_configuration_membership_is_checked(workspace, monkeypatch):
     app, build = workspace
-    app.state.store.put("agents", {"id": "agent", "build_id": "build", "project_id": "project", "status": "ready", "controls_version": 1})
-    monkeypatch.setattr(app.state.controls, "validated", lambda key: (app.state.store.require("agents", key), {}))
+    app.state.store.put("configurations", {"id": "agent", "build_id": "build", "project_id": "project", "status": "ready", "controls_version": 1})
+    monkeypatch.setattr(app.state.controls, "validated", lambda key: (app.state.store.require("configurations", key), {}))
     with TestClient(app) as client:
-        assert client.get("/api/projects/project/readiness?build_id=build&agent_id=agent").status_code == 200
+        assert client.get("/api/projects/project/readiness?build_id=build&configuration_id=agent").status_code == 200
         app.state.store.put("projects", {"id": "other", "name": "Same game"})
-        assert client.get("/api/projects/other/readiness?build_id=build&agent_id=agent").status_code == 422
+        assert client.get("/api/projects/other/readiness?build_id=build&configuration_id=agent").status_code == 422
         assert not app.state.store.list("runs")
 
 

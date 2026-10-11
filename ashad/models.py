@@ -128,7 +128,7 @@ class EvidencePolicy(Contract):
 
 class Plan(Contract):
     # Retain the historical run contract for recovery; new instances use one fresh host.
-    agent_id: str | None = None
+    configuration_id: str | None = None
     model: str = MODEL
     play_mode: Literal["structured"] = "structured"
     guidance: Literal["rules", "guided"] = "guided"
@@ -156,6 +156,17 @@ class Plan(Contract):
         # Existing saved drafts remain editable; effort belongs to the provider.
         if isinstance(value, dict) and "reasoning_effort" in value:
             return {key: item for key, item in value.items() if key != "reasoning_effort"}
+        return value
+
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_configuration_id(cls, value):
+        # Stored scenario plans predate configuration_id.
+        if isinstance(value, dict) and "agent_id" in value:
+            if "configuration_id" in value:
+                raise ValueError("Use configuration_id, not agent_id.")
+            value = dict(value)
+            value["configuration_id"] = value.pop("agent_id")
         return value
 
     @model_validator(mode="after")

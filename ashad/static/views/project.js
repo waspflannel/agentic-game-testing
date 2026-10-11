@@ -1,5 +1,5 @@
 // Project overview (spec §8.3). Model and markup are pure; app.js owns the DOM, the chooser and I/O.
-import { esc, icon, href, ago, since, newOp, runGoal, runTime, runStatus } from '../core.js';
+import { esc, icon, href, ago, since, newOp, runGoal, runTime, runStatus, runConfigurationId } from '../core.js';
 import { readinessHTML, projectBuilds, controlsProgressHTML } from './setup.js';
 
 const enc = encodeURIComponent;
@@ -24,13 +24,13 @@ export function overviewModel(data, ov, now = Date.now() / 1000) {
   const builds = projectBuilds(data, ov.projectId);
   const build = builds.find(b => b.id === ov.buildId) || builds[0] || null;
   const buildName = id => builds.find(b => b.id === id)?.name || id;
-  const agents = (data?.agents || []).filter(a => (a.project_id || builds.find(b => b.id === a.build_id)?.project_id) === ov.projectId)
+  const agents = (data?.configurations || []).filter(a => (a.project_id || builds.find(b => b.id === a.build_id)?.project_id) === ov.projectId)
     .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
   const owners = new Map((data?.instance_slot?.owners || []).map(o => [o.run_id, o]));
   const runs = (data?.runs || []).filter(r => r.project_id === ov.projectId).sort((a, b) => (runTime(b) || 0) - (runTime(a) || 0));
   return {
     busy: runs.some(r => owners.has(r.id)),
-    agentBusy: id => runs.some(r => owners.has(r.id) && [r.agent_id, r.plan?.agent_id].includes(id)),
+    agentBusy: id => runs.some(r => owners.has(r.id) && runConfigurationId(r) === id),
     project, builds, build, agents, total: runs.length,
     recent: runs.slice(0, RECENT).map(r => ({ id: r.id, goal: runGoal(r), age: ago(runTime(r), now), status: runStatus(r, owners.get(r.id)), state: r.state, reason: r.ending_reason, duration: duration(r) })),
     buildName,
@@ -67,7 +67,7 @@ export function overviewRegions(m, ov, now = Date.now() / 1000) {
 
   const agents = m.agents.length ? `<ul class="list">${m.agents.map(a => {
     const title = `<span class="list-title">${esc(a.name || a.id)}</span>`;
-    const del = blocked => `<button type="button" class="btn btn-ghost btn-sm" data-action="ov-delete-agent" data-id="${esc(a.id)}" data-key="ov-delagent-${esc(a.id)}"${blocked ? ` aria-disabled="true" title="${blocked}"` : ''}>Delete</button>`;
+    const del = blocked => `<button type="button" class="btn btn-ghost btn-sm" data-action="ov-delete-configuration" data-id="${esc(a.id)}" data-key="ov-delconfiguration-${esc(a.id)}"${blocked ? ` aria-disabled="true" title="${blocked}"` : ''}>Delete</button>`;
     if (a.status === 'retired') {
       return `<li class="list-row"><div class="list-main">${title}${note('error', `Retired: ${a.retired_reason || 'reason not recorded'}`)}</div>`
         + `<div class="list-actions">${del(m.agentBusy(a.id) ? 'Stop the instance using this project configuration before deleting it' : '')}</div></li>`;
@@ -82,7 +82,7 @@ export function overviewRegions(m, ov, now = Date.now() / 1000) {
       + `<span class="check-detail">build ${esc(m.buildName(a.build_id))} · controls gathered ${a.created_at ? esc(since(a.created_at, now)) : 'at an unrecorded time'}</span>${status}</div>`
       + `<div class="list-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="ov-controls" data-id="${esc(a.id)}" data-key="ov-ctl-${esc(a.id)}">View controls</button>`
       + `<button type="button" class="btn btn-ghost btn-sm" data-action="ov-refresh" data-id="${esc(a.id)}" data-key="ov-refresh-${esc(a.id)}"${busy ? ' aria-busy="true" aria-disabled="true"' : ''}>Get controls again…</button>`
-      + `<a class="btn btn-ghost btn-sm" href="${href('p', pid, 'new')}?agent=${enc(a.id)}" data-key="ov-run-${esc(a.id)}">New instance</a>`
+      + `<a class="btn btn-ghost btn-sm" href="${href('p', pid, 'new')}?configuration=${enc(a.id)}" data-key="ov-run-${esc(a.id)}">New instance</a>`
       + `${del(blocked)}</div></li>`;
   }).join('')}</ul>` : `<p class="hint">No project configuration yet. <a href="#/setup?project=${enc(pid)}" data-key="ov-setup">Add one</a> to start instances.</p>`;
 

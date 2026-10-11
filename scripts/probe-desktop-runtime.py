@@ -70,7 +70,7 @@ async def check_app(root):
                 response = await client.get(url)
                 assert response.status_code == 200 and response.content, (url, response.status_code)
             bootstrap = (await client.get("/api/bootstrap")).json()
-            assert all(bootstrap[key] == [] for key in ("runs", "workers", "accounts", "agents", "builds")) and bootstrap["usage_count"] == 0
+            assert all(bootstrap[key] == [] for key in ("runs", "workers", "accounts", "configurations", "builds")) and bootstrap["usage_count"] == 0
     # Lifespan closed SQLite: data can be reopened after drain.
     from ashad.store import Store
     store = Store(root / "controller")

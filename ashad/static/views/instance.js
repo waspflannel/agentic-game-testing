@@ -1,5 +1,5 @@
 // Instance thread: header, tabs, camera and control bar (spec §8.5 A–C, §9). Markup and state are pure; app.js owns I/O.
-import { esc, icon, href, newId, runGoal, humanize, badge, modelLabel, providerModels, modelMenuHTML } from '../core.js';
+import { esc, icon, href, newId, runGoal, humanize, badge, modelLabel, providerModels, modelMenuHTML, runConfigurationId } from '../core.js';
 
 const enc = encodeURIComponent;
 const LIVE_STATES = new Set(['Starting', 'Running', 'Paused', 'Investigating', 'Stopping']);  // /live serves only these.
@@ -174,10 +174,10 @@ const MODEL_CHANGE_STATES = new Set(['Queued', 'Starting', 'Running', 'Paused', 
 // else { retired, replacement }: whether the configuration still exists (retired) and the newest ready configuration
 // of the same project, or null.
 export function blockedReplacement(run, data) {
-  if (!run?.agent_id || isActiveRun(run)) return undefined;
-  const agents = data?.agents || [];
+  if (!runConfigurationId(run) || isActiveRun(run)) return undefined;
+  const agents = data?.configurations || [];
   const ready = a => (a.status ?? 'ready') === 'ready';
-  const current = agents.find(a => a.id === run.agent_id);
+  const current = agents.find(a => a.id === runConfigurationId(run));
   if (current && ready(current)) return undefined;
   const replacement = agents.filter(a => a.project_id === run.project_id && ready(a))
     .sort((a, b) => (b.created_at || 0) - (a.created_at || 0))[0] || null;
@@ -190,7 +190,7 @@ function blockedBannerHTML(run, data) {
   const r = blocked.replacement;
   const reason = blocked.retired ? "This instance's project configuration is retired. " : "This instance's project configuration was deleted. ";
   const text = r
-    ? `${reason}<a href="${href('p', run.project_id, 'new')}?agent=${enc(r.id)}&from=${enc(run.id)}" data-key="t-unblock">Start again with ${esc(r.name || r.id)}</a>`
+    ? `${reason}<a href="${href('p', run.project_id, 'new')}?configuration=${enc(r.id)}&from=${enc(run.id)}" data-key="t-unblock">Start again with ${esc(r.name || r.id)}</a>`
     : `${reason}<a href="#/setup?project=${enc(run.project_id)}&step=4" data-key="t-reconfigure">Get game controls again</a> to reconfigure the project.`;
   return `<div class="thread-banner">${icon('alert')}<div><strong>Blocked.</strong> ${text}</div></div>`;
 }
@@ -198,7 +198,7 @@ function blockedBannerHTML(run, data) {
 export function threadRegions(run, ctx) {
   const { status, owner, data, ui, pending, error, cameraStatus, player, tab } = ctx;
   const goal = runGoal(run);
-  const agent = (data?.agents || []).find(a => a.id === run.agent_id) || run.agent_profile;
+  const agent = (data?.configurations || []).find(a => a.id === runConfigurationId(run)) || run.configuration || run.agent_profile;
   const model = run.model && modelLabel(data, run.model);
   const build = run.build?.name || run.plan?.build_id;
   const transport = { enet: 'ENet', steam: 'Steam' }[run.plan?.transport?.mode];

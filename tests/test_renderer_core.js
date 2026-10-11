@@ -15,19 +15,21 @@ test('esc neutralises markup and attribute breakouts in untrusted text', async (
 
 test('router maps current routes and sends legacy and unknown links home', async () => {
   const { parseRoute } = await load();
-  assert.deepEqual(parseRoute('#/p/game%201/new?agent=a1'), { name: 'composer', id: 'game 1', query: { agent: 'a1' } });
+  assert.deepEqual(parseRoute('#/p/game%201/new?agent=a1'), { name: 'composer', id: 'game 1', query: { configuration: 'a1' } });
+  assert.deepEqual(parseRoute('#/p/g/new?configuration=a1'), { name: 'composer', id: 'g', query: { configuration: 'a1' } });
+  assert.deepEqual(parseRoute('#/p/g/new?agent=old&configuration=a1').query, { configuration: 'a1' });
   assert.equal(parseRoute('#/i/run_1').name, 'instance');
   assert.equal(parseRoute('').name, 'home');
   assert.equal(parseRoute('#/settings').section, 'account');
   assert.equal(parseRoute('#/settings/desktops').section, 'desktops');
   for (const legacy of ['#/sessions', '#/agents', '#/nope/x/y', '#/p/%E0%A4%A']) assert.deepEqual(parseRoute(legacy), { name: 'redirect', to: '#/' });
-  assert.deepEqual(parseRoute('#/new/a2'), { name: 'legacy-new', agent: 'a2' });
+  assert.deepEqual(parseRoute('#/new/a2'), { name: 'legacy-new', configuration: 'a2' });
 });
 
-test('legacy new-instance link opens that agent\'s project composer, or home without a project', async () => {
+test('legacy new-instance link opens that configuration\'s project composer, or home without a project', async () => {
   const { legacyNewTarget } = await load();
-  const data = { projects: [{ id: 'p' }], agents: [{ id: 'a2', project_id: 'p' }, { id: 'loose', project_id: null }] };
-  assert.equal(legacyNewTarget('a2', data), '#/p/p/new?agent=a2');
+  const data = { projects: [{ id: 'p' }], configurations: [{ id: 'a2', project_id: 'p' }, { id: 'loose', project_id: null }] };
+  assert.equal(legacyNewTarget('a2', data), '#/p/p/new?configuration=a2');
   assert.equal(legacyNewTarget('loose', data), '#/');
   assert.equal(legacyNewTarget('missing', data), '#/');
 });
@@ -163,4 +165,14 @@ test('nextOptionIndex clamps arrows and jumps with Home/End', async () => {
   assert.equal(nextOptionIndex('Home', 2, 4), 0);
   assert.equal(nextOptionIndex('End', 0, 4), 3);
   assert.equal(nextOptionIndex('Tab', 1, 4), -1);
+});
+
+test('runConfigurationId reads the new key, then legacy run and plan keys', async () => {
+  const { runConfigurationId } = await load();
+  assert.equal(runConfigurationId({ configuration_id: 'c', agent_id: 'a', plan: { configuration_id: 'pc', agent_id: 'pa' } }), 'c');
+  assert.equal(runConfigurationId({ agent_id: 'a', plan: { configuration_id: 'pc' } }), 'a');
+  assert.equal(runConfigurationId({ plan: { configuration_id: 'pc', agent_id: 'pa' } }), 'pc');
+  assert.equal(runConfigurationId({ plan: { agent_id: 'pa' } }), 'pa');
+  assert.equal(runConfigurationId({}), undefined);
+  assert.equal(runConfigurationId(null), undefined);
 });

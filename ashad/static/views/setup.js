@@ -59,11 +59,11 @@ export function discardSetup(s) {
 // One run at a time: "already being gathered" waits and resends the same request until the user stops waiting.
 // A lost reply is recovered through controls/<request_id> (completed | in_progress | unknown); it is never resent blind.
 export async function getControls(op, payload, api, wait = ms => new Promise(resolve => setTimeout(resolve, ms))) {
-  const send = id => api('/api/agents/controls', { method: 'POST', body: { ...payload, request_id: id } });
+  const send = id => api('/api/configurations/controls', { method: 'POST', body: { ...payload, request_id: id } });
   const recover = async id => {
     for (;;) {
-      const r = await api(`/api/agents/controls/${enc(id)}`);
-      if (r?.status === 'completed' && r.agent) return { status: 'done', value: r.agent, error: '' };
+      const r = await api(`/api/configurations/controls/${enc(id)}`);
+      if (r?.status === 'completed' && r.configuration) return { status: 'done', value: r.configuration, error: '' };
       if (r?.status !== 'in_progress') return { status: 'error', sent: null, error: 'Getting game controls did not finish and nothing was saved. Retry sends the same request.' };
       op.status = 'busy';
       await wait(3000);
@@ -101,7 +101,7 @@ export async function registerBuild(form, projectId, kind, { bridge, api, onBusy
   return build;
 }
 
-// Live progress from GET /api/agents/controls/<id> (op.progress), shared with the overview's refresh row.
+// Live progress from GET /api/configurations/controls/<id> (op.progress), shared with the overview's refresh row.
 // Batches and the final call are counted steps; a long silence is called out so a stall doesn't look like work.
 export const STALL_SECONDS = 180;
 export function controlsProgressHTML(op, now) {
@@ -242,7 +242,7 @@ function navHTML(s, m) {
     const off4 = !m.signedIn || !s.agentName.trim();
     primary = `<button type="button" class="btn btn-primary" data-action="setup-controls" data-key="sn-controls"${off4 ? ' aria-disabled="true"' : ''}>${icon('play')}${s.controls.status === 'idle' ? 'Get game controls' : 'Retry'}</button>`;
   } else if (m.step === 4 && s.agent) {
-    primary = `<a class="btn btn-primary" href="${href('p', s.projectId, 'new')}?agent=${enc(s.agent?.id || '')}" data-action="setup-finish" data-key="sn-start">${icon('arrow-up')}Start an instance</a>`;
+    primary = `<a class="btn btn-primary" href="${href('p', s.projectId, 'new')}?configuration=${enc(s.agent?.id || '')}" data-action="setup-finish" data-key="sn-start">${icon('arrow-up')}Start an instance</a>`;
   } else {
     primary = `<button type="button" class="btn btn-primary" data-action="setup-step" data-step="${m.step + 1}" data-key="sn-next"${off}>Continue</button>`;
   }

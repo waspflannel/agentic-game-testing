@@ -7,7 +7,7 @@ const { pathToFileURL } = require('node:url');
 const load = () => import(pathToFileURL(path.join(__dirname, '../ashad/static/views/instance.js')).href);
 
 const run = (state, extra = {}) => ({
-  id: 'r1', state, model: 'gpt-6-astra', agent_id: 'a',
+  id: 'r1', state, model: 'gpt-6-astra', configuration_id: 'a',
   plan: { primary_goal: 'Craft a pickaxe', players: [{ id: 'p1', name: 'Player 1' }], transport: { mode: 'enet' } },
   players: { p1: { id: 'p1', epoch: 'e1', launched: state !== 'Ended' && state !== 'Queued' } },
   subgoal_plan: { player_id: 'p1' }, ...extra,
@@ -151,7 +151,7 @@ test('thread markup escapes goals and pause reasons and keeps Stop right-most', 
   const evil = '<img src=x onerror=alert(1)>';
   const r = run('Investigating', { plan: { ...run('x').plan, primary_goal: evil }, pause: { reason: evil, recovery: evil } });
   const status = instanceState(r);
-  const regions = threadRegions(r, { status, data: { agents: [{ id: 'a', name: evil }] }, ui: {}, pending: new Set(), error: evil, cameraStatus: 'offline', player: 'p1', tab: 'bot' });
+  const regions = threadRegions(r, { status, data: { configurations: [{ id: 'a', name: evil }] }, ui: {}, pending: new Set(), error: evil, cameraStatus: 'offline', player: 'p1', tab: 'bot' });
   const html = Object.values(regions).join('');
   assert.doesNotMatch(html, /<img/);
   assert.match(regions.banner, /&lt;img/);
@@ -247,21 +247,29 @@ test('header shows a same-provider model menu for a live run and a plain chip fo
 
 test('an ended run whose configuration was deleted shows a Blocked banner linking to the newest ready configuration', async () => {
   const { instanceState, threadRegions, blockedReplacement } = await load();
-  const r = run('Ended', { agent_id: 'gone', project_id: 'p', id: 'r 1' });
-  const data = { agents: [
+  const r = run('Ended', { configuration_id: 'gone', project_id: 'p', id: 'r 1' });
+  const data = { configurations: [
     { id: 'old', name: 'Older', project_id: 'p', status: 'ready', created_at: 1 }, { id: 'new', name: 'Newer <b>', project_id: 'p', status: 'ready', created_at: 5 },
     { id: 'ret', name: 'Retired', project_id: 'p', status: 'retired', created_at: 9 }, { id: 'other', name: 'Other', project_id: 'q', status: 'ready', created_at: 9 },
   ] };
   assert.equal(blockedReplacement(r, data).replacement.id, 'new');
   const banner = threadRegions(r, { status: instanceState(r), data, ui: {}, pending: new Set(), cameraStatus: 'offline', player: 'p1', tab: 'actions' }).banner;
   assert.match(banner, /<strong>Blocked\.<\/strong> This instance's project configuration was deleted\./);
-  assert.match(banner, /href="#\/p\/p\/new\?agent=new&from=r%201" data-key="t-unblock">Start again with Newer &lt;b&gt;</);
+  assert.match(banner, /href="#\/p\/p\/new\?configuration=new&from=r%201" data-key="t-unblock">Start again with Newer &lt;b&gt;</);
+});
+
+test('blockedReplacement blocks a legacy run with only agent_id and a new run with configuration_id', async () => {
+  const { blockedReplacement } = await load();
+  const data = { configurations: [{ id: 'new', project_id: 'p', status: 'ready', created_at: 5 }] };
+  const legacy = run('Ended', { configuration_id: undefined, agent_id: 'gone', project_id: 'p' });
+  const current = run('Ended', { configuration_id: 'gone', project_id: 'p' });
+  for (const r of [legacy, current]) assert.deepEqual(blockedReplacement(r, data), { retired: false, replacement: data.configurations[0] });
 });
 
 test('a blocked run with no replacement links to Get game controls again', async () => {
   const { instanceState, threadRegions, blockedReplacement } = await load();
-  const r = run('Ended', { agent_id: 'gone', project_id: 'p' });
-  const data = { agents: [{ id: 'ret', project_id: 'p', status: 'retired' }] };
+  const r = run('Ended', { configuration_id: 'gone', project_id: 'p' });
+  const data = { configurations: [{ id: 'ret', project_id: 'p', status: 'retired' }] };
   assert.deepEqual(blockedReplacement(r, data), { retired: false, replacement: null });
   const banner = threadRegions(r, { status: instanceState(r), data, ui: {}, pending: new Set(), cameraStatus: 'offline', player: 'p1', tab: 'actions' }).banner;
   assert.match(banner, /href="#\/setup\?project=p&step=4" data-key="t-reconfigure">Get game controls again<\/a> to reconfigure the project\./);
@@ -269,18 +277,18 @@ test('a blocked run with no replacement links to Get game controls again', async
 
 test('a run with a ready configuration, or none recorded, is not blocked', async () => {
   const { instanceState, threadRegions, blockedReplacement } = await load();
-  const data = { agents: [{ id: 'a', project_id: 'p' }] };  // No status field means ready.
+  const data = { configurations: [{ id: 'a', project_id: 'p' }] };  // No status field means ready.
   assert.equal(blockedReplacement(run('Ended', { project_id: 'p' }), data), undefined);
-  assert.equal(blockedReplacement(run('Ended', { agent_id: undefined }), data), undefined);
+  assert.equal(blockedReplacement(run('Ended', { configuration_id: undefined }), data), undefined);
   const r = run('Ended', { project_id: 'p' });
   assert.equal(threadRegions(r, { status: instanceState(r), data, ui: {}, pending: new Set(), cameraStatus: 'offline', player: 'p1', tab: 'actions' }).banner, '');
 });
 
 test('a retired configuration says retired, and a live run is never shown as blocked', async () => {
   const { instanceState, threadRegions, blockedReplacement } = await load();
-  const data = { agents: [{ id: 'ret', project_id: 'p', status: 'retired' }, { id: 'new', name: 'Newer', project_id: 'p', status: 'ready', created_at: 5 }] };
-  const ended = run('Ended', { agent_id: 'ret', project_id: 'p' });
+  const data = { configurations: [{ id: 'ret', project_id: 'p', status: 'retired' }, { id: 'new', name: 'Newer', project_id: 'p', status: 'ready', created_at: 5 }] };
+  const ended = run('Ended', { configuration_id: 'ret', project_id: 'p' });
   const banner = threadRegions(ended, { status: instanceState(ended), data, ui: {}, pending: new Set(), cameraStatus: 'offline', player: 'p1', tab: 'actions' }).banner;
   assert.match(banner, /<strong>Blocked\.<\/strong> This instance's project configuration is retired\. <a [^>]*>Start again with Newer</);
-  assert.equal(blockedReplacement(run('Paused', { agent_id: 'ret', project_id: 'p' }), data), undefined);
+  assert.equal(blockedReplacement(run('Paused', { configuration_id: 'ret', project_id: 'p' }), data), undefined);
 });

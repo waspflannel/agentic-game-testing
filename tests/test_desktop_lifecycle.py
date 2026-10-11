@@ -136,12 +136,12 @@ async def test_get_controls_requires_explicit_cancellation_and_keeps_honest_usag
     quit, state, server = lifecycle(environment)
     task = asyncio.create_task(coord.ai._request("fixture", None, "tuning", None, "sonnet", 7))
     state.controls_task = task
-    state.operations[task] = {"kind": "controls", "path": "/api/agents/controls"}
+    state.operations[task] = {"kind": "controls", "path": "/api/configurations/controls"}
     await started.wait()
     assert not (await quit.shutdown())["drained"] and not task.done()
     assert await quit.shutdown(cancel_operations=True) == {"drained": True}
     assert task.cancelled() and server.should_exit
-    assert store.list("agents") == []
+    assert store.list("configurations") == []
     usage = store.list("usage")[0]
     assert usage["status"] == "request_cancelled" and usage["usage"] is None
     assert usage["estimated_cost_usd"] is None
@@ -205,7 +205,7 @@ async def test_http_get_controls_cancellation_returns_conflict_and_releases_oper
     quit = DesktopLifecycle(app, server)
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
-            request = asyncio.create_task(client.post("/api/agents/controls", json={}, headers={"X-ASHAD-Request": "1"}))
+            request = asyncio.create_task(client.post("/api/configurations/controls", json={}, headers={"X-ASHAD-Request": "1"}))
             await entered.wait()
             assert quit.status()["operations"][0]["kind"] == "controls"
             assert await quit.shutdown(cancel_operations=True) == {"drained": True}

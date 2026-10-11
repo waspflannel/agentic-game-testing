@@ -1,6 +1,6 @@
 import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, createDrawer, patchHTML, dirtyBridge, runGoal, ago, modelLabel, since, nextOptionIndex } from './core.js';
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
-import { emptyHTML, noAgentsHTML, projectAgents, readinessKey, newDraft, draftModel, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
+import { emptyHTML, noConfigurationsHTML, projectConfigurations, readinessKey, newDraft, draftModel, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
 import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions, defaultTab, nextTab } from './views/instance.js';
 import { panelRegions, mergeEvents, latestObservation } from './views/inspector.js';
 import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discardSetup, getControls, setupSkeleton, setupRegions, prepareDialogText, prepareDesktop, registerBuild, elapsed } from './views/setup.js';
@@ -112,8 +112,8 @@ function viewFor(route, data) {
   const projects = data?.projects || [];
   const project = id => projects.find(p => p.id === id);
   switch (route.name) {
-    case 'home': return projects.length ? noAgentsHTML(project(composerProject(route, data))) : emptyHTML(data);
-    case 'composer': return project(route.id) ? noAgentsHTML(project(route.id)) : notFound('Project');
+    case 'home': return projects.length ? noConfigurationsHTML(project(composerProject(route, data))) : emptyHTML(data);
+    case 'composer': return project(route.id) ? noConfigurationsHTML(project(route.id)) : notFound('Project');
     case 'project': return notFound('Project');  // renderOverview handles existing projects.
     case 'instance': return state.runMissing ? notFound('Instance') : `<div class="boot"><p>Loading instance…</p></div>`;
     case 'setup': return notFound('Project');  // renderSetup handles every setup route whose project exists.
@@ -141,7 +141,7 @@ function renderView() {
   if (route.name === 'instance' && threadRun()) return renderThread(view);
   stopCamera();
   const composer = composerProject(route, state.data);
-  if (composer && projectAgents(state.data, composer).length) return renderComposer(view, composer);
+  if (composer && projectConfigurations(state.data, composer).length) return renderComposer(view, composer);
   if (route.name === 'setup' && (!setupKey(route) || findProject(setupKey(route)))) return renderSetup(view);
   if (route.name === 'settings' && SECTIONS.some(([id]) => id === route.section)) return renderSettings(view);
   if (route.name === 'usage') return renderUsage(view);
@@ -182,9 +182,9 @@ function draftFor(projectId) {
 
 function renderComposer(view, projectId) {
   const draft = draftFor(projectId);
-  const agents = projectAgents(state.data, projectId);
-  if (!agents.some(a => a.id === draft.agentId)) draft.agentId = agents[0].id;
-  const agent = agents.find(a => a.id === draft.agentId);
+  const agents = projectConfigurations(state.data, projectId);
+  if (!agents.some(a => a.id === draft.configurationId)) draft.configurationId = agents[0].id;
+  const agent = agents.find(a => a.id === draft.configurationId);
   draft.model = draftModel(state.data, draft);
   if (state.readiness?.key !== readinessKey(projectId, agent, draft.model)) loadReadiness(projectId, agent, draft.model);
   mount(view, `composer:${projectId}`, composerSkeleton(projectId, draft));
@@ -193,7 +193,7 @@ function renderComposer(view, projectId) {
 
 async function loadReadiness(projectId, agent, model) {
   const record = state.readiness = { key: readinessKey(projectId, agent, model), loading: true };
-  try { record.result = await api(`/api/projects/${enc(projectId)}/readiness?build_id=${enc(agent.build_id)}&agent_id=${enc(agent.id)}&model=${enc(model)}`); }
+  try { record.result = await api(`/api/projects/${enc(projectId)}/readiness?build_id=${enc(agent.build_id)}&configuration_id=${enc(agent.id)}&model=${enc(model)}`); }
   catch (error) { record.error = error.message; }
   record.loading = false;
   if (state.readiness === record) renderView();
@@ -360,11 +360,11 @@ async function deleteProject(id) {
   const project = (state.data.projects || []).find(p => p.id === id);
   const name = project?.name || id;
   const count = kind => (state.data[kind] || []).filter(r => r.project_id === id).length;
-  const [runs, agents, builds] = [count('runs'), count('agents'), count('builds')];
+  const [runs, agents, builds] = [count('runs'), count('configurations'), count('builds')];
   if (!await confirmDialog({ title: `Delete ${name}?`, body: `Deletes the project, its ${runs} instances, ${agents} project configurations and ${builds} build registrations. Build files on disk and usage totals are kept. This cannot be undone.`, confirm: 'Delete project', danger: true })) return;
   try {
     const result = await api(`/api/projects/${enc(id)}`, { method: 'DELETE' });
-    for (const kind of ['runs', 'agents', 'builds']) state.data[kind] = (state.data[kind] || []).filter(r => r.project_id !== id);
+    for (const kind of ['runs', 'configurations', 'builds']) state.data[kind] = (state.data[kind] || []).filter(r => r.project_id !== id);
     state.data.projects = state.data.projects.filter(p => p.id !== id);
     if (['project', 'composer'].includes(state.route.name) && state.route.id === id) location.hash = '#/';
     state.setups.delete(id); state.drafts.delete(id); state.overviews.delete(id); state.ui.expanded.delete(id); state.ui.showAll.delete(id);
@@ -375,15 +375,15 @@ async function deleteProject(id) {
   poll();
 }
 
-async function deleteAgent(id) {
-  const agent = (state.data.agents || []).find(a => a.id === id);
+async function deleteConfiguration(id) {
+  const agent = (state.data.configurations || []).find(a => a.id === id);
   if (!agent) return;
   const name = agent.name || id;
   const gathered = agent.created_at ? since(agent.created_at) : 'at an unrecorded time';
   if (!await confirmDialog({ title: `Delete ${name}?`, body: `Controls gathered ${gathered}. ASHAD forgets this project configuration and its game controls file. Instances that used it stay in history but are blocked until you get game controls again for this project and start them with the new configuration. This cannot be undone.`, confirm: 'Delete configuration', danger: true })) return;
   try {
-    await api(`/api/agents/${enc(id)}`, { method: 'DELETE' });
-    state.data.agents = state.data.agents.filter(a => a.id !== id);
+    await api(`/api/configurations/${enc(id)}`, { method: 'DELETE' });
+    state.data.configurations = state.data.configurations.filter(a => a.id !== id);
     for (const ov of state.overviews.values()) ov.refreshes.delete(id);
     // A setup that finished while its page was closed still shows this configuration; it starts over at step 4.
     for (const s of state.setups.values()) if (s.agent?.id === id) Object.assign(s, { agent: null, controls: newOp() });
@@ -433,7 +433,7 @@ async function watchControls(op) {
   while (op.status === 'busy' || op.waiting) {
     if (op.status === 'busy' && op.requestId && !document.hidden) {
       try {
-        const r = await api(`/api/agents/controls/${enc(op.requestId)}`);
+        const r = await api(`/api/configurations/controls/${enc(op.requestId)}`);
         if (r?.status === 'in_progress') op.progress = r.progress || null;
       } catch { /* The next tick retries; the run itself is unaffected. */ }
       renderView();
@@ -453,7 +453,7 @@ async function startControls(s) {
   await pending;
   if (s.controls.status === 'done') {
     s.agent = s.controls.value;
-    state.data.agents = [s.agent, ...state.data.agents.filter(a => a.id !== s.agent.id)];
+    state.data.configurations = [s.agent, ...state.data.configurations.filter(a => a.id !== s.agent.id)];
     if (!(state.route.name === 'setup' && setupKey(state.route) === s.projectId && s.step === 4)) toast(`Game controls ready for ${name}.`, 'ok');
     poll();
   }
@@ -732,7 +732,7 @@ async function refreshControls(ov, agent) {
   renderView();
   await pending;
   if (op.status === 'done') {
-    state.data.agents = [op.value, ...state.data.agents.filter(a => a.id !== op.value.id)];
+    state.data.configurations = [op.value, ...state.data.configurations.filter(a => a.id !== op.value.id)];
     toast(`Saved game controls as ${op.value.name || op.value.id}.`, 'ok');
     poll();
   }
@@ -741,9 +741,9 @@ async function refreshControls(ov, agent) {
 
 // Opens the controls file of one project configuration. Needs only the id, so the overview and the setup page share it.
 async function viewControls(id) {
-  const agent = (state.data.agents || []).find(a => a.id === id);
+  const agent = (state.data.configurations || []).find(a => a.id === id);
   try {
-    const c = await api(`/api/agents/${enc(id)}/controls`);
+    const c = await api(`/api/configurations/${enc(id)}/controls`);
     const by = c.generated_by?.method === 'legacy_tuning' ? `Converted from an earlier configuration written by ${modelLabel(state.data, c.generated_by.model)}` : 'Gathered by Claude Sonnet';
     openDialog({ title: agent?.name || id, confirm: null, cancel: 'Close', wide: true,
       html: `<p>${esc(by)}</p><pre class="instructions" tabindex="0">${esc(c.controls)}</pre>` });
@@ -753,11 +753,11 @@ async function viewControls(id) {
 function onOverviewAction(action, target) {
   const ov = overviewFor(state.route.id);
   if (target.getAttribute('aria-disabled') === 'true') return;
-  const agent = (state.data.agents || []).find(a => a.id === target.dataset.id);
+  const agent = (state.data.configurations || []).find(a => a.id === target.dataset.id);
   if (action === 'ov-add-build') addBuild(ov, ov.projectId, target.dataset.kind);
   else if (action === 'ov-delete-build') deleteBuild(target.dataset.id);
   else if (action === 'ov-delete-project') deleteProject(ov.projectId);
-  else if (action === 'ov-delete-agent') deleteAgent(target.dataset.id);
+  else if (action === 'ov-delete-configuration') deleteConfiguration(target.dataset.id);
   else if (action === 'ov-recheck') { ov.readiness = null; renderView(); }
   else if (action === 'ov-prepare') prepare(ov, ov.projectId, (state.data.builds || []).find(b => b.id === ov.buildId));
   else if (action === 'ov-refresh') refreshControls(ov, agent);
@@ -1104,7 +1104,7 @@ let acceptedHash = location.hash;
 async function onRoute() {
   const route = parseRoute(location.hash);
   if (route.name === 'redirect' || (route.name === 'legacy-new' && state.data)) {
-    history.replaceState(null, '', route.name === 'redirect' ? route.to : legacyNewTarget(route.agent, state.data));
+    history.replaceState(null, '', route.name === 'redirect' ? route.to : legacyNewTarget(route.configuration, state.data));
     return onRoute();
   }
   const guard = dirtyGuard(route);
@@ -1128,7 +1128,7 @@ async function onRoute() {
   state.route = route;
   state.isCurrent = epoch.next();  // Any response started for the previous route is now stale.
   if (composerProject(route, state.data)) state.readiness = null;  // Readiness probes on view open, never on the poll.
-  if (route.name === 'composer' && route.query.agent) draftFor(route.id).agentId = route.query.agent;
+  if (route.name === 'composer' && route.query.configuration) draftFor(route.id).configurationId = route.query.configuration;
   if (route.name === 'composer' && route.query.from) {  // "Start again" from a blocked instance prefills its goal and model.
     const run = (state.data?.runs || []).find(r => r.id === route.query.from);
     if (run) { const d = draftFor(route.id); d.goal ||= run.plan?.primary_goal || ''; d.model = run.plan?.model || d.model; }
@@ -1358,10 +1358,10 @@ document.addEventListener('change', event => {
     return;
   }
   const projectId = composerProject(state.route, state.data);
-  if (!projectId || !['agent', 'transport', 'project'].includes(field)) return;
+  if (!projectId || !['configuration', 'transport', 'project'].includes(field)) return;
   if (field === 'project') { location.hash = href('p', event.target.value, 'new'); return; }
   const draft = draftFor(projectId);
-  if (field === 'agent') draft.agentId = event.target.value;
+  if (field === 'configuration') draft.configurationId = event.target.value;
   else draft[field] = event.target.value;
   renderView();
 });

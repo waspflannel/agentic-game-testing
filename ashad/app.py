@@ -20,7 +20,7 @@ from .claude_backend import ClaudeError
 from .codex_backend import CodexError
 from .coordinator import Coordinator, InstanceConflict
 from .credentials import Credentials
-from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, AI_API, ACTIVE_STATES, PROVIDERS, SUPPORTED_MODELS, provider_of, RecalculateGoalsRequest
+from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, AI_API, ACTIVE_STATES, require_same_provider, RecalculateGoalsRequest
 from .repository import Repository, sha256_file
 from .reports import generate_report
 from .agent_profiles import AgentProfiles
@@ -331,9 +331,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         except (OSError, ValueError, KeyError) as exc:
             build_validation["reason"] = str(exc)
         if model:
-            provider = provider_of(resolved)
-            if model not in SUPPORTED_MODELS or provider_of(model) != provider:
-                raise ValueError(f"Choose a {PROVIDERS[provider]['label']} model for this agent configuration.")
+            require_same_provider(model, resolved, "this agent configuration")
             resolved = model
         try:
             status = await ai.validate(resolved)

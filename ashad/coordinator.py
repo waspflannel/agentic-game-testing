@@ -10,7 +10,7 @@ from pathlib import Path
 import shutil
 import time
 import uuid
-from .models import Plan, MODEL, PROVIDERS, provider_of, CONTROLLER_VERSION, ACTIVE_STATES, TERMINAL_QUEST, SUPPORTED_MODELS
+from .models import Plan, MODEL, PROVIDERS, provider_of, CONTROLLER_VERSION, ACTIVE_STATES, TERMINAL_QUEST, require_same_provider
 from .reports import generate_report
 from .repair_tasks import record_task, publish_pending
 from .store import uid
@@ -1128,9 +1128,7 @@ class Coordinator:
             if command == "model":
                 model = options.get("model")
                 current = run.get("model") or run["plan"].get("model", MODEL)
-                label = PROVIDERS[provider_of(current)]["label"]
-                if model not in SUPPORTED_MODELS or provider_of(model) != provider_of(current):
-                    raise ValueError(f"Choose a {label} model for this instance.")
+                require_same_provider(model, current, "this instance")
                 if model == current:
                     raise ValueError(f"This instance already uses {model}.")
                 if run["state"] not in MODEL_CHANGE_STATES:

@@ -33,6 +33,12 @@ def provider_of(model):
     return "claude" if model in CLAUDE_MODELS else "codex"
 
 
+def require_same_provider(model, base, subject):
+    """Instances may switch models only within the provider their agent was tuned for."""
+    if model not in SUPPORTED_MODELS or provider_of(model) != provider_of(base):
+        raise ValueError(f"Choose a {PROVIDERS[provider_of(base)]['label']} model for {subject}.")
+
+
 class Contract(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 

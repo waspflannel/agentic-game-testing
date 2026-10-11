@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import Field
 
 from .agent_profiles import AgentProfiles
-from .models import ACTIVE_STATES, Contract, Plan, PROVIDERS, SUPPORTED_MODELS, provider_of
+from .models import ACTIVE_STATES, Contract, Plan, require_same_provider
 from .projects import Projects
 
 
@@ -42,9 +42,7 @@ class Instances:
             Projects(self.store).project_for_agent(request.agent_id, request.project_id)
             profile = AgentProfiles(self.store, self.coordinator.ai).validated(request.agent_id)
             model = request.model or profile["model"]
-            provider = provider_of(profile["model"])
-            if model not in SUPPORTED_MODELS or provider_of(model) != provider:
-                raise ValueError(f"Choose a {PROVIDERS[provider]['label']} model for this agent configuration.")
+            require_same_provider(model, profile["model"], "this agent configuration")
             build = self.coordinator.validated_build(profile["build_id"])
             worker, accounts = await self._allocate_worker(build, request.transport)
             plan = Plan(agent_id=profile["id"], build_id=profile["build_id"], model=model,

@@ -205,6 +205,10 @@ class StructuredPlayers:
             run, ps = self.binding(run_id, player_id)
             if run["state"] not in {"Starting", "Running"} or ps["generation"] != generation or self.control_owners.get(key, "agent") != owner:
                 return {"status": "cancelled", "reason": "Run control changed while reconciling the last action"}
+        await self.coordinator.saves.before_action(run_id, player_id, args, observation)
+        run, ps = self.binding(run_id, player_id)
+        if run["state"] not in {"Starting", "Running"} or ps["generation"] != generation or self.control_owners.get(key, "agent") != owner:
+            return {"status": "cancelled", "reason": "Run control changed while saving"}
         action_id = uid("game_")
         payload = {"action_id": action_id, "observation_id": observation["observation_id"],
                    "expires_at": time.time() + 30, "verb": args["verb"],
@@ -334,6 +338,16 @@ class StructuredPlayers:
                 return "full"
             example_id = uid(ISSUE_PREFIXES[issue_type])
             screenshot = await self._pin(ps, run_id, player_id, example_id, observation, skip=skip_pin or room != "keep")
+            if room == "keep":
+                before = self.coordinator.saves.latest(run_id)
+                if self.coordinator.saves.pinned_full(run_id):
+                    at_issue = None
+                    self.store.event(run_id, "save_skipped", {"player_id": player_id, "reason": "pinned_cap"})
+                else:
+                    at_issue = await self.coordinator.saves.capture(run_id, player_id, "issue", {"issue_id": repair_tasks.issue_id(issue_type, basis), "issue_type": issue_type, "example_id": example_id})
+                    if before:
+                        self.coordinator.saves.pin(before["id"])
+                sections = {**sections, "saves": {"before": before and before["id"], "at_issue": at_issue and at_issue["id"]}}
             example = {**self._example(run, ps, player_id, example_id, source, observation, screenshot, event_ids), **sections}
             outcome = repair_tasks.record_issue(self.store, issue_type, basis, example)
             if outcome in {"kept", "counted"}:
@@ -462,6 +476,7 @@ class StructuredPlayers:
         recent = self.store.events(run["id"], after=max(0, self.store.count_events(run["id"])-120), limit=120)
         own = [e for e in recent if e["payload"].get("player_id") == player["id"] and e["kind"] in
                OWN_ACTION_KINDS][-20:]
+        own = (ps.get("restored_actions", []) + own)[-20:]
         team = [e for e in recent if e["kind"] == "team_message"][-12:] if player.get("cooperation") == "team" else []
         configuration_id, snapshot = run_configuration(run)
         context = {"play_mode": run["plan"]["play_mode"], "player": player, "goal": player["goal"],

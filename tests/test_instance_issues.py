@@ -73,3 +73,55 @@ def test_events_of_kinds_is_newest_first_and_bounded(tmp_path):
     store.event("r2", "a")
     assert [e["seq"] for e in store.events_of_kinds("r1", ("a",), 10)] == [3, 1]
     assert len(store.events_of_kinds("r1", ("a", "b"), 2)) == 2
+
+
+def hit(store, run_id, kind, issue_id, **payload):
+    store.event(run_id, kind, {"player_id": "player-1", "issue_id": issue_id, "example_id": "e", "source": "agent_signal",
+                               "kept": True, "outcome": "kept", **payload})
+
+
+def test_run_issues_groups_this_runs_hits_only(tmp_path):
+    store = Store(tmp_path / "data")
+    repair_tasks.record_issue(store, "unsupported_action", basis(), example())
+    key = repair_tasks.issue_id("unsupported_action", basis())
+    hit(store, "run1", "unsupported_action_recorded", key, save_before="s1")
+    hit(store, "run1", "unsupported_action_recorded", key, save_before="s2")
+    hit(store, "run2", "crash_recorded", "issue_crash")
+    issues, truncated = repair_tasks.run_issues(store, "run1")
+    [issue] = issues
+    assert issue["issue_id"] == key and issue["hit_count"] == 2
+    assert [h["save_before"] for h in issue["hits"]] == ["s2", "s1"]
+    assert issue["status"] == "open" and issue["occurrences_total"] == 1
+    assert issue["file"] == str(issue_directory(store) / repair_tasks.issue_filename(store.get("issues", key)))
+    assert truncated is False
+    assert repair_tasks.run_issues(store, "run2")[0][0]["type"] == "crash"
+    assert repair_tasks.run_issues(store, "run3") == ([], False)
+
+
+def test_run_issues_orders_by_latest_hit(tmp_path):
+    store = Store(tmp_path / "data")
+    for name in ("issue_a", "issue_b", "issue_a"):
+        hit(store, "run1", "crash_recorded", name)
+    assert [i["issue_id"] for i in repair_tasks.run_issues(store, "run1")[0]] == ["issue_a", "issue_b"]
+
+
+def test_run_issues_caps_hits_and_flags_truncation(tmp_path, monkeypatch):
+    store = Store(tmp_path / "data")
+    for _ in range(25):
+        hit(store, "run1", "crash_recorded", "issue_a")
+    [issue], truncated = repair_tasks.run_issues(store, "run1")
+    assert len(issue["hits"]) == 20 and issue["hit_count"] == 25
+    assert issue["hits"][0]["at"] >= issue["hits"][-1]["at"] and truncated is False
+    monkeypatch.setattr(repair_tasks, "RUN_ISSUE_EVENTS", 10)
+    [issue], truncated = repair_tasks.run_issues(store, "run1")
+    assert issue["hit_count"] == 10 and truncated is True
+
+
+def test_run_issues_falls_back_for_old_events_and_missing_records(tmp_path):
+    store = Store(tmp_path / "data")
+    store.event("run1", "game_bug_recorded", {"player_id": "player-1", "issue_id": "issue_gone", "example_id": "e",
+                                              "source": "agent_signal", "kept": True, "outcome": "kept"})
+    [issue], _ = repair_tasks.run_issues(store, "run1")
+    assert issue["hits"][0]["save_before"] is None
+    assert issue["title"] == "issue_gone" and issue["status"] == "unknown"
+    assert issue["occurrences_total"] is None and issue["file"] is None and issue["type"] == "game_bug"

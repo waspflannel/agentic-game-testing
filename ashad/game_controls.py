@@ -154,8 +154,6 @@ class GameControls:
                 evidence, inventory_hash = await asyncio.to_thread(source_evidence, build)
                 batches = self._batches(evidence["sources"])
                 workers = min(SWARM_WORKERS, len(batches))
-                evidence["coverage"]["source_batches"] = len(batches)
-                evidence["coverage"]["workers"] = workers
                 if len(batches) == 1:
                     self.progress["stage"] = "writing"
                     controls = await self.ai.write_controls(evidence)
@@ -173,7 +171,7 @@ class GameControls:
                     "source_inventory_sha256": inventory_hash,
                     "source_files": list({source["path"]: {k: source[k] for k in ("path", "sha256", "total_lines")}
                         for source in evidence["sources"]}.values()),
-                    "coverage": evidence["coverage"],
+                    "coverage": {**evidence["coverage"], "source_batches": len(batches), "workers": workers},
                     "generated_by": {"method": "swarm", "provider": "claude", "model": CLAUDE_MODEL, "prompt_version": TUNING_PROMPT_VERSION},
                     "created_at": record["created_at"], "limitations": list(LIMITATIONS), "controls": controls}
                 _write_file(self.store, record, artifact)

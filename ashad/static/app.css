@@ -428,6 +428,7 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .model-option:focus-visible { outline: none; background: var(--surface-3); box-shadow: inset 0 0 0 2px var(--accent); }
 .model-option-label { overflow: hidden; text-overflow: ellipsis; }
 .model-default { padding: 1px 8px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); font-size: var(--fs-meta); }
+.model-option:is(:hover, :focus-visible) .model-default { background: var(--surface-2); }
 .model-option .model-check { margin-left: auto; color: var(--text); }
 .meta-more { display: none; }
 .meta-pop { position-area: bottom span-left; margin-top: 4px; display: none; flex-wrap: wrap; gap: 6px; max-width: min(420px, 90vw); }

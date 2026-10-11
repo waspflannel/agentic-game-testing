@@ -341,6 +341,39 @@ async function deleteBuild(id) {
   poll();
 }
 
+async function deleteInstance(id) {
+  const run = (state.data.runs || []).find(r => r.id === id);
+  const goal = run ? runGoal(run) : id;
+  if (!await confirmDialog({ title: 'Delete this instance?', body: `"${goal}" and its timeline, report and saved evidence are removed from this computer. Usage totals are kept. This cannot be undone.`, confirm: 'Delete', danger: true })) return;
+  try {
+    const result = await api(`/api/runs/${enc(id)}`, { method: 'DELETE' });
+    state.data.runs = state.data.runs.filter(r => r.id !== id);
+    for (const key of [...state.commands.keys()]) if (key.startsWith(`${id}:`)) state.commands.delete(key);
+    if (state.route.name === 'instance' && state.route.id === id) location.hash = '#/';
+    toast(result.files_removed === false ? 'Instance deleted. Some files could not be removed.' : 'Instance deleted.', 'ok');
+  } catch (error) { toast(error.message, 'error'); }
+  render();
+  poll();
+}
+
+async function deleteProject(id) {
+  const project = (state.data.projects || []).find(p => p.id === id);
+  const name = project?.name || id;
+  const count = kind => (state.data[kind] || []).filter(r => r.project_id === id).length;
+  const [runs, agents, builds] = [count('runs'), count('agents'), count('builds')];
+  if (!await confirmDialog({ title: `Delete ${name}?`, body: `Deletes the project, its ${runs} instances, ${agents} agent configurations and ${builds} build registrations. Build files on disk and usage totals are kept. This cannot be undone.`, confirm: 'Delete project', danger: true })) return;
+  try {
+    const result = await api(`/api/projects/${enc(id)}`, { method: 'DELETE' });
+    for (const kind of ['runs', 'agents', 'builds']) state.data[kind] = (state.data[kind] || []).filter(r => r.project_id !== id);
+    state.data.projects = state.data.projects.filter(p => p.id !== id);
+    state.setups.delete(id); state.drafts.delete(id); state.overviews.delete(id); state.ui.expanded.delete(id); state.ui.showAll.delete(id);
+    if (state.ui.lastProject === id) state.ui.lastProject = null;
+    toast(result.files_removed === false ? `${name} deleted. Some files could not be removed.` : `${name} deleted.`, 'ok');
+  } catch (error) { toast(error.message, 'error'); }
+  render();
+  poll();
+}
+
 async function prepare(owner, projectId, build) {
   if (!build || owner.prepare.status === 'busy') return;
   if (!await confirmDialog({ title: 'Prepare desktop?', body: prepareDialogText(build), confirm: 'Prepare desktop' })) return;
@@ -370,6 +403,7 @@ function onSetupAction(action, target, event) {
     $('#setup-step-title')?.focus();
   } else if (action === 'setup-create') createProject(s);
   else if (action === 'setup-add-build') addBuild(s, s.projectId, target.dataset.kind);
+  else if (action === 'setup-delete-project') deleteProject(target.dataset.id);
   else if (action === 'setup-recheck') { s.readiness = null; renderView(); }
   else if (action === 'setup-prepare') prepare(s, s.projectId, setupModel(state.data, s).build);
   else if (action === 'setup-tune') startTuning(s);
@@ -1180,6 +1214,8 @@ document.addEventListener('click', async event => {
   } else if (action === 'composer-recheck') {
     state.readiness = null;
     renderView();
+  } else if (action === 'instance-delete') {
+    if (target.getAttribute('aria-disabled') !== 'true') deleteInstance(id);
   } else if (action.startsWith('setup-')) {
     onSetupAction(action, target, event);
   } else if (action.startsWith('ov-')) {

@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from ashad.app import create_app
+from ashad.projects import Projects
 from test_controller import MemoryCredentials, FakeCodexBackend
 
 HEADERS = {"X-ASHAD-Request": "1"}
@@ -240,3 +241,149 @@ async def test_tuning_cancelled_outside_owned_quit_propagates_instead_of_409(tmp
                 assert app.state.tuning_task is None and app.state.operations == {}
     finally:
         app.state.store.close()
+
+
+def released_run(run_id, project_id=None, scenario_id="scenario_1", **extra):
+    return {"id": run_id, "state": "Ended", "project_id": project_id, "scenario_id": scenario_id, "scenario_revision": 1,
+            "players": {"p": {"teardown_confirmed": True}}, **extra}
+
+
+def seed_instance(store, run_id, request_id):
+    store.put("runs", released_run(run_id))
+    store.event(run_id, "seeded")
+    store.put("incidents", {"id": f"inc_{run_id}", "run_id": run_id})
+    store.put("repair_task_exports", {"id": f"task_{run_id}", "run_id": run_id, "status": "pending"})
+    store.put("usage", {"id": f"use_{run_id}", "run_id": run_id})
+    store.command("launch", f"instance_{request_id}", {"run_id": run_id})
+    store.command("instance", request_id, {"scenario_id": "scenario_1", "revision": 1})
+    store.put("scenarios", {"id": "scenario_1", "revision": 1}, "scenario_1:1")
+
+
+def test_deleting_a_finished_instance_removes_its_records_and_files_but_keeps_usage(tmp_path):
+    app = offline_app(tmp_path)
+    store = app.state.store
+    seed_instance(store, "r1", "req1")
+    with TestClient(app) as client:
+        deleted = client.delete("/api/runs/r1", headers=HEADERS)
+        assert deleted.status_code == 200 and deleted.json() == {"deleted": "r1", "files_removed": True}
+        gone = client.get("/api/runs/r1", headers=HEADERS)
+        assert gone.status_code == 422 and "Unknown runs" in gone.json()["detail"]
+        assert store.db.execute("SELECT COUNT(*) FROM events WHERE run_id='r1'").fetchone()[0] == 0
+        assert store.records_for_run("incidents", "r1") == []
+        assert store.records_for_run("repair_task_exports", "r1") == []
+        assert store.command("launch", "instance_req1") is None
+        assert store.command("instance", "req1") is None
+        assert store.get("scenarios", "scenario_1:1") is None
+        assert not (tmp_path / "runs" / "r1").exists()
+        assert store.records_for_run("usage", "r1")
+
+
+@pytest.mark.parametrize("case", [{"state": "Running"}, {"state": "Queued"},
+                                  {"players": {"p": {"teardown_confirmed": False}}},
+                                  {"human_control": {"player_id": "p"}}])
+def test_live_or_unreleased_instances_cannot_be_deleted(tmp_path, case):
+    app = offline_app(tmp_path)
+    store = app.state.store
+    store.put("runs", released_run("r1", **case))
+    store.event("r1", "seeded")
+    with TestClient(app) as client:
+        refused = client.delete("/api/runs/r1", headers=HEADERS)
+        assert refused.status_code == 422 and "Stop this instance" in refused.json()["detail"]
+        assert store.get("runs", "r1") is not None
+        assert (tmp_path / "runs" / "r1").exists()
+
+
+def test_instance_still_finishing_cannot_be_deleted(tmp_path):
+    app = offline_app(tmp_path)
+    store = app.state.store
+    store.put("runs", released_run("r1"))
+    app.state.coordinator.finishing["r1"] = SimpleNamespace(done=lambda: False)
+    with TestClient(app) as client:
+        refused = client.delete("/api/runs/r1", headers=HEADERS)
+        assert refused.status_code == 422 and "still saving" in refused.json()["detail"]
+        assert store.get("runs", "r1") is not None
+
+
+def test_instance_with_a_running_player_task_cannot_be_deleted(tmp_path):
+    app = offline_app(tmp_path)
+    store = app.state.store
+    store.put("runs", released_run("r1"))
+    tasks = app.state.coordinator.tasks
+    tasks[("r1", "p1")] = SimpleNamespace(done=lambda: False)
+    with TestClient(app) as client:
+        refused = client.delete("/api/runs/r1", headers=HEADERS)
+        assert refused.status_code == 422 and "still saving" in refused.json()["detail"]
+        assert store.get("runs", "r1") is not None
+        tasks.clear()  # Shutdown cancels real tasks; the fake has nothing to cancel.
+
+
+def test_shared_scenario_survives_deleting_one_of_its_runs(tmp_path):
+    app = offline_app(tmp_path)
+    store = app.state.store
+    store.put("runs", released_run("r1"))
+    store.put("runs", released_run("r2"))
+    store.put("scenarios", {"id": "scenario_1", "revision": 1}, "scenario_1:1")
+    with TestClient(app) as client:
+        assert client.delete("/api/runs/r1", headers=HEADERS).status_code == 200
+        assert store.get("scenarios", "scenario_1:1") is not None
+
+
+def test_deleting_unknown_instance_is_422_and_creates_no_directory(tmp_path):
+    app = offline_app(tmp_path)
+    with TestClient(app) as client:
+        missing = client.delete("/api/runs/missing", headers=HEADERS)
+        assert missing.status_code == 422 and "Unknown runs" in missing.json()["detail"]
+        assert not (tmp_path / "runs" / "missing").exists()
+
+
+def test_deletes_are_refused_while_another_operation_runs(tmp_path):
+    app = offline_app(tmp_path)
+    store = app.state.store
+    store.put("projects", {"id": "p1", "name": "One"})
+    store.put("runs", released_run("r1", project_id="p1"))
+    with TestClient(app) as client:
+        app.state.tuning_task = SimpleNamespace(done=lambda: False)
+        for url in ("/api/runs/r1", "/api/projects/p1"):
+            busy = client.delete(url, headers=HEADERS)
+            assert busy.status_code == 422 and "Wait for the current operation" in busy.json()["detail"]
+        app.state.tuning_task = None
+        assert store.get("runs", "r1") is not None and store.get("projects", "p1") is not None
+
+
+def test_deleting_a_project_removes_its_instances_agents_and_builds_only(tmp_path):
+    app = offline_app(tmp_path)
+    store = app.state.store
+    ids = {}
+    for n in (1, 2):
+        pid = Projects(store).create(f"Project {n}", f"req_{n}")["id"]
+        ids[n] = pid
+        store.put("builds", {"id": f"b_{n}", "project_id": pid})
+        store.put("agents", {"id": f"a_{n}", "project_id": pid, "build_id": f"b_{n}"})
+        store.command("tuning", f"t_{n}", {"agent_id": f"a_{n}"})
+        store.put("tuning_notes", {"id": f"note_{n}", "build_id": f"b_{n}"})
+        store.put("environment_preparations", {"id": f"prep_{n}", "request": {"project_id": pid}})
+        store.put("runs", released_run(f"r_{n}", project_id=pid, scenario_id=f"s_{n}"))
+        store.event(f"r_{n}", "seeded")
+    rows = lambda n: [("projects", ids[n]), ("builds", f"b_{n}"), ("agents", f"a_{n}"), ("tuning_notes", f"note_{n}"),
+                      ("environment_preparations", f"prep_{n}"), ("runs", f"r_{n}")]
+    with TestClient(app) as client:
+        deleted = client.delete(f"/api/projects/{ids[1]}", headers=HEADERS)
+        assert deleted.status_code == 200 and deleted.json()["instances"] == 1
+        assert all(store.get(kind, key) is None for kind, key in rows(1))
+        assert store.command("project", "req_1") is None and store.command("tuning", "t_1") is None
+        assert not (tmp_path / "runs" / "r_1").exists()
+        assert all(store.get(kind, key) is not None for kind, key in rows(2))
+        assert store.command("project", "req_2") and store.command("tuning", "t_2")
+        assert (tmp_path / "runs" / "r_2").exists()
+
+
+def test_project_with_an_active_instance_cannot_be_deleted(tmp_path):
+    app = offline_app(tmp_path)
+    store = app.state.store
+    pid = Projects(store).create("One", "req_1")["id"]
+    store.put("builds", {"id": "b1", "project_id": pid})
+    store.put("runs", released_run("r1", project_id=pid, state="Running"))
+    with TestClient(app) as client:
+        refused = client.delete(f"/api/projects/{pid}", headers=HEADERS)
+        assert refused.status_code == 422 and "Stop its active instance" in refused.json()["detail"]
+        assert store.get("projects", pid) and store.get("builds", "b1") and store.get("runs", "r1")

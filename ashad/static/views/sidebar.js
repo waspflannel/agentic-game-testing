@@ -14,7 +14,7 @@ export function sidebarModel(data, ui) {
   const projectIds = new Set(projects.map(p => p.id));
   const routeProject = ['project', 'composer'].includes(route.name) ? route.id : currentRun?.project_id;
 
-  const thread = run => ({ id: run.id, goal: runGoal(run), age: ago(runTime(run), ui.now), status: runStatus(run, ownerByRun.get(run.id)), current: run.id === currentRun?.id });
+  const thread = run => ({ id: run.id, goal: runGoal(run), age: ago(runTime(run), ui.now), status: runStatus(run, ownerByRun.get(run.id)), current: run.id === currentRun?.id, deletable: !ownerByRun.has(run.id) });
   const group = (id, groupRuns, extra) => {
     const holdsFocus = groupRuns.some(r => r.id === currentRun?.id || ownerByRun.has(r.id));
     const expanded = ui.expanded.has(id) ? ui.expanded.get(id) : holdsFocus || id === routeProject;
@@ -45,8 +45,9 @@ export function sidebarModel(data, ui) {
 const dot = status => `<span class="dot dot-${status.tone}" title="${esc(status.label)}"><span class="sr-only">${esc(status.label)}</span></span>`;
 
 function threadRow(t) {
-  return `<li><a class="row thread${t.current ? ' is-current' : ''}" href="${href('i', t.id)}" data-key="r:${esc(t.id)}" title="${esc(t.goal)}"${t.current ? ' aria-current="page"' : ''}>`
-    + `${dot(t.status)}<span class="row-label">${esc(t.goal)}</span><span class="row-meta">${esc(t.age)}</span></a></li>`;
+  return `<li class="thread-item"><a class="row thread${t.current ? ' is-current' : ''}" href="${href('i', t.id)}" data-key="r:${esc(t.id)}" title="${esc(t.goal)}"${t.current ? ' aria-current="page"' : ''}>`
+    + `${dot(t.status)}<span class="row-label">${esc(t.goal)}</span><span class="row-meta">${esc(t.age)}</span></a>`
+    + `<button type="button" class="row-tool thread-tool" data-action="instance-delete" data-id="${esc(t.id)}" data-key="rd:${esc(t.id)}" aria-label="Delete instance: ${esc(t.goal)}" title="${t.deletable ? 'Delete instance' : 'Stop this instance before deleting it'}"${t.deletable ? '' : ' aria-disabled="true"'}>${icon('trash')}</button></li>`;
 }
 
 function groupBlock(g, isProject) {

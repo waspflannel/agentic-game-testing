@@ -114,7 +114,7 @@ The live camera is for the human operator. Routine model decisions use the filte
 
 ## Scope and retained data
 
-The supported workflow is agent tuning and fresh, one-bot instances. Old scenarios, runs, saves, usage and evidence remain stored and readable for operational compatibility. Retired feature endpoints are unavailable; preserving a record does not make its old editing or launch workflow available.
+The supported workflow is agent tuning and fresh, one-bot instances. Old scenarios, runs, saves, usage and evidence remain stored and readable for operational compatibility. Deleting an instance from the sidebar, or a project from setup, removes its records and run files from this computer; usage totals are kept. Retired feature endpoints are unavailable; preserving a record does not make its old editing or launch workflow available.
 
 [Future work](docs/future-work.md) records deferred features and the prerequisites for restoring them.
 

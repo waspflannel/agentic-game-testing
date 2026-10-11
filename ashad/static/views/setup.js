@@ -191,7 +191,10 @@ function mainHTML(data, s, m, now) {
     case 1: {
       if (m.project) return `<p>Project <strong>${esc(m.project.name || m.project.id)}</strong> exists. Continue to its build.</p>`;
       const op = s.project;
-      const others = (data?.projects || []).map(p => `<li><a href="#/setup?project=${enc(p.id)}" data-key="sp-${esc(p.id)}">${esc(p.name || p.id)}</a></li>`).join('');
+      const live = new Set((data?.instance_slot?.owners || []).map(o => o.run_id));
+      const busy = id => (data?.runs || []).some(r => r.project_id === id && live.has(r.id));
+      const others = (data?.projects || []).map(p => `<li class="link-row"><a href="#/setup?project=${enc(p.id)}" data-key="sp-${esc(p.id)}">${esc(p.name || p.id)}</a>`
+        + `<button type="button" class="btn btn-ghost btn-sm" data-action="setup-delete-project" data-id="${esc(p.id)}" data-key="sd-${esc(p.id)}" aria-label="Delete project ${esc(p.name || p.id)}" title="${busy(p.id) ? 'Stop its active instance before deleting this project' : 'Delete project'}"${busy(p.id) ? ' aria-disabled="true"' : ''}>${icon('trash')}</button></li>`).join('');
       return (op.status === 'busy' ? `<p class="note">${icon('loader', 'icon spin')}<span>Creating the project…</span></p>`
         : op.error ? noteHTML('error', esc(op.error), op.status === 'lost' ? ' <button type="button" class="btn btn-secondary btn-sm" data-action="setup-create" data-key="sp-retry">Retry</button>' : '') : '')
         + (others ? `<div class="setup-aside"><p class="hint">Or add an agent configuration to an existing project:</p><ul class="link-list">${others}</ul></div>` : '');

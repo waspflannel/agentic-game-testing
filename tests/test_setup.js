@@ -207,3 +207,19 @@ test('a Claude model is enabled when only Claude is ready and disabled with the 
   applyDefaults(bothProviders({ ai: { status: 'configuration_required' }, ai_claude: { status: 'ready' } }), fresh);
   assert.equal(fresh.model, 'sonnet');
 });
+
+test('step 1 lists existing projects with a delete button, disabled while one of its instances is live', async () => {
+  const { newSetup, setupModel, setupRegions } = await load();
+  const d = data({
+    projects: [{ id: 'p', name: 'Agronauts' }, { id: 'q', name: 'Other' }],
+    runs: [{ id: 'r1', project_id: 'q', state: 'Running', players: {} }],
+    instance_slot: { owners: [{ run_id: 'r1', state: 'Running', reason: 'running' }] },
+  });
+  const s = newSetup('');
+  const html = setupRegions(d, s, { ...setupModel(d, s), step: 1 }).main;
+  const button = id => html.match(new RegExp(`<button[^>]*data-id="${id}"[^>]*>`))[0];
+  assert.ok(button('p').includes('data-action="setup-delete-project" data-id="p" data-key="sd-p" aria-label="Delete project Agronauts" title="Delete project">'));
+  assert.ok(!button('p').includes('aria-disabled'));
+  assert.ok(button('q').includes('aria-disabled="true"'));
+  assert.ok(button('q').includes('title="Stop its active instance before deleting this project"'));
+});

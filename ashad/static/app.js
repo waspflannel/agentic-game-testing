@@ -1204,6 +1204,11 @@ function chooseModel(field, model) {
   renderView();
 }
 
+function chooseFix(mode) {
+  draftFor(composerProject(state.route, state.data)).fix = mode;
+  renderView();
+}
+
 document.addEventListener('click', async event => {
   const row = event.target.closest('.tl-row');
   if (row) selectCard(row.closest('.tl-card').dataset.card);  // The native toggle still opens the body.
@@ -1246,11 +1251,13 @@ document.addEventListener('click', async event => {
   } else if (action === 'ctl') {
     target.closest('[popover]')?.hidePopover();
     if (target.getAttribute('aria-disabled') !== 'true') onControl(target.dataset.ctl);
-  } else if (action === 'pick-model') {
+  } else if (action === 'pick-model' || action === 'pick-fix') {
+    if (target.getAttribute('aria-disabled') === 'true') return;
     const menu = target.closest('[popover]');
     menu.hidePopover();
     document.querySelector(`[popovertarget="${menu.id}"]`)?.focus();  // patchHTML then keeps focus on the re-rendered trigger.
-    chooseModel(target.dataset.field, target.dataset.value);
+    if (action === 'pick-model') chooseModel(target.dataset.field, target.dataset.value);
+    else chooseFix(target.dataset.value);
   } else if (action === 'thread-tab') {
     setTab(target.dataset.tab);
   } else if (action === 'instruction-cancel') {
@@ -1373,7 +1380,7 @@ document.addEventListener('change', event => {
     return;
   }
   const projectId = composerProject(state.route, state.data);
-  if (!projectId || !['configuration', 'transport', 'project', 'fix'].includes(field)) return;
+  if (!projectId || !['configuration', 'transport', 'project'].includes(field)) return;
   if (field === 'project') { location.hash = href('p', event.target.value, 'new'); return; }
   const draft = draftFor(projectId);
   if (field === 'configuration') draft.configurationId = event.target.value;

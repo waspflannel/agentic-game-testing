@@ -117,20 +117,31 @@ export const providerModels = (data, model) => {
   return options.filter(m => m.provider === provider);
 };
 
-// One model picker: a chip that opens a listbox popover. Rows mark the selected model and the default model.
-export function modelMenuHTML({ key, field, options, selected, defaultModel }) {
+// One popover listbox picker. Options are { id, label, chipLabel?, pill?, secondary?, disabled? }; a disabled option is
+// aria-disabled (still focusable, never picked). `footer` is a visible note kept outside the listbox and described by the trigger.
+export function menuHTML({ key, field, action, label, srPrefix = '', iconName, options, selected, footer = '' }) {
   const menuId = `${key}-menu`;
-  const label = options.find(o => o.id === selected)?.label || selected;
+  const current = options.find(o => o.id === selected);
   const rows = options.map(o => {
     const isSelected = o.id === selected;
-    return `<button type="button" role="option" aria-selected="${isSelected}" tabindex="-1" class="menu-item model-option" data-action="pick-model" data-field="${field}" data-value="${esc(o.id)}">`
-      + `<span class="model-option-label">${esc(o.label)}</span>${o.id === defaultModel ? '<span class="model-default">Default</span>' : ''}`
+    const text = `<span class="model-option-label">${esc(o.label)}</span>`;
+    return `<button type="button" role="option" aria-selected="${isSelected}"${o.disabled ? ' aria-disabled="true"' : ''} tabindex="-1" class="menu-item model-option" data-action="${action}" data-field="${field}" data-value="${esc(o.id)}">`
+      + `${o.secondary ? `<span class="model-option-body">${text}<span class="model-option-note">${esc(o.secondary)}</span></span>` : text}${o.pill ? `<span class="model-default">${esc(o.pill)}</span>` : ''}`
       + `${isSelected ? icon('check', 'icon model-check') : ''}</button>`;
   }).join('');
-  return `<button type="button" class="chip model-trigger" popovertarget="${menuId}" aria-haspopup="listbox" data-key="${key}">`
-    + `${icon('sliders')}<span class="sr-only">Model: </span><span class="chip-text">${esc(label)}</span>${icon('chevron-down', 'icon model-chevron')}</button>`
-    + `<div id="${menuId}" popover class="popover menu model-menu" role="listbox" aria-label="Model">${rows}</div>`;
+  const describedBy = footer ? ` aria-describedby="${key}-note"` : '';
+  const trigger = `<button type="button" class="chip model-trigger" popovertarget="${menuId}" aria-haspopup="listbox" data-key="${key}"${describedBy}>`
+    + `${icon(iconName)}${srPrefix ? `<span class="sr-only">${srPrefix}</span>` : ''}<span class="chip-text">${esc(current?.chipLabel || current?.label || selected)}</span>${icon('chevron-down', 'icon model-chevron')}</button>`;
+  if (!footer) return `${trigger}<div id="${menuId}" popover class="popover menu model-menu" role="listbox" aria-label="${label}">${rows}</div>`;
+  return `${trigger}<div id="${menuId}" popover class="popover menu model-menu"><div class="menu-list" role="listbox" aria-label="${label}">${rows}</div>`
+    + `<div class="menu-footer" id="${key}-note">${footer}</div></div>`;
 }
+
+// The model picker: rows mark the selected model and the default model.
+export const modelMenuHTML = ({ key, field, options, selected, defaultModel }) => menuHTML({
+  key, field, action: 'pick-model', label: 'Model', srPrefix: 'Model: ', iconName: 'sliders', selected,
+  options: options.map(o => ({ id: o.id, label: o.label, pill: o.id === defaultModel ? 'Default' : '' })),
+});
 
 // Listbox focus movement: ArrowUp/ArrowDown clamp at the ends; Home/End jump. Returns -1 for any other key.
 export function nextOptionIndex(key, index, count) {

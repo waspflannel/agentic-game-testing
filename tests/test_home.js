@@ -213,7 +213,7 @@ test('composer offers every model and marks the server default model as Default'
   const draft = { ...newDraft(), configurationId: 'a' };
   const bar = composerRegions(composerModel(data(), 'p', draft, null), draft).bar;
   assert.doesNotMatch(bar, /<select data-field="model"/);
-  const options = [...bar.matchAll(/<button [^>]*role="option"[^>]*>.*?<\/button>/g)].map(x => x[0]);
+  const options = [...bar.matchAll(/<button [^>]*role="option"[^>]*data-action="pick-model"[^>]*>.*?<\/button>/g)].map(x => x[0]);
   assert.deepEqual(options.map(o => o.match(/data-value="([^"]+)"/)[1]), data().model_options.map(m => m.id));
   const astra = options.find(o => o.includes('data-value="gpt-6-astra"'));
   assert.match(astra, /aria-selected="true"/);
@@ -260,24 +260,54 @@ test('Start sends the chosen model and a changed model is a changed payload', as
   assert.notEqual(first.body.request_id, second.body.request_id);
 });
 
-test('fix chip disables manual and auto when the fixer is not ready', async () => {
+const fixMenu = html => html.slice(html.indexOf('data-key="c-fix"'), html.indexOf('composer-bar-right'));
+const fixOptions = html => Object.fromEntries((fixMenu(html).match(/<button type="button" role="option"[\s\S]*?<\/button>/g) || []).map(o => [o.match(/data-value="([^"]*)"/)[1], o]));
+
+test('fix menu shows why Manual and Auto are disabled when the fixer is not ready', async () => {
   const { composerRegions, composerModel, newDraft } = await load();
-  const fixer = { ready: false, reasons: ['gh is not signed in'] };
-  const bar = draft => composerRegions(composerModel(data(), 'p', draft, { key: 'p|b|a|gpt-6-astra', result: ready }, fixer), draft);
+  const fixer = { ready: false, reasons: ['Put jr on PATH.', 'Sign in with gh auth login.'] };
+  const bar = draft => composerRegions(composerModel(data(), 'p', draft, { key: 'p|b|a|gpt-6-astra', result: ready }, fixer), draft).bar;
   const draft = { ...newDraft(), configurationId: 'a' };
-  const off = bar(draft);
-  assert.match(off.bar, /data-field="fix"/);
-  assert.match(off.bar, /<option value="manual" disabled>/);
-  assert.match(off.bar, /<option value="auto" disabled>/);
-  assert.match(off.bar, /<option value="off" selected>/);
-  assert.ok(off.bar.indexOf('data-field="transport"') < off.bar.indexOf('data-field="fix"'));
-  assert.match(off.status, /sr-only" id="composer-fix-note">gh is not signed in/);
-  const manual = bar({ ...draft, fix: 'manual' });
-  assert.match(manual.status, /<p class="note" id="composer-fix-note">gh is not signed in<\/p>/);
-  const ok = composerRegions(composerModel(data(), 'p', draft, null, { ready: true, reasons: [] }), draft);
-  assert.doesNotMatch(ok.bar, /<option value="(manual|auto)"[^>]* disabled>/);
-  const waiting = composerRegions(composerModel(data(), 'p', draft, null), draft);
-  assert.match(waiting.status, /Checking the fixer…/);
+  const html = bar(draft);
+  assert.doesNotMatch(html, /data-field="fix" data-key/);
+  assert.ok(html.indexOf('data-key="c-transport"') < html.indexOf('data-key="c-fix"'));
+  assert.match(html, /<span class="chip-text">Fixes off<\/span>/);
+  assert.match(html, /data-key="c-fix" aria-describedby="c-fix-note"/);
+  const rows = fixOptions(html);
+  assert.deepEqual(Object.keys(rows), ['off', 'manual', 'auto']);
+  assert.doesNotMatch(rows.off, /aria-disabled/);
+  for (const id of ['manual', 'auto']) {
+    assert.match(rows[id], /aria-disabled="true"/);
+    assert.match(rows[id], /<span class="model-option-note">Put jr on PATH\.<\/span>/);
+  }
+  // All reasons are visible text in the menu footer that the trigger points at, never sr-only.
+  const footer = html.match(/<div class="menu-footer" id="c-fix-note">([\s\S]*?)<\/div>/)[1];
+  assert.match(footer, /<p>Put jr on PATH\.<\/p><p>Sign in with gh auth login\.<\/p>/);
+  assert.doesNotMatch(html, /sr-only" id=/);
+  assert.match(rows.off, /aria-selected="true"[\s\S]*#i-check/);
+  assert.match(bar({ ...draft, fix: 'manual' }), /<span class="chip-text">Fixes: manual<\/span>/);
+  const waiting = composerRegions(composerModel(data(), 'p', draft, null), draft).bar;
+  assert.match(waiting, /<p>Checking the fixer…<\/p>/);
+  assert.match(fixOptions(waiting).auto, /aria-disabled="true"[\s\S]*Checking the fixer…/);
+});
+
+test('fix menu enables Manual and Auto when the fixer is ready, and Auto is selectable', async () => {
+  const { composerRegions, composerModel, newDraft, startInstance } = await load();
+  const draft = { ...newDraft(), configurationId: 'a' };
+  const bar = d => composerRegions(composerModel(data(), 'p', d, null, { ready: true, reasons: [] }), d).bar;
+  const rows = fixOptions(bar(draft));
+  assert.doesNotMatch(fixMenu(bar(draft)), /menu-footer|aria-disabled="true"/);
+  assert.match(rows.manual, /You merge each fix PR/);
+  assert.match(rows.auto, /ASHAD merges, checks and reverts/);
+  for (const id of ['off', 'manual', 'auto']) assert.match(rows[id], /data-action="pick-fix" data-field="fix"/);
+  const auto = { ...draft, fix: 'auto' };
+  const autoRows = fixOptions(bar(auto));
+  assert.match(autoRows.auto, /aria-selected="true"[\s\S]*#i-check/);
+  assert.doesNotMatch(autoRows.off, /#i-check/);
+  assert.match(bar(auto), /<span class="chip-text">Fixes: auto<\/span>/);
+  const f = fakeApi({ '/api/instances': { id: 'r1' } });
+  await startInstance({ ...(await draftWith('Craft')), fix: 'auto' }, 'p', f.api);
+  assert.equal(f.posts()[0].body.fix_mode, 'auto');
 });
 
 test('startInstance sends fix_mode', async () => {

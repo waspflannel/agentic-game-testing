@@ -465,3 +465,22 @@ def test_deleting_an_unknown_agent_is_422(tmp_path):
     with TestClient(app) as client:
         response = client.delete("/api/agents/missing", headers=HEADERS)
         assert response.status_code == 422 and "Unknown agents" in response.json()["detail"]
+
+
+def test_build_only_readiness_is_ready_when_either_provider_is(tmp_path):
+    app = offline_app(tmp_path)
+    store = app.state.store
+    store.put("projects", {"id": "project", "name": "Same game"})
+    store.put("builds", {"id": "build", "project_id": "project"})
+    ready = {"configured": True, "status": "ready", "message": "Ready"}
+    signed_out = {"configured": False, "status": "configuration_required",
+                  "message": "Sign in with ChatGPT in AI Settings to use your Codex subscription."}
+    with TestClient(app) as client:
+        app.state.ai.validate = AsyncMock(side_effect=lambda model: ready if model == CLAUDE_MODEL else signed_out)
+        provider = client.get("/api/projects/project/readiness?build_id=build").json()["provider"]
+        assert provider["ready"] is True and provider["model"] == CLAUDE_MODEL
+        assert {c.args[0] for c in app.state.ai.validate.await_args_list} == {MODEL, CLAUDE_MODEL}
+        app.state.ai.validate = AsyncMock(side_effect=lambda model: signed_out)
+        provider = client.get("/api/projects/project/readiness?build_id=build").json()["provider"]
+        assert provider["ready"] is False and provider["message"] == "Set up AI in Settings › Account."
+        assert provider["model"] == MODEL

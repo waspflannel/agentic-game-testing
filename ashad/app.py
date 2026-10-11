@@ -310,6 +310,14 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
 
     @app.get("/api/projects/{project_id}/readiness")
     async def project_readiness(project_id: str, build_id: str, agent_id: str | None = None, model: str | None = None):
+        async def provider_check(model):
+            try:
+                status = await ai.validate(model)
+                return {"ready": status.get("configured") is True and status.get("status") == "ready",
+                        "status": status.get("status", "unknown"), "message": status.get("message", "Unknown AI connection"), "model": model}
+            except (ProviderError, CodexError, ClaudeError) as exc:
+                return {"ready": False, "status": exc.status, "message": exc.message, "model": model}
+
         if model and not agent_id:
             raise ValueError("Choose an agent configuration before a model.")
         Projects(store).project_for_build(build_id, project_id)
@@ -333,12 +341,12 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         if model:
             require_same_provider(model, resolved, "this agent configuration")
             resolved = model
-        try:
-            status = await ai.validate(resolved)
-            provider = {"ready": status.get("configured") is True and status.get("status") == "ready",
-                        "status": status.get("status", "unknown"), "message": status.get("message", "Unknown AI connection"), "model": resolved}
-        except (ProviderError, CodexError, ClaudeError) as exc:
-            provider = {"ready": False, "status": exc.status, "message": exc.message, "model": resolved}
+        if agent_id:
+            provider = await provider_check(resolved)
+        else:  # A build alone has no provider: either connected subscription is enough.
+            checks = await asyncio.gather(provider_check(MODEL), provider_check(CLAUDE_MODEL))
+            provider = next((check for check in checks if check["ready"]),
+                            {**checks[0], "message": "Set up AI in Settings › Account."})
         environments = []
         if build_validation["ready"]:
             occupied = {lease["resource_id"] for lease in store.leases() if lease["kind"] == "worker"}

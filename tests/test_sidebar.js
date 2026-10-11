@@ -79,7 +79,7 @@ test('every interactive row has a stable data-key so focus survives polls', asyn
   const html = sidebarHTML(sidebarModel(data(), ui({ expanded: new Map([['p', true]]) })));
   for (const tag of html.match(/<(a|button)\b[^>]*>/g)) assert.match(tag, /data-key="/, tag);
   assert.match(html, /aria-expanded="true" data-action="toggle-group" data-id="p"/);
-  assert.match(html, /aria-label="Set up new game agent"/);
+  assert.match(html, /aria-label="Set up a game"/);
 });
 
 test('Settings carries a sign-in marker only when no provider is ready', async () => {

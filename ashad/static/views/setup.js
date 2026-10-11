@@ -119,9 +119,6 @@ export function controlsProgressHTML(op, now) {
   return `${bar}<p>${esc(stage)} · <time data-elapsed="${started}">${elapsed(now - started)}</time> elapsed</p>${stalled}`;
 }
 
-// Transitional: views/project.js still imports the old name until the overview task renames it.
-export const tuningProgressHTML = controlsProgressHTML;
-
 // ── Markup ──────────────────────────────────────────────────────────────────
 export const elapsed = seconds => { const s = Math.max(0, Math.floor(seconds)); return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
 const noteHTML = (kind, text, extra = '') => `<p class="note${kind ? ` note-${kind}` : ''}"${kind === 'error' ? ' data-announce' : ''}>${icon(kind === 'error' ? 'alert' : 'info')}<span>${text}</span>${extra}</p>`;

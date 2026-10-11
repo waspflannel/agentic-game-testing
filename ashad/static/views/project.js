@@ -1,12 +1,12 @@
 // Project overview (spec §8.3). Model and markup are pure; app.js owns the DOM, the chooser and I/O.
-import { esc, icon, href, ago, since, modelLabel, newOp, runGoal, runTime, runStatus } from '../core.js';
-import { readinessHTML, projectBuilds, tuningProgressHTML } from './setup.js';
+import { esc, icon, href, ago, since, newOp, runGoal, runTime, runStatus } from '../core.js';
+import { readinessHTML, projectBuilds, controlsProgressHTML } from './setup.js';
 
 const enc = encodeURIComponent;
 const RECENT = 10;
 
-// Per-project UI. The chooser, preparation and retunes keep running while the page is closed.
-export const newOverview = projectId => ({ projectId, buildId: '', readiness: null, validation: new Map(), chooser: { busy: false, error: '' }, prepare: newOp(), retunes: new Map() });
+// Per-project UI. The chooser, preparation and Get controls refreshes keep running while the page is closed.
+export const newOverview = projectId => ({ projectId, buildId: '', readiness: null, validation: new Map(), chooser: { busy: false, error: '' }, prepare: newOp(), refreshes: new Map() });
 
 // Readiness probes the machine, so it is due only when no probe exists for the selected build: on view open
 // (app.js clears the record), on Re-check and after a preparation. A poll re-render never makes it due.
@@ -33,13 +33,13 @@ export function overviewModel(data, ov, now = Date.now() / 1000) {
     agentBusy: id => runs.some(r => owners.has(r.id) && [r.agent_id, r.plan?.agent_id].includes(id)),
     project, builds, build, agents, total: runs.length,
     recent: runs.slice(0, RECENT).map(r => ({ id: r.id, goal: runGoal(r), age: ago(runTime(r), now), status: runStatus(r, owners.get(r.id)), state: r.state, reason: r.ending_reason, duration: duration(r) })),
-    buildName, modelLabel: id => modelLabel(data, id),
+    buildName,
   };
 }
 
 export const overviewSkeleton = () => `<div class="page overview"><div class="page-head row-between" data-region="head"></div>`
   + `<div class="overview-grid"><section class="card" aria-labelledby="ov-builds"><h2 id="ov-builds" class="card-title">Builds</h2><div data-region="builds"></div></section>`
-  + `<section class="card" aria-labelledby="ov-agents"><h2 id="ov-agents" class="card-title">Agent configurations</h2><div data-region="agents"></div></section>`
+  + `<section class="card" aria-labelledby="ov-agents"><h2 id="ov-agents" class="card-title">Project configurations</h2><div data-region="agents"></div></section>`
   + `<section class="card" aria-labelledby="ov-ready"><h2 id="ov-ready" class="card-title">Desktop readiness</h2><div data-region="readiness"></div></section>`
   + `<section class="card" aria-labelledby="ov-recent"><h2 id="ov-recent" class="card-title">Recent instances</h2><div data-region="recent"></div></section></div></div>`;
 
@@ -49,7 +49,7 @@ export function overviewRegions(m, ov, now = Date.now() / 1000) {
   const pid = ov.projectId;
   const head = `<h1>${esc(m.project.name || m.project.id)}</h1><div class="btn-row">`
     + `<button type="button" class="btn btn-ghost" data-action="ov-delete-project" data-key="ov-delete-project"${m.busy ? ' aria-disabled="true" title="Stop its active instance before deleting this project"' : ''}>${icon('trash')}Delete project</button>`
-    + `<a class="btn btn-secondary" href="#/setup?project=${enc(pid)}" data-key="ov-add-agent">${icon('plus')}Add agent configuration</a>`
+    + `<a class="btn btn-secondary" href="#/setup?project=${enc(pid)}" data-key="ov-add-agent">${icon('plus')}Add project configuration</a>`
     + `<a class="btn btn-primary" href="${href('p', pid, 'new')}" data-key="ov-new">${icon('square-pen')}New instance</a></div>`;
 
   const validation = b => {
@@ -66,19 +66,25 @@ export function overviewRegions(m, ov, now = Date.now() / 1000) {
     + (ov.chooser.busy ? note('busy', 'Registering the build…') : ov.chooser.error ? note('error', ov.chooser.error) : '');
 
   const agents = m.agents.length ? `<ul class="list">${m.agents.map(a => {
-    const op = ov.retunes.get(a.id);
+    const title = `<span class="list-title">${esc(a.name || a.id)}</span>`;
+    const del = blocked => `<button type="button" class="btn btn-ghost btn-sm" data-action="ov-delete-agent" data-id="${esc(a.id)}" data-key="ov-delagent-${esc(a.id)}"${blocked ? ` aria-disabled="true" title="${blocked}"` : ''}>Delete</button>`;
+    if (a.status === 'retired') {
+      return `<li class="list-row"><div class="list-main">${title}${note('error', `Retired: ${a.retired_reason || 'reason not recorded'}`)}</div>`
+        + `<div class="list-actions">${del(m.agentBusy(a.id) ? 'Stop the instance using this project configuration before deleting it' : '')}</div></li>`;
+    }
+    const op = ov.refreshes.get(a.id);
     const busy = op && (op.status === 'busy' || op.waiting);
-    const blocked = busy ? 'Wait for the retune to finish before deleting' : m.agentBusy(a.id) ? 'Stop the instance using this configuration before deleting it' : '';
-    const status = !op ? '' : op.waiting ? note('', 'Another agent is being tuned; this retune starts when it finishes.')
-      : op.status === 'busy' ? `<div class="tuning">${tuningProgressHTML(op, now)}</div>`
-      : op.status === 'done' ? note('', `Retuned as ${op.value?.name || op.value?.id || 'a new configuration'}.`) : op.error ? note('error', op.error) : '';
-    return `<li class="list-row"><div class="list-main"><span class="list-title">${esc(a.name || a.id)}</span>`
-      + `<span class="check-detail">${esc(m.modelLabel(a.model))} · build ${esc(m.buildName(a.build_id))} · tuned ${a.created_at ? esc(since(a.created_at, now)) : 'at an unrecorded time'}</span>${status}</div>`
-      + `<div class="list-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="ov-instructions" data-id="${esc(a.id)}" data-key="ov-ins-${esc(a.id)}">View instructions</button>`
-      + `<button type="button" class="btn btn-ghost btn-sm" data-action="ov-retune" data-id="${esc(a.id)}" data-key="ov-tune-${esc(a.id)}"${busy ? ' aria-busy="true" aria-disabled="true"' : ''}>Retune…</button>`
+    const blocked = busy ? 'Wait for Get game controls to finish before deleting' : m.agentBusy(a.id) ? 'Stop the instance using this project configuration before deleting it' : '';
+    const status = !op ? '' : op.waiting ? note('', 'Another Get game controls run is in progress; this one starts when it finishes.')
+      : op.status === 'busy' ? `<div class="tuning">${controlsProgressHTML(op, now)}</div>`
+      : op.status === 'done' ? note('', `Saved as ${op.value?.name || op.value?.id || 'a new configuration'}.`) : op.error ? note('error', op.error) : '';
+    return `<li class="list-row"><div class="list-main">${title}`
+      + `<span class="check-detail">build ${esc(m.buildName(a.build_id))} · controls gathered ${a.created_at ? esc(since(a.created_at, now)) : 'at an unrecorded time'}</span>${status}</div>`
+      + `<div class="list-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="ov-controls" data-id="${esc(a.id)}" data-key="ov-ctl-${esc(a.id)}">View controls</button>`
+      + `<button type="button" class="btn btn-ghost btn-sm" data-action="ov-refresh" data-id="${esc(a.id)}" data-key="ov-refresh-${esc(a.id)}"${busy ? ' aria-busy="true" aria-disabled="true"' : ''}>Get controls again…</button>`
       + `<a class="btn btn-ghost btn-sm" href="${href('p', pid, 'new')}?agent=${enc(a.id)}" data-key="ov-run-${esc(a.id)}">New instance</a>`
-      + `<button type="button" class="btn btn-ghost btn-sm" data-action="ov-delete-agent" data-id="${esc(a.id)}" data-key="ov-delagent-${esc(a.id)}"${blocked ? ` aria-disabled="true" title="${blocked}"` : ''}>Delete</button></div></li>`;
-  }).join('')}</ul>` : `<p class="hint">No agent configuration yet. <a href="#/setup?project=${enc(pid)}" data-key="ov-setup">Add one</a> to start instances.</p>`;
+      + `${del(blocked)}</div></li>`;
+  }).join('')}</ul>` : `<p class="hint">No project configuration yet. <a href="#/setup?project=${enc(pid)}" data-key="ov-setup">Add one</a> to start instances.</p>`;
 
   let readiness;
   if (!m.build) readiness = `<p class="hint">Add a build to check this computer.</p>`;

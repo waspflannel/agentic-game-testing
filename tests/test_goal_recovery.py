@@ -79,7 +79,7 @@ async def recovery_instance(environment, profile):
         assert run_id == run["id"]
         assert supplied["goal"] == run["plan"]["primary_goal"]
         assert supplied["current_goal"]["id"] == "root"
-        assert supplied["game_controls"] == run["agent_profile"]["instructions"]
+        assert supplied["game_controls"] == run["game_controls"]["controls"]
         assert not coordinator.run_lock(run_id).locked(), "Monitor heartbeats must continue during inference"
         assert store.require("runs", run_id)["state"] == "Paused"
         ref = [{"source": "observation", "path": "/entities/0/state/recipes", "quote": "wheat"}]

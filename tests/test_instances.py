@@ -167,9 +167,6 @@ def test_public_workflow_and_retired_routes(tmp_path, monkeypatch):
         assert "usage_count" in bootstrap and "usage" not in bootstrap and "leases" in bootstrap
         assert "scenarios" not in bootstrap and "fixtures" not in bootstrap
         assert client.post("/api/agents/controls", json={"build_id": "build-1"}).status_code == 403
-        old = "/api/agents/"  # Retired routes are removed, not aliased.
-        assert client.post(old + "tune", json={"build_id": "build-1"}, headers=headers).status_code in {404, 405}
-        assert client.get(old + "tuning/x").status_code == 404
         refused = client.post("/api/agents/controls", json={"build_id": "build-1", "model": "gpt-6-sol"}, headers=headers)
         assert refused.status_code == 422 and MODEL_NOT_ALLOWED in refused.text
         gather.assert_not_awaited()
@@ -181,6 +178,14 @@ def test_public_workflow_and_retired_routes(tmp_path, monkeypatch):
                      "/api/runs/old/rerun", "/api/runs/old/review", "/api/findings/old/review"):
             assert client.post(path, json={}, headers=headers).status_code in {404, 405}
         assert client.get("/api/compare?run_ids=old").status_code == 404
+
+
+@pytest.mark.parametrize("old", ["tune", "tuning/x"])
+def test_retired_tuning_routes_are_removed_not_aliased(tmp_path, old):
+    with TestClient(app_at(tmp_path)) as client:
+        headers = {"X-ASHAD-Request": "1"}
+        assert client.post(f"/api/agents/{old}", json={"build_id": "build-1"}, headers=headers).status_code in {404, 405}
+        assert client.get(f"/api/agents/{old}").status_code in {404, 405}
 
 
 @pytest.mark.asyncio

@@ -55,6 +55,7 @@ Model menu: a chip trigger (sliders icon, label, chevron) opens a native popover
 Get controls meter: one `<progress class="progress">` with real `batches_done / batch_count`, the stage line and the stall note; no other decoration.
 Saves list: plain hairline rows in the Actions tab (time, trigger in words, game-save state in words, secondary Load). Load is never the accent; a disabled Load always shows its reason as text.
 Instance issues: plain hairline rows at the top of the Actions tab (type in words, title, counts, status in words, file path in mono). Hits sit in a nested details list; each hit's save uses the same secondary Load as the Saves list, and a disabled Load shows its reason as text. No colour-coded severity.
+Improvement loop: the first Actions section of every instance. A phase line in words, the issue, the attempt and PR link, the Needs-you sentence with an alert icon, the offered commands (Run fixer and Apply fix are the only primary actions; Revert fix is secondary; Cancel fix sits at the right as the danger button, never the accent), and a plain progress table (right-aligned tabular numbers, Change in words). Fixes chip: a chip select after Transport; disabled options show the reason as a note. No colour-coded phases.
 
 ## Changelog
 - 2026-10-11: DESIGN.md created from app.css :root; model menu added (feat/model-menu).
@@ -62,3 +63,4 @@ Instance issues: plain hairline rows at the top of the Actions tab (type in word
 - 2026-10-11: project configurations can no longer be deleted; the instance Blocked banner is removed and retired rows offer 'Get controls again…' (fix/remove-config-delete).
 - 2026-10-11: instance Saves section and Save now (feat/instance-save-load).
 - 2026-10-11: instance Issues section with per-hit save links (feat/instance-issues).
+- 2026-10-11: Fixes chip, Fixing/Needs you status and Improvement loop section (feat/fixer-loop).

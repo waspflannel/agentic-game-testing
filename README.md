@@ -1,10 +1,10 @@
 # ASHAD Bot
 
-ASHAD runs a game-playing bot in an isolated desktop. Tune a reusable agent profile from the pinned game's controls, then start a fresh instance with that agent and one primary goal using ENet. Steam remains unavailable without fresh licensed-identity proof; see the limitation below. The bot receives its saved instructions and filtered JSON game state, chooses an action, and checks the next observation.
+ASHAD runs a game-playing bot in an isolated desktop. Get game controls for a project configuration from the pinned game's source, then start a fresh instance with that configuration and one primary goal using ENet. Steam remains unavailable without fresh licensed-identity proof; see the limitation below. The bot receives its saved instructions and filtered JSON game state, chooses an action, and checks the next observation.
 
-**Tuning writes instructions; it does not train model weights.** A profile records its tuned model, which is the default, and its build. Each run freezes its profile so later tuning cannot silently change a running bot.
+**Get game controls writes a versioned controls file; it does not train model weights.** A Claude Sonnet swarm reads the pinned source in parallel. Each instance picks its own model (Codex or Claude) and freezes the controls file it started with.
 
-Tuning saves each completed source batch, so retrying a failed setup reuses matching notes for the same model, source and prompt version. Oversized notes or manuals receive one compression retry; both requests count toward usage. An agent is saved only after its complete manual passes validation.
+Get game controls saves each completed source batch, so retrying a failed run reuses matching notes for the same model, source and prompt version. Oversized notes or manuals receive one compression retry; both requests count toward usage. A project configuration is saved only after its complete controls file passes validation.
 
 ## Repository scope
 
@@ -12,7 +12,7 @@ ASHAD is a desktop app (Electron) for Windows x64 and Linux x64. There is no bro
 
 This repository contains the desktop shell, the controller and its UI, worker services, supporting Python utilities, and tests/documentation. Agronauts game source, assets, builds, Godot AI-layer edits, and game-patching tools are not included. Local credentials, runtime data, and validation history also stay out of Git.
 
-The app opens without game files. Agent tuning and gameplay require a separately supplied compatible game build, pinned source/control evidence, and a registered manifest; game files remain local and ignored.
+The app opens without game files. Getting game controls and gameplay require a separately supplied compatible game build, pinned source/control evidence, and a registered manifest; game files remain local and ignored.
 
 ## Build and run (Windows x64)
 
@@ -59,7 +59,7 @@ sudo chown root:root desktop/output/linux-unpacked/chrome-sandbox && sudo chmod 
 
 Use **Settings → AI connection → Sign in with ChatGPT** and finish the official browser sign-in. ASHAD uses its own managed Codex connection, separate from desktop-app and global CLI sign-in. There is no API-key fallback or manual token copying. Pause or stop active work before changing accounts.
 
-Profile tuning and bot decisions require account access to the selected model. The profile's tuned model is the default; an instance can use another model of the same provider only when you choose it, and ASHAD does not silently substitute a different model. Settings, saved records and local diagnostics remain available while signed out.
+Bot decisions require account access to the instance's model, and Get game controls requires Claude. Each instance picks its own model; ASHAD does not silently substitute a different one. Settings, saved records and local diagnostics remain available while signed out.
 
 **Usage & capacity** retains token totals, cost estimates, hardware measurements, session capacity and desktop availability. Equivalent API-price estimates are comparison values, not ChatGPT subscription charges or spending limits. Missing usage remains marked incomplete; historical charges retain their original meaning.
 
@@ -68,29 +68,31 @@ Profile tuning and bot decisions require account access to the selected model. T
 1. Install Claude Code 2.1.280 or later with Anthropic's native installer. ASHAD looks only in the installer's default location (`%USERPROFILE%\.local\bin\claude.exe`, or `~/.local/bin/claude` on Linux).
 2. In a terminal run `claude setup-token`, finish the browser step and copy the printed token.
 3. Use **Settings → Account → Claude**, paste the token and Save. The token goes to the OS credential store, never to ASHAD's database or logs. Remove deletes it.
-4. Pick Claude Sonnet (default), Opus or Haiku in **Projects + → Setup new game agent**. The profile records this as its tuned model; each instance may pick another Claude model at start and change it while live.
+4. Get game controls always runs Claude Sonnet (**Projects + → Setup new game agent**, step 4). Each instance picks its own model, Claude Sonnet, Opus or Haiku here or Codex, at start and may change it within the same provider while live.
 5. Terms: this is personal, local use of your own subscription through the unmodified Claude CLI. Read https://code.claude.com/docs/en/legal-and-compliance. Products built for other people should use API keys; ASHAD has no API-key fallback. Do not share a build containing a token or run it for other people's subscriptions.
 
 ## Project ownership and retained history
 
-Use **Projects + → Setup new game agent** to create a game project, select/register a supported pinned manifest, explicitly inspect/prepare its desktop, tune a named model-specific configuration and review its saved guide. Selection never imports, prepares, tunes or starts automatically. Duplicate names remain independent IDs. Completed tuning retries reconcile the same request rather than silently retuning. Exactly **one occupied instance globally** is allowed, including queued, paused, human-owned and ended/unconfirmed work. Existing higher saved caps remain historical settings, not effective capacity.
+Use **Projects + → Setup new game agent** to create a game project, select/register a supported pinned manifest, explicitly inspect/prepare its desktop, get game controls for a named project configuration and review its saved controls. Selection never imports, prepares, gets controls or starts automatically. Duplicate names remain independent IDs. Completed retries reconcile the same request rather than silently running again. Exactly **one occupied instance globally** is allowed, including queued, paused, human-owned and ended/unconfirmed work. Existing higher saved caps remain historical settings, not effective capacity.
 
 Interrupted imports from older ASHAD versions block editing and admission until operator reconciliation: retain the journal, evidence and backup; do not remove them blindly.
 
-## Tune an agent, then run it
+## Get game controls, then run it
 
-1. Complete **Projects +** setup: choose the pinned build, inspect a compatible desktop, select the model and explicitly tune a named profile. The selected provider uses source/control evidence; tuning performs inference but does not launch a game. Review the saved instructions.
-2. Open the project's **New instance**, select a saved profile and enter the primary goal. Its build is fixed by the profile. The model defaults to the profile's tuned model; pick another model of the same provider at start, or change it from the instance header while the instance is live (it applies from the next decision). The controls manual stays the one tuned with the profile's model. Check readiness without inference/gameplay if needed.
+1. Complete the four **Projects +** setup steps: Project, Build, Desktop, then Get controls. Get controls explicitly runs a Claude Sonnet swarm over the pinned source/control evidence; it performs inference but does not launch a game. Review the saved controls.
+2. Open the project's **New instance**, select a project configuration and enter the primary goal. Its build is fixed by the configuration. Choose the instance's model, Codex or Claude; change it from the instance header within the same provider while the instance is live (it applies from the next decision). The controls file stays the one the instance started with. Check readiness without inference/gameplay if needed.
 3. Explicitly **Start instance**. ASHAD freshly revalidates authentication, exact supported build pins and actual idle desktop/render/capture/input capabilities, then accepts one host bot in a fresh world. Failed/blocked drafts never auto-launch. Lost replies reconcile the same request; restoring prepared inputs asks first and still requires another Start click.
 4. Follow the live view. Pause, resume, stop, or take over if the bot needs help. Each instance retains its own run ID and evidence.
+
+Configurations from earlier versions are converted once on upgrade to controls files; any that cannot be converted are retired. The conversion is one-way. Deleting a project configuration blocks its instances until the project is reconfigured.
 
 **Desktop prerequisites:** Docker Desktop's Linux engine (Windows) or Docker Engine (Linux), and separately supplied supported game files are required. Confirmed preparation may build a content-addressed bundled worker image and create one owner-labelled desktop, persistent volumes and local service/desktop credential references; it never starts gameplay or recreates/adopts unrelated containers. Changed/legacy artifacts lacking exact supported pins require a new registration. Each Prepare request reconciles one desktop per project and build. Provisioning completion alone is not readiness.
 
 **Steam limitation:** Steam is unavailable until fresh actual matching identity, real App ID and licence are proven. The current idle passive worker cannot supply that proof without application initialization, so copied account readiness or an old verification never enables it. ASHAD never substitutes App ID 480, ENet or offline transport. Supported owned Steam-start/integration work and live acceptance remain separate gates; ENet is an explicit user choice.
 
-Profile generation does not launch a game. A new instance always uses fresh world and character setup; multiplayer planning, saved starts, seeds and advanced scenario editing are deferred. Existing desktops and Steam profiles are retained between runs.
+Getting game controls does not launch a game. A new instance always uses fresh world and character setup; multiplayer planning, saved starts, seeds and advanced scenario editing are deferred. Existing desktops and Steam profiles are retained between runs.
 
-The primary goal is free text. New tuned-agent instances maintain an automatic **goal hierarchy** and a **currently chasing** goal. The planner works backward from the desired outcome through missing prerequisites, then the existing game-action loop pursues one achievable goal at a time. Completing a child does not automatically complete its parent.
+The primary goal is free text. New instances maintain an automatic **goal hierarchy** and a **currently chasing** goal. The planner works backward from the desired outcome through missing prerequisites, then the existing game-action loop pursues one achievable goal at a time. Completing a child does not automatically complete its parent.
 
 Plans belong to the instance, not the reusable agent. They survive refreshes and controller recovery; resume/takeover handback rechecks fresh observations before acting. The live instance sidebar shows the hierarchy, current branch, completion conditions, blocked reasons and recorded evidence. Setup remains agent + primary goal + ENet/Steam.
 
@@ -114,7 +116,7 @@ The live camera is for the human operator. Routine model decisions use the filte
 
 ## Scope and retained data
 
-The supported workflow is agent tuning and fresh, one-bot instances. Old scenarios, runs, saves, usage and evidence remain stored and readable for operational compatibility. Deleting an instance from the sidebar, or a project from setup, removes its records and run files from this computer; usage totals are kept. Retired feature endpoints are unavailable; preserving a record does not make its old editing or launch workflow available.
+The supported workflow is getting game controls and fresh, one-bot instances. Old scenarios, runs, saves, usage and evidence remain stored and readable for operational compatibility. Deleting an instance from the sidebar, or a project from setup, removes its records and run files from this computer; usage totals are kept. Retired feature endpoints are unavailable; preserving a record does not make its old editing or launch workflow available.
 
 [Future work](docs/future-work.md) records deferred features and the prerequisites for restoring them.
 

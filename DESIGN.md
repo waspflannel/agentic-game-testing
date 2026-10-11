@@ -1,7 +1,7 @@
 # Design
 
 ## Direction
-Quiet, exact, compact, dark. Essence: "quiet · exact · instrument-panel". Controls read like a control on a test rig. A game-QA operator picks the model that drives the bot, at start or mid-run, and must see the current model and the tuned default at a glance.
+Quiet, exact, compact, dark. Essence: "quiet · exact · instrument-panel". Controls read like a control on a test rig. A game-QA operator picks the model that drives the bot, at start or mid-run, and must see the current model and the default model at a glance.
 
 ## Tokens
 All tokens live in the `:root` block of `ashad/static/app.css`.
@@ -51,7 +51,9 @@ All tokens live in the `:root` block of `ashad/static/app.css`.
 The selected row's quiet check plus the muted "Default" pill. Nothing else is decorative.
 
 ## Components
-Model menu: a chip trigger (sliders icon, label, chevron) opens a native popover listbox anchored under it, flipping above if there is no room. Rows show the label, a muted "Default" pill on the tuned model and a quiet check on the selected one. Keyboard: opening focuses the selected row, ArrowUp and ArrowDown clamp at the ends, Home and End jump, Enter and Space pick, and Escape closes and returns focus to the trigger.
+Model menu: a chip trigger (sliders icon, label, chevron) opens a native popover listbox anchored under it, flipping above if there is no room. Rows show the label, a muted "Default" pill on the default model and a quiet check on the selected one. Keyboard: opening focuses the selected row, ArrowUp and ArrowDown clamp at the ends, Home and End jump, Enter and Space pick, and Escape closes and returns focus to the trigger.
+Get controls meter: one `<progress class="progress">` with real `batches_done / batch_count`, the stage line and the stall note; no other decoration.
 
 ## Changelog
 - 2026-10-11: DESIGN.md created from app.css :root; model menu added (feat/model-menu).
+- 2026-10-11: setup step 4 'Get controls' batch meter; overview 'Project configurations'; instance Blocked banner.

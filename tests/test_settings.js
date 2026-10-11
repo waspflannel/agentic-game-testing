@@ -86,7 +86,8 @@ test('Steam rejects App ID 480 inline, and Verify needs a build with the same Ap
 test('the settings nav has no Maintenance section', async () => {
   const { SECTIONS, settingsSkeleton } = await settings();
   assert.deepEqual(SECTIONS.map(([id]) => id), ['account', 'desktops', 'steam', 'limits']);
-  assert.doesNotMatch(settingsSkeleton('account', ''), /maintenance/i);
+  const links = [...settingsSkeleton('account', '').matchAll(/class="row settings-link[^"]*" href="#\/settings\/(\w+)"/g)].map(m => m[1]);
+  assert.deepEqual(links, ['account', 'desktops', 'steam', 'limits']);
 });
 
 test('usage totals count cached and reasoning tokens once and never invent a price', async () => {

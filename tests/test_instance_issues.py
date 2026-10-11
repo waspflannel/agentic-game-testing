@@ -1,4 +1,7 @@
 """Per-instance issue history: save_before links, the run detail issues list, caps and fallbacks. Fakes and temporary data only."""
+import asyncio
+from pathlib import Path
+
 import pytest
 
 from ashad import repair_tasks
@@ -125,3 +128,44 @@ def test_run_issues_falls_back_for_old_events_and_missing_records(tmp_path):
     assert issue["hits"][0]["save_before"] is None
     assert issue["title"] == "issue_gone" and issue["status"] == "unknown"
     assert issue["occurrences_total"] is None and issue["file"] is None and issue["type"] == "game_bug"
+
+
+@pytest.mark.asyncio
+async def test_run_detail_lists_issues_with_save_links(environment, monkeypatch, api):
+    monkeypatch.setattr(repair_tasks, "MAX_EXAMPLES", 1)
+    env = await running(environment, monkeypatch, reject_verbs={"interact"})
+    await act(env)
+    await act(env)
+    response = await call(api, "GET", f"/api/runs/{env.rid}")
+    assert response.status_code == 200
+    body = response.json()
+    [issue] = body["issues"]
+    assert issue["type"] == "unsupported_action" and issue["hit_count"] == 2
+    assert issue["occurrences_total"] == 2 and issue["status"] == "open" and Path(issue["file"]).exists()
+    recorded = events(env, "unsupported_action_recorded")
+    save_ids = {s["id"] for s in body["saves"]}
+    for hit_row, event in zip(reversed(issue["hits"]), recorded):
+        assert hit_row["save_before"] == event["payload"]["save_before"] and hit_row["save_before"] in save_ids
+    assert body["issues_truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_run_detail_without_hits_has_empty_issues(environment, monkeypatch, api):
+    env = await running(environment, monkeypatch)
+    body = (await call(api, "GET", f"/api/runs/{env.rid}")).json()
+    assert body["issues"] == [] and body["issues_truncated"] is False
+
+
+@pytest.mark.asyncio
+async def test_delete_run_drops_history_keeps_issue_file(environment, monkeypatch, api):
+    env = await running(environment, monkeypatch, reject_verbs={"interact"})
+    await act(env)
+    [issue_path] = list(issue_directory(env.store).glob("*.json"))
+    await asyncio.create_task(env.coord.finish(env.rid, "user_stopped", terminate=True))
+    pending = [t for key, t in env.coord.tasks.items() if key[0] == env.rid]
+    for task in pending:
+        task.cancel()
+    await asyncio.gather(*pending, return_exceptions=True)
+    await env.coord.delete_run(env.rid)
+    assert repair_tasks.run_issues(env.store, env.rid) == ([], False)
+    assert issue_path.exists()

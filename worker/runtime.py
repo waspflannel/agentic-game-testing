@@ -771,8 +771,30 @@ class Runtime:
             "controller_age_seconds": round(time.monotonic() - self.last_heartbeat, 3), "steam": self.steam_status(),
             "termination": self.termination_result, "disk": {"free_bytes": disk.free, "total_bytes": disk.total},
             "teardown_confirmed": bool(self.termination_result and self.termination_result.get("confirmed")),
-            "resources": self.resources(),
+            "resources": self.resources(), "game_exit": self._game_exit(),
             "width": self.desktop.width, "height": self.desktop.height, "timestamp": utc_now()}
+
+    def _game_exit(self) -> dict | None:
+        if self.game is None or self.game_running:
+            return None
+        rc = self.game.returncode
+        name = None
+        if os.name != "nt" and isinstance(rc, int) and rc < 0:
+            try:
+                name = signal.Signals(-rc).name
+            except ValueError:
+                name = None
+        return {"exit_code": rc, "signal": name, "log_tail": self._game_log_tail()}
+
+    def _game_log_tail(self) -> str | None:
+        try:
+            with open(self.run_dir / "game.log", "rb") as handle:
+                size = handle.seek(0, os.SEEK_END)
+                handle.seek(max(0, size - 4096))
+                data = handle.read()
+        except (OSError, HTTPException):
+            return None
+        return data.decode("utf-8", errors="replace")
 
     def resources(self) -> dict:
         now = time.monotonic()

@@ -3,6 +3,7 @@ import asyncio
 import base64
 import io
 import json
+import os
 from pathlib import Path
 import tempfile
 import time
@@ -66,6 +67,19 @@ class WorkerContractTests(unittest.IsolatedAsyncioTestCase):
         self.worker.lifecycle = "running"
         self.observation = await self.worker.capture()
         self.desktop.commands.clear()
+
+    async def test_status_reports_game_exit_code_signal_and_log_tail(self):
+        self.assertIsNone(self.worker.status()["game_exit"])
+        self.worker.game.returncode = -11
+        log = self.worker.run_dir / "game.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.write_bytes(("line\n" * 1999 + "last line\n").encode())
+        exit_info = self.worker.status()["game_exit"]
+        self.assertEqual(exit_info["exit_code"], -11)
+        self.assertLessEqual(len(exit_info["log_tail"]), 4096)
+        self.assertTrue(exit_info["log_tail"].endswith("last line\n"))
+        if os.name != "nt":
+            self.assertEqual(exit_info["signal"], "SIGSEGV")
 
     async def asyncTearDown(self):
         self.worker.game = None

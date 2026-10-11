@@ -290,3 +290,10 @@ test('savesHTML marks a pending load busy', async () => {
   assert.ok(row.includes('aria-busy="true"') && row.includes('i-loader'));
   assert.equal(html.split('aria-busy').length - 1, 1);
 });
+
+test('saveToast says what was actually saved', async () => {
+  const { saveToast } = await load();
+  assert.equal(saveToast({ game: { status: 'confirmed' } }), 'Saved.');
+  assert.match(saveToast({ game: { status: 'on_disk' } }), /last game save on disk/);
+  assert.match(saveToast({ game: { status: 'none' } }), /No game save was found/);
+});

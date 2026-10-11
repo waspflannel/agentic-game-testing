@@ -181,6 +181,13 @@ export function saveTrigger(save) {
 }
 
 // Every state is spelled out; a disabled Load carries its reason as a hint above the list.
+export function saveToast(save) {
+  const status = save?.game?.status;
+  if (status === 'confirmed') return 'Saved.';
+  if (status === 'on_disk') return 'Saved. The game did not confirm a fresh save, so the last game save on disk was kept.';
+  return 'Saved the bot state. No game save was found.';
+}
+
 export function savesHTML(saves, { slotFree, pending }) {
   if (!saves.length) return `<p class="hint">No saves yet. ASHAD saves before risky actions and when it records an issue. Use Save now for your own.</p>`;
   const rows = saves.map(save => {

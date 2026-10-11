@@ -1,7 +1,7 @@
 import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, createDrawer, patchHTML, dirtyBridge, runGoal, ago, modelLabel, nextOptionIndex } from './core.js';
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
 import { emptyHTML, noConfigurationsHTML, projectConfigurations, readinessKey, newDraft, draftModel, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
-import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions, defaultTab, nextTab } from './views/instance.js';
+import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions, defaultTab, nextTab, saveToast } from './views/instance.js';
 import { panelRegions, mergeEvents, latestObservation } from './views/inspector.js';
 import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discardSetup, getControls, setupSkeleton, setupRegions, prepareDialogText, prepareDesktop, registerBuild, elapsed } from './views/setup.js';
 import { settingsSkeleton, accountSkeleton, accountRegions, accountBlocker, settleLogin, desktopsSkeleton, desktopsRegions, workerPayload, steamSkeleton, steamRegions, steamErrors,
@@ -979,7 +979,7 @@ async function command(action, send, ok, runOf = value => value) {
   if (!error) {
     const run = runOf(value);
     if (run?.id === runId) state.runSlot.set(run);  // Also drops any GET that started before this response.
-    if (ok) toast(ok, 'ok');
+    if (ok) toast(typeof ok === 'function' ? ok(value) : ok, 'ok');
   } else if (!onThread) toast(error.message, 'error');
   if (onThread) { renderView(); pollRun(); }
   poll();
@@ -1015,7 +1015,7 @@ async function onControl(action) {
       if (!form) return;
       return command('extend', control(run, 'extend', { seconds: Number(form.get('minutes')) * 60 }), 'Investigation extended.');
     }
-    case 'save': return command('save', id => api(`${runPath(run)}/saves`, { method: 'POST', body: { command_id: id } }), 'Saved.', () => null);
+    case 'save': return command('save', id => api(`${runPath(run)}/saves`, { method: 'POST', body: { command_id: id } }), saveToast, () => null);
     case 'recalculate':
       if (!await confirmDialog({ title: 'Recalculate goals?', body: 'Bot input is held while ASHAD replans from fresh game state under the same primary goal. The old plan stays in the history. Resume separately when you are ready.', confirm: 'Recalculate goals' })) return;
       return command('recalculate', id => api(`${runPath(run)}/recalculate-goals`, { method: 'POST', body: { command_id: id } }), 'Goals recalculated. Bot input stays paused until you resume.');

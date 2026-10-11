@@ -4,14 +4,19 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import logging
 import time
+from datetime import datetime, timezone
 
-from .ai import ProviderError
+from .ai import GAME_VERBS, ProviderError, capability_summary
 from .game_controls import run_configuration
 from .models import MODEL, PROVIDERS, provider_of
 from .repository import Repository
 from .store import uid
-from . import subgoals
+from . import repair_tasks, subgoals
+
+LOG = logging.getLogger(__name__)
+LOOP_BACKSTOP_DECISIONS = 6
 
 
 def meaningful_signature(observation):
@@ -50,6 +55,10 @@ def wait_signature(observation):
     return hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()
 
 
+def observed_entity(observation, target_id):
+    return next((e for e in observation.get("entities", []) if target_id and e.get("id") == target_id), {})
+
+
 class StructuredPlayers:
     def __init__(self, coordinator):
         self.coordinator = coordinator
@@ -59,6 +68,7 @@ class StructuredPlayers:
         self.pending = {}
         self.generations = {}
         self.control_owners = {}
+        self.loop_counts = {}
 
     def _forget_turn(self, key):
         self.waits.pop(key, None)
@@ -210,9 +220,15 @@ class StructuredPlayers:
             rejected = 400 <= (getattr(exc, "status_code", None) or 0) < 500 and getattr(exc, "ambiguous", True) is False
             result = {"status": "rejected" if rejected else "unknown", "action_id": action_id,
                       "reason": str(exc) if rejected else "Acknowledgement lost; reconcile status",
-                      "error": f"{type(exc).__name__}: {exc}", "error_code": getattr(exc, "code", None)}
-        self.store.event(run_id, "action_result", {"player_id": player_id, "action_id": action_id,
+                      "error": f"{type(exc).__name__}: {exc}", "error_code": getattr(exc, "code", None),
+                      "http_status": getattr(exc, "status_code", None)}
+        outcome_event = self.store.event(run_id, "action_result", {"player_id": player_id, "action_id": action_id,
             "intent_event_id": event["id"], "result": result, "mode": "structured", "retries": 0})
+        if result.get("status") == "rejected" and result.get("http_status") not in {None, 409}:
+            await self.report_unsupported(run_id, player_id, "worker_rejected", {"tool": "perform_action",
+                "verb": payload["verb"], "target_id": payload["target_id"] or None, "parameters": payload["parameters"],
+                "controller": "agent" if owner == "agent" else "mcp"}, observation,
+                outcome=result, event_ids=(outcome_event["id"],))
         if result.get("status", "unknown") not in {"running", "accepted", "unknown"}:
             self.clear_pending(run_id, player_id, generation)
         if result.get("status") in {"rejected", "failed", "expired", "cancelled"}:
@@ -223,6 +239,101 @@ class StructuredPlayers:
             self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
             self.status(run_id, player_id, "action_failed", str(result.get("reason") or result.get("status")), generation, action_id=action_id)
         return result
+
+    async def report_unsupported(self, run_id, player_id, source, wanted, observation, *, outcome=None, event_ids=()):
+        """Record one unsupported-action hit; never blocks or fails the turn."""
+        try:
+            run, ps = self.binding(run_id, player_id)
+            player = next(p for p in run["plan"]["players"] if p["id"] == player_id)
+            target = observed_entity(observation, wanted.get("target_id"))
+            wanted = {"tool": None, "verb": None, "target_id": None, "parameters": None, "blocker": None,
+                      "controller": "agent", "follow_up_error": None, **wanted,
+                      "target_kind": target.get("kind"), "target_label": target.get("label")}
+            basis = {"source": source, "tool": wanted["tool"], "verb": wanted["verb"], "blocker": wanted["blocker"],
+                     "target_kind": target.get("kind") or "none",
+                     "target_label": repair_tasks.target_label(target.get("label")),
+                     "error_code": (outcome or {}).get("error_code") or (outcome or {}).get("http_status")}
+            room = repair_tasks.issue_room(self.store, "unsupported_action", basis)
+            if room == "full":
+                self.store.event(run_id, "issue_cap_reached", {"player_id": player_id, "issue_type": "unsupported_action",
+                    "signature": repair_tasks.issue_signature("unsupported_action", basis)})
+                return
+            example_id = uid("uae_")
+            screenshot = {"observation_id": observation.get("observation_id"), "pin_id": example_id,
+                          "status": "unavailable", "frames": [],
+                          "retained_path_prefix": f"runs/{run_id}/workers/{player_id}/pinned/{example_id}/"}
+            if room == "keep":
+                try:
+                    pinned = await self.coordinator.request(ps["worker_id"], "POST", "/pin", {
+                        "epoch": ps["epoch"], "incident_id": example_id, "before_seconds": 10, "after_seconds": 0})
+                    screenshot.update(status="pinned", frames=list((pinned or {}).get("frames", [])))
+                except Exception:
+                    pass  # Status stays "unavailable"; a missing pin never blocks the record.
+            recent = self.store.events(run_id, after=max(0, self.store.count_events(run_id) - 120), limit=120)
+            player_events = [e for e in recent if e["payload"].get("player_id") == player_id
+                             and e["kind"] in {"decision_selected", "action_result", "structured_tool_result"}]
+            decisions = []
+            for event in player_events[-5:]:
+                text = json.dumps(event["payload"], ensure_ascii=False)
+                decisions.append({"event_id": event["id"], "kind": event["kind"], "at": event["timestamp"],
+                                  "payload": event["payload"] if len(text) <= 2000 else text[:2000]})
+            plan = run.get("subgoal_plan") if (run.get("subgoal_plan") or {}).get("player_id") == player_id else None
+            goal = subgoals.active_goal(plan) if plan else None
+            intent = {"primary_goal": plan["primary_goal"] if plan else player["goal"],
+                      "current_goal": {k: goal[k] for k in ("id", "objective", "completion")} if goal else None,
+                      "goal_path": [g["objective"] for g in subgoals.goal_path(plan)] if plan else [],
+                      "plan_reason": plan.get("reason") if plan else None}
+            capabilities = {**capability_summary(observation), "target_advertised_actions": list(target.get("actions", []))}
+            recorded = self.store.event(run_id, "unsupported_action_recorded", {"player_id": player_id,
+                "issue_id": repair_tasks.issue_id("unsupported_action", basis), "example_id": example_id,
+                "source": source, "kept": room == "keep"})
+            root = self.store.run_dir(run_id)
+            outcome_fields = None if outcome is None else {
+                k: (str(outcome.get(k))[:2000] if k in {"reason", "error"} and outcome.get(k) is not None else outcome.get(k))
+                for k in ("status", "reason", "error", "error_code", "http_status")}
+            telemetry = ps.get("telemetry") or {}
+            example = {"example_id": example_id, "at": datetime.now(timezone.utc).isoformat(), "run_id": run_id,
+                "player_id": player_id, "scenario_id": run.get("scenario_id"),
+                "scenario_revision": run.get("scenario_revision"), "model": run.get("model"),
+                "controller_version": run.get("controller_version"),
+                "build": {"id": run["build"].get("id"), "source_revision": run["build"].get("source_revision")},
+                "source": source, "intent": intent, "wanted": wanted, "outcome": outcome_fields,
+                "capabilities": capabilities, "recent_decisions": decisions,
+                "game_state": {"observation_id": observation.get("observation_id"),
+                    "observation": prompt_observation(observation, max_chars=20000),
+                    "telemetry": {"completed_quests": telemetry.get("completed_quests"), "diagnostics": telemetry.get("diagnostics")},
+                    "progress": run.get("progress")},
+                "screenshot": screenshot,
+                "evidence": {"run_dir": str(root), "ledger": str(root / "ledger.jsonl"), "report": str(root / "report.md"),
+                             "event_ids": [*event_ids, recorded["id"]]},
+                "truncated": []}
+            repair_tasks.record_issue(self.store, "unsupported_action", basis, example)
+            repair_tasks.publish_issues(self.store)
+        except Exception:
+            LOG.exception("Could not record unsupported action for %s/%s", run_id, player_id)
+
+    async def _loop_backstop(self, run_id, player_id, generation, signature, observation, result):
+        """Unchanged state across several dispatched decisions means the agent is stuck without saying so."""
+        if not isinstance(result, dict) or result.get("action", {}).get("tool") not in {"perform_action", "wait_for_change"}:
+            return
+        key = (run_id, player_id)
+        previous = self.loop_counts.get(key)
+        count = previous[2] + 1 if previous and previous[:2] == (generation, signature) else 1
+        if count < LOOP_BACKSTOP_DECISIONS:
+            self.loop_counts[key] = (generation, signature, count)
+            return
+        self.loop_counts.pop(key, None)
+        action = result["action"]
+        args = action.get("args", {})
+        await self.report_unsupported(run_id, player_id, "loop_backstop", {"tool": action["tool"], "verb": args.get("verb"),
+            "target_id": args.get("target_id"),
+            "parameters": args.get("parameters") or {k: v for k, v in args.items() if k != "reason"}}, observation)
+        reason = f"The game state did not change across {LOOP_BACKSTOP_DECISIONS} decisions; the agent may be repeating an unsupported action."
+        if self.request_replan(run_id, player_id, generation, reason):
+            self.status(run_id, player_id, "planning", "Repeated actions did not change the game; revising the approach.", generation)
+            return
+        self.status(run_id, player_id, "error", reason, generation, last_error=reason, error_at=time.time())
+        await self.coordinator.investigate(run_id, "decision_needs_instructions", reason, [player_id])
 
     def decision_context(self, run, player, observation):
         ps = run["players"][player["id"]]
@@ -350,6 +461,7 @@ class StructuredPlayers:
                 self.clear_pending(run_id, player_id, generation)  # Held/rebound input cannot still be pending.
             self.pending.pop(key, None)
             self._forget_turn(key)
+            self.loop_counts.pop(key, None)
             self.generations[key] = generation
         def current():
             live = self.store.require("runs", run_id)
@@ -409,8 +521,15 @@ class StructuredPlayers:
                 phase = status.get("phase")
                 if phase in {"thinking", "tool"}:
                     self.status(run_id, player_id, "ready", "Decision finished; checking the next observation.", generation, completed_at=time.time())
+                await self._loop_backstop(run_id, player_id, generation, signature, observation, result)
         except ProviderError as exc:
             if current():
+                if exc.status == "decision_needs_instructions":
+                    report = exc.report or {}
+                    await self.report_unsupported(run_id, player_id, report.get("source", "agent_signal"), {
+                        "tool": "perform_action" if report.get("wanted_verb") in GAME_VERBS else None,
+                        "verb": report.get("wanted_verb"), "target_id": report.get("wanted_target_id"),
+                        "blocker": report.get("blocker"), "follow_up_error": report.get("follow_up_error")}, observation)
                 if exc.status == "decision_needs_instructions" and self.request_replan(run_id, player_id, generation,
                         "No supported direct action fits. Decompose missing prerequisites or explain the blocker."):
                     self.status(run_id, player_id, "planning", "The current goal needs a smaller prerequisite or another approach.", generation)

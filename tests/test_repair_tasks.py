@@ -7,7 +7,7 @@ import pytest
 from ashad.ai import ProviderError
 from ashad.coordinator import Coordinator
 from ashad.models import MODEL
-from ashad.repair_tasks import publish_pending, record_task, task_directory
+from ashad.repair_tasks import issue_directory, publish_pending, record_task, task_directory
 from test_controller import environment, new_run  # noqa: F401
 from test_acceptance_edges import game_context_worker, ready_run
 
@@ -69,6 +69,22 @@ async def test_no_decision_exports_failure_context_once(environment, monkeypatch
     await coord.recover()
     publish_pending(store)
     assert tasks(store) == []
+
+
+@pytest.mark.asyncio
+async def test_issue_files_do_not_appear_as_repair_tasks(environment, monkeypatch):
+    store, coord, _, desktops = environment
+    run = await ready_run(environment)
+    game_context_worker(monkeypatch, desktops["worker-1"], run)
+    message = "No suitable supported action for this observation"
+    coord.ai.player_turn = AsyncMock(side_effect=ProviderError("decision_needs_instructions", message))
+    store.event(run["id"], "diagnostic", {"api_key": "private-test-key", "message": "sk-sensitivevalue123456"})
+    await coord.player_turn(run["id"], "player-1")
+    await coord.investigate(run["id"], "decision_needs_instructions", message, ["player-1"])
+    assert issue_directory(store).is_dir()
+    assert len(list(issue_directory(store).glob("*.json"))) == 1
+    for path, _ in tasks(store):
+        assert path.suffix == ".md" and path.parent == task_directory(store)
 
 
 @pytest.mark.asyncio

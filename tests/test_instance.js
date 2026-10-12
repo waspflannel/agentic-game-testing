@@ -245,69 +245,29 @@ test('header shows a same-provider model menu for a live run and a plain chip fo
   assert.doesNotMatch(head(run('Running')), /model-default/);
 });
 
-test('save now is in the menu for launched running, paused and investigating only', async () => {
-  const { instanceState } = await load();
-  for (const state of ['Running', 'Paused', 'Investigating']) {
-    assert.ok(instanceState(run(state)).menu.includes('save'), state);
-    const unlaunched = run(state, { players: { p1: { id: 'p1', launched: false } } });
-    assert.ok(!instanceState(unlaunched).menu.includes('save'), `${state} unlaunched`);
-  }
-  for (const state of ['Starting', 'Ended']) assert.ok(!instanceState(run(state)).menu.includes('save'), state);
-});
-
-const SAVES = [
-  { id: 's1', created_at: 1000, trigger: 'risky_action', trigger_detail: { why: 'first_attempt', verb: 'interact', target_kind: 'chest' }, game: { status: 'confirmed' } },
-  { id: 's2', created_at: 900, trigger: 'issue', trigger_detail: { issue_type: 'unsupported_action' }, game: { status: 'none' } },
-  { id: 's3', created_at: 800, trigger: 'manual', trigger_detail: { label: 'before boss' }, game: { status: 'on_disk' } },
-];
-
-test('savesHTML empty state explains automatic saves', async () => {
-  const { savesHTML } = await load();
-  const html = savesHTML([], { slotFree: true, pending: new Set() });
-  assert.match(html, /No saves yet/);
-  assert.ok(!html.includes('<button'));
-});
-
-test('savesHTML rows describe trigger and game state in words', async () => {
-  const { savesHTML } = await load();
-  const html = savesHTML(SAVES, { slotFree: true, pending: new Set() });
-  for (const text of ['Before first interact on chest', 'Issue: Unsupported action', 'Manual: before boss', 'Last game save on disk', 'Game saved', 'No game save']) assert.ok(html.includes(text), text);
-  assert.equal(html.split('data-action="load-save"').length - 1, 3);
-  assert.ok(!html.includes('aria-disabled'));
-});
-
-test('savesHTML disables load while the slot is occupied', async () => {
-  const { savesHTML } = await load();
-  const html = savesHTML(SAVES, { slotFree: false, pending: new Set() });
-  assert.equal(html.split('aria-disabled="true"').length - 1, 3);
-  assert.ok(html.includes('Stop the running instance before loading a save.'));
-});
-
-test('savesHTML marks a pending load busy', async () => {
-  const { savesHTML } = await load();
-  const html = savesHTML(SAVES, { slotFree: true, pending: new Set(['load-save:s2']) });
-  const row = html.split('<li ').find(r => r.includes('data-id="s2"'));
-  assert.ok(row.includes('aria-busy="true"') && row.includes('i-loader'));
-  assert.equal(html.split('aria-busy').length - 1, 1);
+test('running menu has no Save now', async () => {
+  const { instanceState, threadSkeleton } = await load();
+  for (const state of ['Running', 'Paused', 'Investigating']) assert.ok(!instanceState(run(state)).menu.includes('save'), state);
+  assert.doesNotMatch(threadSkeleton(), /Saves/);
 });
 
 const ISSUES = [{ issue_id: 'issue_a', type: 'unsupported_action', title: 'Agent could not <img src=x> slot #', status: 'open', occurrences_total: 7,
   file: '/data/issues/unsupported_action__0123.json', hit_count: 3, first_at: 700, last_at: 1000,
-  hits: [{ at: 1000, example_id: 'ua_1', source: 'agent_signal', kept: true, save_before: 's1' },
-         { at: 900, example_id: 'ua_2', source: 'worker_rejected', kept: false, save_before: 'gone' },
-         { at: 800, example_id: 'ua_3', source: 'worker_rejected', kept: false, save_before: null }] }];
-const issueOpts = extra => ({ saves: SAVES, slotFree: true, pending: new Set(), ...extra });
+  hits: [{ at: 1000, example_id: 'ua_1', source: 'agent_signal', kept: true },
+         { at: 900, example_id: 'ua_2', source: 'worker_rejected', kept: false },
+         { at: 800, example_id: 'ua_3', source: 'worker_rejected', kept: false }] }];
+const issueOpts = extra => ({ ...extra });
 
 test('issues section sits first in the Actions panel', async () => {
   const { threadSkeleton } = await load();
   const s = threadSkeleton();
   const at = t => s.indexOf(t);
-  assert.ok(at('data-region="issues"') > -1 && at('data-region="issues"') < at('data-region="saves"') && at('data-region="saves"') < at('Model usage'));
+  assert.ok(at('data-region="issues"') > -1 && at('data-region="issues"') < at('Model usage') && !s.includes('data-region="saves"'));
 });
 
 test('issuesHTML empty state explains what is logged', async () => {
   const { issuesHTML, issuesHead } = await load();
-  assert.match(issuesHTML([], { saves: [], slotFree: true, pending: new Set() }), /No issues recorded in this instance/);
+  assert.match(issuesHTML([], {}), /No issues recorded in this instance/);
   assert.equal(issuesHead([]), 'Issues');
 });
 
@@ -320,57 +280,25 @@ test('issuesHTML rows use words, counts and escape titles', async () => {
   assert.ok(!issuesHTML([{ ...ISSUES[0], occurrences_total: 3 }], issueOpts()).includes('in all instances'));
 });
 
-test('issuesHTML hit save states', async () => {
+test('issuesHTML hits show time, source and kept, with no Load', async () => {
   const { issuesHTML } = await load();
   const html = issuesHTML(ISSUES, issueOpts());
-  assert.equal(html.split('data-action="load-save"').length - 1, 1);
-  assert.ok(html.includes('data-id="s1"') && html.includes('data-key="issue-hit-issue_a-1000"'));
-  for (const text of ['Save no longer kept', 'No save before this hit', 'Example kept', 'Counted only']) assert.ok(html.includes(text), text);
-});
-
-test('issuesHTML disables load while the slot is occupied', async () => {
-  const { issuesHTML } = await load();
-  const html = issuesHTML(ISSUES, issueOpts({ slotFree: false }));
-  assert.equal(html.split('data-action="load-save"').length - 1, html.split('aria-disabled="true"').length - 1);
-  assert.ok(html.includes('aria-disabled="true"') && html.includes('Stop the running instance before loading a save.'));
-});
-
-test('issuesHTML marks a pending load busy', async () => {
-  const { issuesHTML } = await load();
-  assert.ok(issuesHTML(ISSUES, issueOpts({ pending: new Set(['load-save:s1']) })).includes('aria-busy="true"'));
+  for (const text of ['Example kept', 'Counted only', 'Agent signal']) assert.ok(html.includes(text), text);
+  assert.doesNotMatch(html, /load-save|Load<|save/i);
+  assert.doesNotMatch(html, /Stop the running instance/);
 });
 
 test('issuesHTML shows the hit and truncation notes', async () => {
   const { issuesHTML } = await load();
-  const many = [{ ...ISSUES[0], hit_count: 25, hits: Array.from({ length: 20 }, (_, i) => ({ at: 1000 - i, example_id: `e${i}`, source: 'agent_signal', kept: false, save_before: null })) }];
+  const many = [{ ...ISSUES[0], hit_count: 25, hits: Array.from({ length: 20 }, (_, i) => ({ at: 1000 - i, example_id: `e${i}`, source: 'agent_signal', kept: false })) }];
   assert.ok(issuesHTML(many, issueOpts()).includes('Showing the newest 20 of 25 hits'));
   assert.ok(issuesHTML(ISSUES, issueOpts({ truncated: true })).includes('Only the newest 500 issue events were read.'));
-});
-
-test('saveToast says what was actually saved', async () => {
-  const { saveToast } = await load();
-  assert.equal(saveToast({ game: { status: 'confirmed' } }), 'Saved.');
-  assert.match(saveToast({ game: { status: 'on_disk' } }), /last game save on disk/);
-  assert.match(saveToast({ game: { status: 'none' } }), /No game save was found/);
 });
 
 test('issuesHTML keeps an opened hits list open across renders', async () => {
   const { issuesHTML } = await load();
   assert.ok(!issuesHTML(ISSUES, issueOpts()).includes('<details class="issue-hits" open'));
   assert.ok(issuesHTML(ISSUES, issueOpts({ issueOpen: new Set(['issue_a']) })).includes('<details class="issue-hits" open data-issue="issue_a">'));
-});
-
-test('issuesHTML only asks to stop the instance when a hit can load, and keys each hit uniquely', async () => {
-  const { issuesHTML } = await load();
-  const noSaves = [{ ...ISSUES[0], hits: ISSUES[0].hits.map(h => ({ ...h, save_before: null })) }];
-  assert.ok(!issuesHTML(noSaves, issueOpts({ slotFree: false })).includes('Stop the running instance'));
-  assert.ok(issuesHTML(ISSUES, issueOpts({ slotFree: false })).includes('Stop the running instance before loading a save.'));
-  const counted = [{ ...ISSUES[0], hits: [
-    { at: 1000, example_id: null, source: 'worker_rejected', kept: false, save_before: 's1' },
-    { at: 900, example_id: null, source: 'worker_rejected', kept: false, save_before: 's1' }] }];
-  const keys = [...issuesHTML(counted, issueOpts()).matchAll(/data-key="(issue-hit-[^"]+)"/g)].map(m => m[1]);
-  assert.equal(keys.length, 2);
-  assert.equal(new Set(keys).size, 2);
 });
 
 test('Actions panel has no Improvement loop section', async () => {

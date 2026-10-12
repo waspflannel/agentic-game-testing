@@ -49,6 +49,7 @@ export function overviewRegions(m, ov, now = Date.now() / 1000) {
   const head = `<h1>${esc(m.project.name || m.project.id)}</h1><div class="btn-row">`
     + `<button type="button" class="btn btn-ghost" data-action="ov-delete-project" data-key="ov-delete-project"${m.busy ? ' aria-disabled="true" title="Stop its active instance before deleting this project"' : ''}>${icon('trash')}Delete project</button>`
     + (m.hasReady ? '' : `<a class="btn btn-secondary" href="#/setup?project=${enc(pid)}" data-key="ov-add-agent">${icon('plus')}Add project configuration</a>`)
+    + `<a class="btn btn-secondary" href="${href('p', pid, 'issues')}" data-key="ov-issues">${icon('flag')}Issues</a>`
     + `<a class="btn btn-primary" href="${href('p', pid, 'new')}" data-key="ov-new">${icon('square-pen')}New instance</a></div>`;
 
   const validation = b => {

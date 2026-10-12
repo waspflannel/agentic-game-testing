@@ -53,7 +53,9 @@ The selected row's quiet check plus the muted "Default" pill. Nothing else is de
 ## Components
 Model menu: a chip trigger (sliders icon, label, chevron) opens a native popover listbox anchored under it, flipping above if there is no room. Rows show the label, a muted "Default" pill on the default model and a quiet check on the selected one. Keyboard: opening focuses the selected row, ArrowUp and ArrowDown clamp at the ends, Home and End jump, Enter and Space pick, and Escape closes and returns focus to the trigger.
 Get controls meter: one `<progress class="progress">` with real `batches_done / batch_count`, the stage line and the stall note; no other decoration.
-Instance issues: plain hairline rows at the top of the Actions tab (type in words, title, counts, status in words, file path in mono). Hits sit in a nested details list showing time, source and kept/counted in words. No colour-coded severity.
+Instance issues: plain hairline rows at the top of the Actions tab (type in words, title linking to the issue view, counts, status in words, file path in mono). Hits sit in a nested details list showing time, source and kept/counted in words. "View in project Issues" opens the board filtered to the instance. No colour-coded severity.
+Issues board: one page per project, with three plain groups in fixed order (Unsupported actions, Crashes, Game bugs), each a subheading with its count and a hairline list. Rows: title link, status in words, occurrence count, last source instance (+N), first and last seen. Closed rows use --text-2. Empty groups say so; loading, error and Refresh follow the Usage page. An instance filter is a removable chip. No cards, tiles or colour-coded type.
+Issue information: one pure component (issueInfoHTML) rendering, in order, what happened, available actions, recent decisions, screenshot (an image or the reason in words), game state, crash log or bug report, and evidence paths in mono. Sections are hairline-separated with section-title headings; JSON sits in details/pre. Absent sections are omitted; all game text is escaped.
 
 ## Changelog
 - 2026-10-11: DESIGN.md created from app.css :root; model menu added (feat/model-menu).
@@ -65,3 +67,4 @@ Instance issues: plain hairline rows at the top of the Actions tab (type in word
 - 2026-10-11: Fixes chip becomes the shared popover menu; unready reasons are visible in the menu (fix/fixes-menu).
 - 2026-10-11: fixer removed: no Fixes chip, Fixing/Needs you status or Improvement loop section; the model menu is the only popover listbox again (chore/remove-fixer).
 - 2026-10-11: save/load removed: no Save now, Saves section or per-hit Load (chore/remove-save-load).
+- 2026-10-11: project Issues board, issue view and Issue information component (feat/project-issues-board).

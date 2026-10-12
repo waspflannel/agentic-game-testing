@@ -78,6 +78,8 @@ export function parseRoute(hash) {
   if (!n) return { name: 'home', query };
   if (head === 'p' && n === 2) return { name: 'project', id, query };
   if (head === 'p' && n === 3 && sub === 'new') return { name: 'composer', id, query };
+  if (head === 'p' && n === 3 && sub === 'issues') return { name: 'issues', id, query };
+  if (head === 'p' && n === 4 && sub === 'issues') return { name: 'issue', id, issueId: parts[3], query };
   if (head === 'i' && n === 2) return { name: 'instance', id, query };
   if (head === 'setup' && n === 1) return { name: 'setup', query };
   if (head === 'usage' && n === 1) return { name: 'usage', query };

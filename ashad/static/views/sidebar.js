@@ -12,7 +12,7 @@ export function sidebarModel(data, ui) {
   const route = ui.route || {};
   const currentRun = route.name === 'instance' ? runs.find(r => r.id === route.id) : undefined;
   const projectIds = new Set(projects.map(p => p.id));
-  const routeProject = ['project', 'composer'].includes(route.name) ? route.id : currentRun?.project_id;
+  const routeProject = ['project', 'composer', 'issues', 'issue'].includes(route.name) ? route.id : currentRun?.project_id;
 
   const thread = run => ({ id: run.id, goal: runGoal(run), age: ago(runTime(run), ui.now), status: runStatus(run, ownerByRun.get(run.id)), current: run.id === currentRun?.id, deletable: !ownerByRun.has(run.id) });
   const group = (id, groupRuns, extra) => {
@@ -53,7 +53,8 @@ function threadRow(t) {
 function groupBlock(g, isProject) {
   const name = esc(g.name);
   const tools = isProject
-    ? `<a class="row-tool" href="${href('p', g.id)}" data-key="po:${esc(g.id)}" aria-label="Project overview: ${name}" title="Project overview">${icon('ellipsis')}</a>`
+    ? `<a class="row-tool" href="${href('p', g.id, 'issues')}" data-key="pi:${esc(g.id)}" aria-label="Issues: ${name}" title="Issues">${icon('flag')}</a>`
+      + `<a class="row-tool" href="${href('p', g.id)}" data-key="po:${esc(g.id)}" aria-label="Project overview: ${name}" title="Project overview">${icon('ellipsis')}</a>`
       + `<a class="row-tool" href="${href('p', g.id, 'new')}" data-key="pn:${esc(g.id)}" aria-label="New instance in ${name}" title="New instance">${icon('plus')}</a>`
     : '';
   let body = '';

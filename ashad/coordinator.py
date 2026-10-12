@@ -1030,10 +1030,21 @@ class Coordinator:
             player = next(p for p in live["plan"]["players"] if p["id"] == player_id)
             context = self.structured.decision_context({**live, "subgoal_plan": plan}, player, observation)
             context["replanning_reason"] = "The operator requested a new plan from current state. Old setup goals may be obsolete; keep the primary objective unchanged."
-            self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": plan["revision"], "context": context})
-            proposal = await self.ai.plan_subgoals(context, run_id)
-            if not current():
-                raise asyncio.CancelledError()
+            for attempt in range(2):
+                self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": plan["revision"], "context": context})
+                proposal = await self.ai.plan_subgoals(context, run_id)
+                if not current():
+                    raise asyncio.CancelledError()
+                try:
+                    revised = subgoals.apply_decision(plan, proposal, context)  # Pure: validates on a copy.
+                    break
+                except ValueError as exc:
+                    reason = subgoals.rejection_message(exc)
+                    self.store.event(run_id, "subgoal_plan_rejected", {"player_id": player_id, "reason": reason, "attempt": attempt + 1,
+                                     "goal_id": plan["root_id"], "objective": plan["primary_goal"], "revision": plan["revision"], "proposal": proposal})
+                    if attempt:
+                        raise ValueError(f"The planner proposed a plan ASHAD could not verify: {reason}") from exc
+                    context = {**context, "previous_attempt_rejected": {"reason": reason, "rejected_answer": proposal}}
             fresh = await self.structured.observe(run_id, player_id)
             async with self.run_lock(run_id):
                 await self.cancel_tick(run_id)
@@ -1043,7 +1054,6 @@ class Coordinator:
                 if (live["subgoal_plan"]["revision"] != previous["revision"]
                         or subgoals.planning_scene(fresh) != subgoals.planning_scene(observation)):
                     raise ValueError("Game binding, visible controls, or goal plan changed during recalculation; retry from fresh state")
-                revised = subgoals.apply_decision(plan, proposal, context)
                 verified = subgoals.reconcile(revised, fresh, generation)
                 live["subgoal_plan"] = revised
                 live["goal_recalculation"].update(status="completed", finished_at=time.time())

@@ -308,3 +308,51 @@ def test_recalculation_endpoint_validates_body_and_exposes_external_ownership(tm
         result = client.post("/api/runs/r/recalculate-goals", json={"command_id": "same-id"})
         assert result.status_code == 200 and result.json()["external_control"] is True
         coordinator.recalculate_goals.assert_awaited_once_with("r", "same-id")
+
+
+async def invented_quote_planner(coordinator, every_call):
+    valid = coordinator.ai.plan_subgoals.side_effect
+    seen = 0
+
+    async def planner(supplied, run_id):
+        nonlocal seen
+        answer = await valid(supplied, run_id)
+        if every_call or not seen:
+            answer["evidence"] = [{"source": "observation", "path": "/entities/0/state/recipes", "quote": "invented"}]
+        seen += 1
+        return answer
+
+    coordinator.ai.plan_subgoals.side_effect = planner
+
+
+@pytest.mark.asyncio
+async def test_recalculation_retries_once_after_a_rejected_proposal(environment, profile):
+    store, coordinator, run, calls = await recovery_instance(environment, profile)
+    await invented_quote_planner(coordinator, False)
+    revised = await coordinator.recalculate_goals(run["id"], "recalculate-retry")
+    assert revised["goal_recalculation"]["status"] == "completed"
+    assert coordinator.ai.plan_subgoals.await_count == 2
+    assert "previous_attempt_rejected" in coordinator.ai.plan_subgoals.await_args_list[1].args[0]
+    rejected = [e["payload"] for e in store.events(run["id"], limit=1000) if e["kind"] == "subgoal_plan_rejected"]
+    assert len(rejected) == 1
+    assert rejected[0]["attempt"] == 1 and rejected[0]["goal_id"] == "root"
+    assert rejected[0]["proposal"]["evidence"][0]["quote"] == "invented"
+    assert goals.active_goal(revised["subgoal_plan"])["objective"] == "Obtain 10 wheat"
+
+
+@pytest.mark.asyncio
+async def test_recalculation_fails_in_plain_words_after_two_rejections(environment, profile):
+    store, coordinator, run, calls = await recovery_instance(environment, profile)
+    await invented_quote_planner(coordinator, True)
+    with pytest.raises(ValueError, match="could not verify"):
+        await coordinator.recalculate_goals(run["id"], "recalculate-reject")
+    latest = store.require("runs", run["id"])
+    assert latest["goal_recalculation"]["status"] == "failed"
+    assert "could not verify" in latest["goal_recalculation"]["error"]
+    assert "\n" not in latest["goal_recalculation"]["error"]
+    assert "could not verify" in latest["pause"]["reason"]
+    assert latest["subgoal_plan"] == run["subgoal_plan"]
+    assert coordinator.ai.plan_subgoals.await_count == 2
+    rejected = [e["payload"] for e in store.events(run["id"], limit=1000) if e["kind"] == "subgoal_plan_rejected"]
+    assert [r["attempt"] for r in rejected] == [1, 2]
+    assert not any(path == "/resume" for path, _ in calls)

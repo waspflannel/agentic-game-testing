@@ -69,6 +69,8 @@ CASES = [
     ("Obtain 10 wheat", condition("inventory_quantity", "wheat", 1), None, "explicit quantity"),
     ("Obtain wheat", condition("inventory_quantity", "wheat", 500), None, "lacks cited"),
     ("Make 3 apple pies", condition("inventory_quantity", "apple_pie", 1), None, "explicit quantity"),
+    ("Make tile-3 tilled", condition("observed_count", quantity=1, collection="tiles", matches=[{"field": "state", "value": "TILLED"}]), None, None),
+    ("Plant 10 wheat seeds", condition("observed_count", quantity=4, collection="tiles", matches=[{"field": "plant", "value": "wheat_seed"}]), None, "explicit quantity"),
     ("Plant wheat in 10 tiles", condition("observed_count", quantity=4, collection="tiles", matches=[{"field": "plant", "value": "wheat"}]), None, "explicit quantity"),
 ]
 
@@ -251,6 +253,10 @@ def test_objective_numbers_count_only_before_the_counted_thing(objective, comple
     else:
         with pytest.raises(ValueError, match=expected):
             goals.apply_decision(plan, response, context())
+
+
+def test_identifier_followed_by_a_short_word_is_not_a_quantity():
+    assert goals.explicit_quantities("Water plot 3 to grow tomatoes", condition("inventory_quantity", "tomato", 1)) == set()
 
 
 def test_cited_quote_numbers_support_quantity():

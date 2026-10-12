@@ -182,13 +182,12 @@ def grounded_evidence(references, context):
 
 def explicit_quantities(objective, condition):
     """Counts written before the counted thing ("10 wheat"), not identifiers ("plot 3", "tile-3")."""
-    names = {w for w in re.split(r"[_\-\s]+", condition["target"].lower()) if w}
-    names |= {condition["collection"]} - {""}
-    names |= {m["value"].lower() for m in condition.get("matches", []) if isinstance(m["value"], str) and m["value"]}
+    values = [condition["target"], condition["collection"]]
+    values += [m["value"] for m in condition.get("matches", []) if isinstance(m["value"], str)]
+    names = {w for value in values for w in re.split(r"[_\-\s]+", value.lower()) if w}
     found = set()
-    for n, word in re.findall(r"\b([1-9][0-9]*)\b\s*([A-Za-z][A-Za-z_-]*)", objective):
-        word = word.lower()
-        if any(word.startswith(name) or name.startswith(word) for name in names):
+    for n, word in re.findall(r"(?<![\w-])([1-9][0-9]*)\s+([A-Za-z][A-Za-z_-]*)", objective):
+        if any(word.lower().startswith(name) for name in names):
             found.add(int(n))
     return found
 

@@ -358,7 +358,6 @@ class StructuredPlayers:
                 self.store.event(run_id, f"{issue_type}_recorded", {"player_id": player_id,
                     "issue_id": repair_tasks.issue_id(issue_type, basis), "example_id": example_id,
                     "source": source, "kept": outcome == "kept", "outcome": outcome, "save_before": before_id})
-                self.coordinator.fixer.issue_hit(run_id, issue_type, repair_tasks.issue_id(issue_type, basis), example_id, before_id)
             elif outcome == "full":
                 self.store.event(run_id, "issue_cap_reached", {"player_id": player_id, "issue_type": issue_type,
                     "signature": repair_tasks.issue_signature(issue_type, basis)})

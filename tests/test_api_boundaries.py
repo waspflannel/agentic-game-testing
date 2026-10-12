@@ -525,3 +525,26 @@ def test_configuration_rename_runs_at_startup_idempotently(tmp_path):
             assert [r["id"] for r in app.state.store.list("configurations")] == ["a1"] and app.state.store.list("agents") == []
         finally:
             app.state.store.close()
+
+
+def test_fixer_routes_are_gone(tmp_path):
+    with TestClient(offline_app(tmp_path)) as client:
+        assert client.get("/api/fixer/status").status_code in {404, 405}
+        assert client.post("/api/loops/loop_1/command", json={"command": "cancel", "command_id": "c"},
+                           headers=HEADERS).status_code in {404, 405}
+
+
+def test_settings_ignore_fixer_minutes(tmp_path):
+    app = offline_app(tmp_path)
+    with TestClient(app) as client:
+        assert client.post("/api/settings", json={"spend_usd": 2.5, "fixer_daily_minutes": 5}, headers=HEADERS).status_code == 200
+        settings = app.state.store.require("settings", "main")
+    assert "fixer_daily_minutes" not in settings and settings["spend_usd"] == 2.5
+
+
+def test_startup_migration_drops_fixer_minutes(tmp_path):
+    from ashad.store import Store
+    seed = Store(tmp_path)
+    seed.put("settings", {"id": "main", "fixer_daily_minutes": 90})
+    seed.close()
+    assert "fixer_daily_minutes" not in offline_app(tmp_path).state.store.require("settings", "main")

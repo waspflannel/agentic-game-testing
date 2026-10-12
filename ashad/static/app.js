@@ -7,6 +7,7 @@ import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discard
 import { settingsSkeleton, accountSkeleton, accountRegions, accountBlocker, settleLogin, desktopsSkeleton, desktopsRegions, workerPayload, steamSkeleton, steamRegions, steamErrors,
   limitsSkeleton, limitsRegions, limitsPayload, SECTIONS } from './views/settings.js';
 import { newUsageUi, usageSkeleton, usageRegions } from './views/usage.js';
+import { boardModel, boardSkeleton, boardRegions, issueSkeleton, issueViewRegions } from './views/issues.js';
 import { newOverview, readinessDue, overviewModel, overviewSkeleton, overviewRegions } from './views/project.js';
 import { PAGE, MAX_EVENTS, createTimeline, beginPage, applyPage, failPage, seedFromRun, applyLive, timelineCards, timelineRegions, syncCards, cardBody, rawJSON, eventIndex } from './views/timeline.js';
 
@@ -38,6 +39,8 @@ const state = {
   overviews: new Map(),      // project ID -> overview state (selected build, readiness, chooser, prepare, refreshes)
   usage: null,               // { loading, rows, error, at }; fetched on view open and Refresh only
   usageUi: newUsageUi(),
+  issues: null,              // { key, rows, loading, error, at } for the open project board; fetched on view open and Refresh only
+  issue: null,               // { id, record, loading, error, missing, exampleId, pending } for the open issue view
 };
 const epoch = createEpoch();
 const setDirty = dirtyBridge(() => window.ashadDesktop);
@@ -116,6 +119,8 @@ function viewFor(route, data) {
     case 'composer': return project(route.id) ? noConfigurationsHTML(project(route.id)) : notFound('Project');
     case 'project': return notFound('Project');  // renderOverview handles existing projects.
     case 'instance': return state.runMissing ? notFound('Instance') : `<div class="boot"><p>Loading instance…</p></div>`;
+    case 'issues': return notFound('Project');
+    case 'issue': return findProject(route.id) ? notFound('Issue') : notFound('Project');
     case 'setup': return notFound('Project');  // renderSetup handles every setup route whose project exists.
     case 'settings': return notFound('Settings section');  // renderSettings handles the known sections.
     default: return '';
@@ -128,6 +133,8 @@ function windowTitle(route, data) {
   if (composer) return projects.find(p => p.id === composer)?.name || '';
   if (route.name === 'instance') { const run = threadRun(); return run ? runGoal(run) : ''; }
   if (route.name === 'project' || route.name === 'composer') return projects.find(p => p.id === route.id)?.name || '';
+  if (route.name === 'issues') return `Issues · ${projects.find(p => p.id === route.id)?.name || ''}`;
+  if (route.name === 'issue') return state.issue?.record?.title || 'Issue';
   return { setup: 'Setup', usage: 'Usage', settings: 'Settings' }[route.name] || '';
 }
 
@@ -145,6 +152,8 @@ function renderView() {
   if (route.name === 'setup' && (!setupKey(route) || findProject(setupKey(route)))) return renderSetup(view);
   if (route.name === 'settings' && SECTIONS.some(([id]) => id === route.section)) return renderSettings(view);
   if (route.name === 'usage') return renderUsage(view);
+  if (route.name === 'issues' && findProject(route.id)) return renderIssues(view);
+  if (route.name === 'issue' && findProject(route.id) && !issueMissing(route)) return renderIssue(view);
   if (route.name === 'project' && findProject(route.id)) return renderOverview(view);
   if (view.dataset.mount) { view.dataset.mount = ''; view.renderedHTML = undefined; }
   patchAnnounced(view, viewFor(route, state.data));
@@ -685,6 +694,59 @@ async function loadUsage() {
   if (state.usage === record) renderView();
 }
 
+// ── Project issues ──────────────────────────────────────────────────────────
+const boardKey = route => `${route.id}|${route.query.run || ''}`;
+const issueMissing = route => state.issue?.id === route.issueId && (state.issue.missing || (state.issue.record && state.issue.record.project_id !== route.id));
+
+function renderIssues(view) {
+  mount(view, `issues:${boardKey(state.route)}`, boardSkeleton());
+  const board = state.issues?.key === boardKey(state.route) ? state.issues : null;
+  patchRegions(view, boardRegions(boardModel(state.data, state.route.id, state.route.query.run, board), board));
+  updateTimes(view);
+}
+
+async function loadIssues() {
+  const key = boardKey(state.route);
+  const previous = state.issues?.key === key ? state.issues : null;
+  if (previous?.loading) return;
+  const record = state.issues = { ...previous, key, loading: true, error: '' };
+  renderView();
+  const run = state.route.query.run;
+  try { Object.assign(record, { rows: (await api(`/api/projects/${enc(state.route.id)}/issues${run ? `?run_id=${enc(run)}` : ''}`)).issues || [], at: Date.now() / 1000 }); }
+  catch (error) { record.error = error.message; if (record.rows) toast(`Issues refresh failed: ${error.message}`, 'error'); }
+  record.loading = false;
+  if (state.issues === record) renderView();
+}
+
+function renderIssue(view) {
+  mount(view, `issue:${state.route.issueId}`, issueSkeleton());
+  patchRegions(view, issueViewRegions(state.issue, state.data));
+  updateTimes(view);
+}
+
+async function loadIssue(id) {
+  const record = state.issue = { id, record: null, loading: true, error: '', missing: false, exampleId: null, pending: false };
+  renderView();
+  try { record.record = await api(`/api/issues/${enc(id)}`); }
+  catch (error) { if (error.status === 404) record.missing = true; else record.error = error.message; }
+  record.loading = false;
+  if (state.issue === record) renderView();
+}
+
+async function setIssueStatus(status) {
+  const view = state.issue;
+  if (!view?.record || view.pending) return;
+  view.pending = true;
+  renderView();
+  try {
+    const record = await api(`/api/issues/${enc(view.id)}/status`, { method: 'POST', body: { status } });
+    if (state.issue === view) view.record = record;
+    toast(status === 'closed' ? 'Issue closed.' : 'Issue reopened.', 'ok');
+  } catch (error) { toast(`Could not change the issue: ${error.message}`, 'error'); }
+  view.pending = false;
+  if (state.issue === view) renderView();
+}
+
 // ── Project overview (C7) ───────────────────────────────────────────────────
 function overviewFor(id) {
   if (!state.overviews.has(id)) state.overviews.set(id, newOverview(id));
@@ -1078,7 +1140,7 @@ const syncNavToggle = () => $('#nav-toggle').setAttribute('aria-expanded', Strin
 // ── Routing ─────────────────────────────────────────────────────────────────
 function rememberProject(route) {
   const run = route.name === 'instance' ? (state.data?.runs || []).find(r => r.id === route.id) : null;
-  const id = ['project', 'composer'].includes(route.name) ? route.id : run?.project_id;
+  const id = ['project', 'composer', 'issues', 'issue'].includes(route.name) ? route.id : run?.project_id;
   if (id && (state.data?.projects || []).some(p => p.id === id)) state.ui.lastProject = id;
 }
 
@@ -1121,6 +1183,8 @@ async function onRoute() {
     if (route.section === 'account') refreshAccount();  // Status on view open; it checks the account without inference.
   }
   if (route.name === 'usage' && previous.name !== 'usage') loadUsage();
+  if (route.name === 'issues' && (previous.name !== 'issues' || boardKey(previous) !== boardKey(route))) loadIssues();
+  if (route.name === 'issue' && (previous.name !== 'issue' || previous.issueId !== route.issueId)) loadIssue(route.issueId);
   if (route.name === 'project' && (previous.name !== 'project' || previous.id !== route.id)) overviewFor(route.id).readiness = null;  // Probe on view open.
   rememberProject(route);
   syncDirty();
@@ -1200,6 +1264,10 @@ document.addEventListener('click', async event => {
     settingsAction(action, target);
   } else if (action === 'usage-refresh') {
     loadUsage();
+  } else if (action === 'issues-refresh') {
+    if (target.getAttribute('aria-disabled') !== 'true') loadIssues();
+  } else if (action === 'issue-status') {
+    if (target.getAttribute('aria-disabled') !== 'true') setIssueStatus(target.dataset.status);
   } else if (action === 'usage-range' || action === 'usage-sort' || action === 'usage-more') {
     const u = state.usageUi;
     if (action === 'usage-range') Object.assign(u, { range: target.dataset.range, limit: newUsageUi().limit });
@@ -1328,6 +1396,7 @@ document.addEventListener('change', event => {
     renderView();
     return;
   }
+  if (field === 'issue-example') { if (state.issue) state.issue.exampleId = event.target.value; renderView(); return; }
   if (field === 'setup-build') {
     const s = setupFor(state.route);
     Object.assign(s, { buildId: event.target.value, readiness: null });

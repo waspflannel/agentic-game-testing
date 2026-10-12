@@ -61,7 +61,7 @@ export const observationOf = event => event?.payload?.full_observation || event?
 const count = value => (Array.isArray(value) ? value.length : null);
 export const short = id => { const text = String(id || ''); return text.length > 18 ? `…${text.slice(-14)}` : text; };
 const tokens = n => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
-const clip = (text, n = 160) => { const s = String(text ?? ''); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
+export const clip = (text, n = 160) => { const s = String(text ?? ''); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 const args = value => clip(Object.entries(value || {}).filter(([k]) => k !== 'reason').map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', '), 120);
 
 function summary(event, kind) {
@@ -88,6 +88,7 @@ function summary(event, kind) {
     case 'tool': return { text: `${p.tool || 'tool'} · ${p.result?.status || 'returned'}` };
     case 'problem': return { text: reasoned(humanize(event.kind)), tone: event.kind.endsWith('_failed') ? 'danger' : 'attention' };
     case 'plan':
+      if (event.kind === 'subgoal_plan_rejected') return { text: `Proposal rejected (attempt ${p.attempt ?? '?'}): ${clip(p.reason)}`, tone: 'attention' };
       if (event.kind === 'subgoal_plan_updated') return { text: `Plan revision ${p.plan?.revision ?? '?'} · ${count(p.plan?.goals) ?? 0} goals` };
       if (event.kind === 'subgoals_verified') return { text: `Verified ${count(p.goal_ids) ?? 0} goal${count(p.goal_ids) === 1 ? '' : 's'}` };
       if (event.kind === 'goal_changed') return { text: `Goal changed: ${clip(p.goal)}` };
@@ -180,7 +181,7 @@ function cardHTML(card) {
     + `<time class="tl-time" data-ts="${Number(card.events.at(-1).timestamp) || ''}"></time></summary><div class="tl-body" data-body></div></details>`;
 }
 
-const FIELD_KEYS = ['reason', 'category', 'error', 'description', 'actual', 'command', 'tool', 'status', 'provider_status', 'action_id', 'observation_id', 'source_observation', 'revision', 'goal', 'candidate_count', 'duration_seconds', 'latency_seconds', 'model'];
+const FIELD_KEYS = ['reason', 'category', 'error', 'description', 'actual', 'command', 'tool', 'status', 'provider_status', 'action_id', 'observation_id', 'source_observation', 'revision', 'goal', 'candidate_count', 'duration_seconds', 'latency_seconds', 'model', 'attempt', 'objective'];
 
 // Expanded body: structured fields, correlated cards and an escaped, bounded raw block.
 export function cardBody(card, index, players = {}) {

@@ -163,3 +163,17 @@ test('polls keep existing cards, so an open card stays open', async () => {
   assert.equal(list.children.find(c => c.dataset.card === '3'), kept, 'an unchanged card is the same element');
   assert.equal(kept.details.open, true);
 });
+
+test('a rejected proposal row reads attempt and reason', async () => {
+  const { createTimeline, timelineCards, cardBody, eventIndex } = await load();
+  const tl = createTimeline();
+  tl.events = [ev(1, 'subgoal_plan_rejected', { player_id: 'p1', attempt: 2, reason: 'Completion threshold <b>', objective: 'Plant <i>', revision: 3 })];
+  const [card] = timelineCards(tl);
+  assert.match(card.html, /Proposal rejected \(attempt 2\): Completion threshold &lt;b&gt;/);
+  assert.match(card.html, /tone-attention/);
+  assert.doesNotMatch(card.html, /<b>/);
+  const body = cardBody(card, eventIndex(tl.events));
+  assert.match(body, /Attempt/);
+  assert.match(body, /Objective/);
+  assert.match(body, /Plant &lt;i&gt;/);
+});

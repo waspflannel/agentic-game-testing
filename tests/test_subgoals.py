@@ -532,8 +532,11 @@ async def test_rejections_group_by_rule_and_digit_free_objective(tmp_path):
     await service.report_planner_rejection("run", "p", "turn_planning", a, proposal, "Rule A", 1, obs)
     await service.report_planner_rejection("run", "p", "turn_planning", b, proposal, "Rule A", 1, obs)
     await service.report_planner_rejection("run", "p", "turn_planning", a, proposal, "Rule B", 1, obs)
+    await service.report_planner_rejection("run", "p", "turn_planning", a, proposal, "Rule C (at subgoals.0.completion)", 1, obs)
+    await service.report_planner_rejection("run", "p", "turn_planning", a, proposal, "Rule C (at subgoals.2.completion)", 1, obs)
     by_rule = {i["signature_basis"]["reason"]: i for i in issue_files(store) if i["type"] == "planner_rejected"}
-    assert sorted(by_rule) == ["Rule A", "Rule B"]
+    assert sorted(by_rule) == ["Rule A", "Rule B", "Rule C (at subgoals.#.completion)"]
+    assert by_rule["Rule C (at subgoals.#.completion)"]["occurrences"] == 2
     assert by_rule["Rule A"]["occurrences"] == 2
     assert by_rule["Rule A"]["signature_basis"]["focus_objective"] == "plant a seed in plot #"
     assert by_rule["Rule B"]["occurrences"] == 1

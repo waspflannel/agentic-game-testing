@@ -51,7 +51,7 @@ Basis keys per type:
 | `unsupported_action` | `tool, verb, blocker, target_kind, target_label, error_code` |
 | `crash` | `kind, detector, exit` |
 | `game_bug` | `symptom, expected, observed, action_verb, target_kind, target_label` |
-| `planner_rejected` | `reason, focus_objective, mode`; `focus_objective` is the focused goal's objective normalised like `target_label` (digits become `#`, case-folded, at most 60 chars) |
+| `planner_rejected` | `reason, focus_objective, mode`; `focus_objective` is the focused goal's objective normalised like `target_label` (digits become `#`, case-folded, at most 60 chars); list indices in `reason`'s location become `#` (`subgoals.2.completion` → `subgoals.#.completion`) |
 
 Titles per type:
 

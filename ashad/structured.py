@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 
@@ -440,7 +441,9 @@ class StructuredPlayers:
             run, ps = self.binding(run_id, player_id)
             focus = subgoals.active_goal(plan)
             mode = proposal.get("mode") if isinstance(proposal, dict) else None
-            basis = {"reason": reason, "focus_objective": repair_tasks.target_label(focus["objective"]), "mode": mode}
+            # List indices in the validator location ("subgoals.2.completion") would split one rule into many issues.
+            rule = re.sub(r"(?<=\.)\d+(?=[.)])", "#", reason)
+            basis = {"reason": rule, "focus_objective": repair_tasks.target_label(focus["objective"]), "mode": mode}
             sections = {"planner": {"source": source, "attempt": attempt, "reason": reason, "mode": mode, "proposal": proposal,
                 "goal": {"primary_goal": plan["primary_goal"], "focus": {k: focus[k] for k in ("id", "objective", "completion")},
                          "goal_path": [g["objective"] for g in subgoals.goal_path(plan)]},

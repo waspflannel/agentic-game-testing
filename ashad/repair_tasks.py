@@ -30,7 +30,7 @@ MAX_RUNS = 50
 MAX_BUILDS = 20
 RUN_ISSUE_EVENTS = 500
 RUN_ISSUE_HITS_SHOWN = 20
-ISSUE_EVENT_KINDS = ("unsupported_action_recorded", "crash_recorded", "game_bug_recorded")
+ISSUE_EVENT_KINDS = ("unsupported_action_recorded", "crash_recorded", "game_bug_recorded", "planner_rejected_recorded")
 CRASH_TITLES = {"game_exit": "Game process exited", "game_hang": "Game stopped responding",
                 "worker_lost": "Game worker was lost", "desktop_lost": "Game desktop was lost"}
 
@@ -91,6 +91,8 @@ def issue_title(issue_type, basis):
         if basis["action_verb"]:
             title += f" after {basis['action_verb']}"
         return title
+    if issue_type == "planner_rejected":
+        return f"Planner rejected: {basis['reason']} while planning “{basis['focus_objective']}”"
     verb = basis["verb"] if basis["verb"] not in (None, "other") else "perform an action this interface does not offer"
     target = basis["target_label"] or (basis["target_kind"] if basis["target_kind"] not in (None, "none") else "")
     return f"Agent could not {verb}{f' on {target}' if target else ''}"
@@ -110,6 +112,7 @@ def shrink_example(example):
         ("game_state.observation.entities", "game_state", lambda: state["observation"].update(entities=state["observation"].get("entities", [])[:20])),
         ("recent_decisions[*].payload", "recent_decisions", lambda: example.update(recent_decisions=[{**d, "payload": None} for d in example["recent_decisions"]])),
         ("wanted.parameters", "wanted", lambda: example["wanted"].update(parameters=None)),
+        ("planner.proposal", "planner", lambda: example["planner"].update(proposal=None)),
         ("crash.log_tail", "crash", lambda: example["crash"].update(log_tail=example["crash"]["log_tail"][-1024:] if isinstance(example["crash"].get("log_tail"), str) else None)),
         ("game_state.observation", "game_state", lambda: state.update(observation={"observation_id": state["observation"].get("observation_id")})),
     )

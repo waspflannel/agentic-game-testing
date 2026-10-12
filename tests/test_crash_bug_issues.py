@@ -41,6 +41,9 @@ def test_issue_titles_per_type():
         "Game bug (wrong_result): expected state_change, observed no_change on chest # after interact"
     assert issue_title("game_bug", bug_basis(target_kind="none", target_label="", action_verb=None)) == \
         "Game bug (wrong_result): expected state_change, observed no_change"
+    assert issue_title("planner_rejected", {"reason": "Completion threshold is below the goal's explicit quantity",
+                                            "focus_objective": "plant a seed in plot #", "mode": "expand"}) == \
+        "Planner rejected: Completion threshold is below the goal's explicit quantity while planning “plant a seed in plot #”"
 
 
 def test_crash_and_bug_examples_shrink_under_limit():
@@ -56,6 +59,19 @@ def test_crash_and_bug_examples_shrink_under_limit():
     bug = shrink_example({**base, "report": {}, "game_state": state})
     assert _size(bug) <= repair_tasks.MAX_EXAMPLE_BYTES
     assert "game_state.observation.entities" in bug["truncated"]
+
+
+def test_planner_example_trims_proposal_before_observation():
+    base = example()
+    for key in ("wanted", "outcome", "capabilities"):
+        del base[key]
+    planner = {"reason": "r", "proposal": {"subgoals": [{"objective": "x" * 70000}]}}
+    result = shrink_example({**base, "planner": planner})
+    assert _size(result) <= repair_tasks.MAX_EXAMPLE_BYTES
+    assert "planner.proposal" in result["truncated"]
+    assert result["planner"]["proposal"] is None
+    assert result["planner"]["reason"] == "r"
+    assert "game_state.observation" not in result["truncated"]
 
 
 def issue_files(store):

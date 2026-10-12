@@ -169,7 +169,7 @@ async def test_planning_uses_contract_schema_grounding_and_same_no_tools_runtime
                  "JSON-pointer", "cumulative harvested counts", "partial checklist", "criterion stays unknown",
                  "empty parent_key", "Preserve every existing known completion condition", "exact field/value matches"):
         assert rule in prompt
-    assert len(prompt.encode("utf-8")) < 4096
+    assert len(prompt.encode("utf-8")) < 4608
     client._client.request.assert_awaited_once_with("thread/unsubscribe", {"threadId": "thread-1"},
         response_model=module.ThreadUnsubscribeResponse)
 

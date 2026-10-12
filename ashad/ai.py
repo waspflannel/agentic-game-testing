@@ -209,7 +209,7 @@ class OpenAI:
         input = json.dumps(context, ensure_ascii=False)
         schema = PlanningDecision.model_json_schema()
         input_bytes = len(json.dumps({"evidence": input, "schema": schema}, ensure_ascii=False).encode("utf-8"))
-        if input_bytes + 4096 > 128000:
+        if input_bytes + 4608 > 128000:
             raise ProviderError("context_limit", "Planning evidence exceeds the bounded context budget. Reduce context before continuing.")
         return await self._request(input, None, "planning", run_id, model, input_bytes, planning_schema=schema)
 

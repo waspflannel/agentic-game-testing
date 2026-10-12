@@ -590,9 +590,19 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .seg { display: inline-flex; padding: 2px; border-radius: var(--r-row); background: var(--surface-2); justify-self: start; }
 .seg-btn { height: 24px; padding: 0 10px; border: 0; border-radius: 4px; background: transparent; color: var(--text-2); font-size: var(--fs-meta); cursor: pointer; }
 .seg-btn[aria-pressed="true"] { background: var(--surface-3); color: var(--text); }
-.insp-crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 4px; color: var(--text-2); }
-.insp-crumbs span:last-child { color: var(--text); font-weight: 500; }
-.crumb-sep { width: 12px; height: 12px; color: var(--text-3); }
+.goal-primary { font-size: var(--fs-title); font-weight: 600; overflow-wrap: anywhere; }
+.goal-now { display: grid; gap: 4px; padding: 8px 12px; border-left: 2px solid var(--live); }
+.goal-now p, .plan-history p { margin: 0; }
+.goal-now-title { font-size: var(--fs-meta); color: var(--text-2); }
+.goal-now-objective { font-weight: 600; overflow-wrap: anywhere; }
+.goal-path { color: var(--text-3); overflow-wrap: anywhere; }
+.goal-review { color: var(--text); }
+.goal-now, .goal-review { margin-bottom: 8px; }
+.plan-history ol { list-style: none; margin: 0; padding: 0; display: grid; }
+.plan-history li { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 4px 12px; align-items: baseline; padding: 4px 0; border-top: 1px solid var(--border); font-size: var(--fs-meta); }
+.plan-history li span { overflow-wrap: anywhere; }
+.plan-history time { color: var(--text-3); font-variant-numeric: tabular-nums; }
+@media (max-width: 480px) { .plan-history li { grid-template-columns: max-content minmax(0, 1fr); } .plan-history .chip { grid-column: 2; justify-self: start; } }
 .goal-tree { list-style: none; margin: 0; padding: 0 0 0 14px; display: grid; gap: 2px; }
 .goal-root { padding-left: 0; }
 .goal-row { display: flex; gap: 8px; padding: 4px 6px; border-radius: var(--r-row); cursor: pointer; list-style: none; }

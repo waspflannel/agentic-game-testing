@@ -891,6 +891,7 @@ function renderPanels(view, run) {
   const selectedSeq = t.tl.selected ? Number(t.tl.selected.replace('m', '')) : null;
   const selectedEvent = events.find(e => e.seq === selectedSeq) || null;
   patchRegions(view, panelRegions(run, { latest: t.lastObs, selectedEvent, events, view: t.worldView, now: Date.now() / 1000, goalOpen: state.ui.goalOpen }));
+  updateTimes(view.querySelector('[data-region="goals"]'));
 }
 
 // ── Activity timeline (C5) ──────────────────────────────────────────────────

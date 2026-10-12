@@ -9,7 +9,7 @@ import re
 import time
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 # ponytail: retain at most 64 goals; archive verified branches if live objectives outgrow this ceiling.
 MAX_GOALS = 64
@@ -150,6 +150,17 @@ def pointer(value, path):
     return value
 
 
+def string_leaves(value):
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from string_leaves(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from string_leaves(item)
+
+
 def grounded_evidence(references, context):
     excerpts = []
     for ref in references:
@@ -161,7 +172,7 @@ def grounded_evidence(references, context):
             value = context["game_controls"] if ref["source"] == "controls" else context["goal"]
         text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
         compact = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-        if ref["quote"] not in text and ref["quote"] not in compact:
+        if ref["quote"] not in text and ref["quote"] not in compact and not any(ref["quote"] in leaf for leaf in string_leaves(value)):
             raise ValueError("Planner evidence quote does not occur in its cited source")
         excerpts.append(text)
     if not any(ref["source"] == "observation" for ref in references):
@@ -169,12 +180,25 @@ def grounded_evidence(references, context):
     return "\n".join(excerpts)
 
 
+def explicit_quantities(objective, condition):
+    """Counts written before the counted thing ("10 wheat"), not identifiers ("plot 3", "tile-3")."""
+    names = {w for w in re.split(r"[_\-\s]+", condition["target"].lower()) if w}
+    names |= {condition["collection"]} - {""}
+    names |= {m["value"].lower() for m in condition.get("matches", []) if isinstance(m["value"], str) and m["value"]}
+    found = set()
+    for n, word in re.findall(r"\b([1-9][0-9]*)\b\s*([A-Za-z][A-Za-z_-]*)", objective):
+        word = word.lower()
+        if any(word.startswith(name) or name.startswith(word) for name in names):
+            found.add(int(n))
+    return found
+
+
 def validate_quantity(condition, references, context, objective, parent):
     if condition["kind"] not in {"inventory_quantity", "observed_count"}:
         return
     quantity, target = condition["quantity"], condition["target"]
-    explicit = numbers(objective)
-    if len(explicit) == 1 and quantity < next(iter(explicit)):
+    explicit = explicit_quantities(objective, condition)
+    if explicit and quantity < max(explicit):
         raise ValueError("Completion threshold is below the goal's explicit quantity")
     supported = {1} | numbers(context["goal"])
     if parent and parent["kind"] in {"inventory_quantity", "observed_count"}:
@@ -204,8 +228,7 @@ def validate_quantity(condition, references, context, objective, parent):
                 supported.update(numbers(value))
             elif ref["path"].endswith("/count") and type(value) is int and value > 0:
                 supported.add(value)
-        else:
-            supported.update(numbers(ref["quote"]))
+        supported.update(numbers(ref["quote"]))
     # Scale a cited recipe's ingredient requirement to its parent's still-missing output.
     if target and parent and parent["kind"] == "inventory_quantity":
         _, held = check_completion(parent, context["observation"])
@@ -215,7 +238,10 @@ def validate_quantity(condition, references, context, objective, parent):
             if recipe.get("output") != parent["target"] or type(output_count) is not int or output_count <= 0 or held is None:
                 continue
             batches = math.ceil(max(0, parent["quantity"] - held) / output_count)
-            for ingredient in recipe["ingredients"]:
+            ingredients = recipe["ingredients"] if isinstance(recipe["ingredients"], list) else []
+            for ingredient in ingredients:
+                if not isinstance(ingredient, dict):
+                    continue
                 count = ingredient.get("count")
                 if ingredient.get("item_id") == target and type(count) is int and count > 0:
                     supported.add(batches * count)
@@ -517,6 +543,16 @@ def apply_decision(plan, raw, context):
     else:
         select_active(result)
     return result
+
+
+def rejection_message(exc):
+    """One line for the pause banner; the full proposal lives in the event."""
+    if isinstance(exc, ValidationError):
+        error = exc.errors()[0]
+        message = error["msg"].removeprefix("Value error, ")
+        location = ".".join(str(part) for part in error["loc"]) or "decision"
+        return f"{message} (at {location})"
+    return str(exc)
 
 
 def record_action(plan):

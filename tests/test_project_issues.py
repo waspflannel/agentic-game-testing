@@ -103,6 +103,16 @@ def test_project_issues_lists_only_that_project_newest_first(tmp_path):
     assert listed[0]["last_at"] > listed[1]["last_at"]
 
 
+def test_project_issues_run_filter_sees_every_hit_of_a_long_run(tmp_path, monkeypatch):
+    store = Store(tmp_path)
+    monkeypatch.setattr(repair_tasks, "RUN_ISSUE_EVENTS", 1)
+    for n, verb in enumerate(["ui_drag", "ui_click"]):
+        record_issue(store, "unsupported_action", basis(verb=verb), example(example_id=f"uae_{n}", project_id="p1"))
+    for record in store.list("issues"):
+        store.event("run-1", "unsupported_action_recorded", {"issue_id": record["id"]})
+    assert len(repair_tasks.project_issues(store, "p1", "run-1")) == 2
+    assert repair_tasks.project_issues(store, "p1", "run-other") == []
+
 def test_issue_detail_screenshot_notes(tmp_path):
     store = Store(tmp_path)
     store.put("runs", {"id": "ended", "state": "Ended"})

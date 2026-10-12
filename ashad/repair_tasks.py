@@ -271,7 +271,12 @@ def project_issues(store, project_id, run_id=None):
                                 "json_extract(data,'$.project_id')=?", (project_id,)).fetchall()
     summaries = [issue_summary(store, json.loads(data)) for (data,) in rows]
     if run_id is not None:
-        wanted = {i["issue_id"] for i in run_issues(store, run_id)[0]}
+        # Every hit of the run, not run_issues' capped window, so a long run keeps its older issues.
+        marks = ",".join("?" * len(ISSUE_EVENT_KINDS))
+        with store.lock:
+            hits = store.db.execute(f"SELECT DISTINCT json_extract(data,'$.payload.issue_id') FROM events WHERE run_id=? "
+                                    f"AND json_extract(data,'$.kind') IN ({marks})", (run_id, *ISSUE_EVENT_KINDS)).fetchall()
+        wanted = {issue_id for (issue_id,) in hits}
         summaries = [s for s in summaries if s["issue_id"] in wanted]
     return sorted(summaries, key=lambda s: s["last_at"], reverse=True)
 

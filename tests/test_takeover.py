@@ -8,7 +8,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from ashad.app import create_app
-from test_acceptance_edges import ready_run
+from test_acceptance_edges import ready_run, game_context_worker
 from test_controller import environment, FakeCodexBackend  # noqa: F401
 
 
@@ -48,6 +48,38 @@ def desktop_controls(env):
 async def takeover(coord, run, command_id="takeover"):
     return await coord.control(run["id"], "takeover", command_id=command_id,
                                player_id="player-1", desktop_url="http://127.0.0.1:6081/vnc.html")
+
+
+@pytest.mark.asyncio
+async def test_handback_instruction_is_recorded_as_hand_back_and_reaches_the_next_context(environment, monkeypatch):
+    store, coord, _, _ = environment
+    run = await ready_run(environment)
+    game_context_worker(monkeypatch, environment[3]["worker-1"], run)
+    desktop_controls(environment)
+    await takeover(coord, run)
+    actual = await coord.control(run["id"], "takeover_finish", "Go to the oven", "hb")
+    assert actual["recovery_instruction"] == "Go to the oven"
+    assert actual["recovery_after"] == "hand_back"
+    coord.ai.player_turn = AsyncMock(return_value={"status": "selected"})
+    await coord.player_turn(run["id"], "player-1")
+    print([ (e["kind"], e["payload"]) for e in store.events(run["id"])][-6:])
+    assert coord.ai.player_turn.call_args.args[0]["operator_instruction"] == {"text": "Go to the oven", "after": "hand_back"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["", "   "])
+async def test_handback_with_blank_instruction_feeds_nothing(environment, monkeypatch, reason):
+    store, coord, _, _ = environment
+    run = await ready_run(environment)
+    game_context_worker(monkeypatch, environment[3]["worker-1"], run)
+    desktop_controls(environment)
+    await takeover(coord, run)
+    actual = await coord.control(run["id"], "takeover_finish", reason, "hb")
+    assert actual["recovery_instruction"] == ""
+    assert actual["recovery_after"] == ""
+    coord.ai.player_turn = AsyncMock(return_value={"status": "selected"})
+    await coord.player_turn(run["id"], "player-1")
+    assert "operator_instruction" not in coord.ai.player_turn.call_args.args[0]
 
 
 @pytest.mark.asyncio
@@ -286,7 +318,7 @@ def test_desktop_password_is_returned_only_by_explicit_takeover_response(environ
         generic = client.post(f"/api/runs/{run['id']}/control", json={"command": "takeover", "command_id": "generic-retry", "player_id": "player-1"}, headers=headers)
         assert generic.status_code == 422 and secret not in generic.text
         assert client.post(finish, json={}).status_code == 403
-        handback = client.post(finish, json={"reason": "", "resume": True}, headers=headers)
+        handback = client.post(finish, json={"reason": "Buy the hoe", "resume": True}, headers=headers)
         assert handback.status_code == 200 and handback.json()["state"] == "Running"
         assert secret not in handback.text
         assert not app.state.ai.backend.requests

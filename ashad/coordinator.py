@@ -248,7 +248,7 @@ class Coordinator:
             "planner_blocked": "If the focused goal is obsolete, choose Recalculate goals to plan from current game state. Review the new goal, then Resume.",
             "planner_rejected": "Your AI settings are not the problem: the model answered, but its plan failed ASHAD's checks twice. Choose Resume to plan again from fresh game state, or Recalculate goals to start the plan over. The rejected proposals are in Actions and on the project Issues board.",
             "goal_recalculation": "Review the recalculated goal, then Resume. If recalculation failed, correct the reported problem and retry Recalculate goals; no bot input has resumed.",
-            "human_control": "Use the remote desktop to play, then choose Hand back to bots. Closing the viewer leaves bots paused.",
+            "human_control": "Use the remote desktop to play, then choose Hand back to bots, with an instruction if the bots should change course. Closing the viewer leaves bots paused.",
         }.get(category, "Inspect the latest observation and action result. Add optional recovery instructions, then Resume, or terminate the run.")
         return {"category": category, "reason": reason, "players": players,
                 "started_at": started_at or time.time(), "recovery": recovery}
@@ -1106,6 +1106,8 @@ class Coordinator:
         if not isinstance(reason, str):
             raise ValueError("Recovery instructions must be text")
         reason = reason.strip()
+        if len(reason) > 4000:
+            raise ValueError("Keep the instruction under 4000 characters")
         if command == "takeover_finish" and type(options.get("resume", True)) is not bool:
             raise ValueError("Resume must be true or false")
         resuming = command == "resume" or (command == "takeover_finish" and options.get("resume", True))
@@ -1195,7 +1197,7 @@ class Coordinator:
             elif command == "pause":
                 await self._pause(run, reason, recalculating)
             elif resuming:
-                await self._resume(run, reason, command_id)
+                await self._resume(run, reason, command_id, after="hand_back" if command == "takeover_finish" else "resume")
             elif command == "extend":
                 run["investigation_deadline"] = max(time.time(), run["investigation_deadline"]) + seconds
                 self.save_run(run)
@@ -1277,7 +1279,7 @@ class Coordinator:
             await self.hold_inputs(run)
             publish_pending(self.store)
 
-    async def _resume(self, run, reason, command_id):
+    async def _resume(self, run, reason, command_id, after="resume"):
         run_id = run["id"]
         await self.close_human_control(run)
         for ps in run["players"].values():
@@ -1306,6 +1308,7 @@ class Coordinator:
         run["investigation_deadline"] = None
         run["pause"] = None
         run["recovery_instruction"] = reason
+        run["recovery_after"] = after if reason else ""
         for ps in run["players"].values():
             ps["invalid_actions"] = 0
             ps["simulation_advanced_at"] = time.time()

@@ -493,7 +493,9 @@ class StructuredPlayers:
             "observation": prompt_observation(observation), "guidance": self.guidance(run, player, observation),
             "memory": ps.get("agent_memory", ""), "recent_own_actions": own, "team_messages": team,
             "setup": run["plan"]["world_setup"], "transport": run["plan"]["transport"],
-            "world_namespace": run.get("world_namespace"), "seed": run["plan"].get("seed"), "recovery_instruction": run.get("recovery_instruction", "")}
+            "world_namespace": run.get("world_namespace"), "seed": run["plan"].get("seed")}
+        if run.get("recovery_instruction"):
+            context["operator_instruction"] = {"text": run["recovery_instruction"], "after": run.get("recovery_after") or "resume"}
         plan = run.get("subgoal_plan")
         if plan and plan["player_id"] == player["id"]:
             context.update(subgoal_plan=subgoals.prompt_plan(plan), current_goal=copy.deepcopy(subgoals.active_goal(plan)),

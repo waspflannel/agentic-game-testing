@@ -139,7 +139,7 @@ def active_goal(plan):
 def pointer(value, path):
     if not path.startswith("/"):
         raise ValueError("Evidence must reference a JSON pointer in the supplied observation")
-    if path.startswith("/observation/"):
+    if path.startswith("/observation/") and not (isinstance(value, dict) and "observation" in value):
         path = path[len("/observation"):]
     for part in path[1:].split("/"):
         part = part.replace("~1", "/").replace("~0", "~")

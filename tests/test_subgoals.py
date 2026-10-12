@@ -287,6 +287,13 @@ def test_context_rooted_observation_path_resolves():
             goals.grounded_evidence([obs_ref(path, "tile-1")], context())
 
 
+def test_real_observation_key_wins_over_context_root_prefix():
+    obs = observe()
+    obs["observation"] = {"note": "nested-note"}
+    text = goals.grounded_evidence([obs_ref("/observation/note", "nested-note")], context(obs))
+    assert "nested-note" in text
+
+
 @pytest.mark.parametrize("quote", ['\\"state\\": \\"UNTILLED\\"', '{"id": "tile-1",\n  "ground": true'])
 def test_escaped_or_rewrapped_quote_matches(quote):
     goals.grounded_evidence([obs_ref("/state/tiles/0", quote)], context())

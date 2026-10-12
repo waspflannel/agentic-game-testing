@@ -140,28 +140,9 @@ async def test_decisions_structured_has_no_image_or_desktop_tool(tmp_path):
     store.close()
 
 
-class SavesDouble:
-    """Saves are covered in test_saves.py; these doubles never capture."""
-    async def before_action(self, *args):
-        return None
-
-    async def capture(self, *args):
-        return None
-
-    def latest(self, run_id):
-        return None
-
-    def pinned_full(self, run_id):
-        return False
-
-    def pin(self, save_id):
-        return None
-
-
 class CoordinatorDouble:
     def __init__(self, store):
         self.store = store
-        self.saves = SavesDouble()
         self.ai = self
         self.decisions = 0
         self.ops = []

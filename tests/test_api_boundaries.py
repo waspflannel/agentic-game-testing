@@ -535,6 +535,12 @@ def test_fixer_routes_are_gone(tmp_path):
                            headers=HEADERS).status_code in {404, 405}
 
 
+def test_save_and_load_routes_are_gone(tmp_path):
+    with TestClient(offline_app(tmp_path)) as client:
+        assert client.post("/api/runs/r1/saves", json={"command_id": "c"}, headers=HEADERS).status_code in {404, 405}
+        assert client.post("/api/saves/s1/load", json={"request_id": "r"}, headers=HEADERS).status_code in {404, 405}
+
+
 def test_settings_ignore_fixer_minutes(tmp_path):
     app = offline_app(tmp_path)
     with TestClient(app) as client:

@@ -33,10 +33,9 @@ function diagnosticDataRoot(value) {
   return path.resolve(value);
 }
 
-function launchConfig(dataRoot, checkoutRoot = null) {
+function launchConfig(dataRoot) {
   return { data_root: dataRoot, session_key: randomBytes(32).toString('base64url'),
-    owner_key: randomBytes(32).toString('base64url'), instance_id: randomUUID(),
-    ...(typeof checkoutRoot === 'string' ? { checkout_root: checkoutRoot } : {}) };
+    owner_key: randomBytes(32).toString('base64url'), instance_id: randomUUID() };
 }
 
 function announcement(line, instanceId) {
@@ -71,12 +70,6 @@ function loginUrl(value) {
     ['auth.openai.com', 'chatgpt.com'].includes(url.hostname));
 }
 
-function fixPrUrl(value) {
-  const url = parsedUrl(value);
-  return Boolean(url && url.protocol === 'https:' && url.hostname === 'github.com' && !url.username && !url.password &&
-    !url.port && !url.search && !url.hash && /^\/waspflannel\/agentic-game-testing\/pull\/\d+$/.test(url.pathname));
-}
-
 function viewerUrl(value, configured, appOrigin) {
   const url = parsedUrl(value);
   return Boolean(url && ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password &&
@@ -104,8 +97,6 @@ function validatedStatus(value) {
   if (!value || !Array.isArray(value.owners) || !Array.isArray(value.operations) ||
       typeof value.draining !== 'boolean' || !Array.isArray(value.viewer_urls) ||
       !value.viewer_urls.every(item => typeof item === 'string') ||
-      !(value.restart_for_fix === undefined || value.restart_for_fix === null ||
-        (typeof value.restart_for_fix === 'string' && /^loop_[A-Za-z0-9_-]{1,100}$/.test(value.restart_for_fix))) ||
       !value.owners.every(item => item && typeof item.run_id === 'string' &&
         typeof item.state === 'string' && typeof item.reason === 'string') ||
       !value.operations.every(item => item && typeof item.kind === 'string')) {
@@ -151,5 +142,5 @@ async function selectedManifest(selection, kind) {
   return fs.realpath(manifest);
 }
 
-module.exports = { PROTOCOL, childEnvironment, pythonLayout, diagnosticDataRoot, launchConfig, announcement, readyIdentity, cleanControllerExit, appUrl, loginUrl, fixPrUrl,
+module.exports = { PROTOCOL, childEnvironment, pythonLayout, diagnosticDataRoot, launchConfig, announcement, readyIdentity, cleanControllerExit, appUrl, loginUrl,
   viewerUrl, privilegedSender, desktopHeaders, validatedStatus, quitPrompt, confirmDrain, selectedManifest };

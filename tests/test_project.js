@@ -171,3 +171,11 @@ test('overview markup escapes project, build, agent and goal text', async () => 
   ov.validation.set(evil, { ready: false, reason: evil });
   assert.doesNotMatch(Object.values(overviewRegions(overviewModel(d, ov, NOW), ov, NOW)).join(''), /<img/);
 });
+
+test("overview head links to the project's Issues", async () => {
+  const { newOverview, overviewModel, overviewRegions } = await project();
+  const ov = newOverview('p');
+  const r = overviewRegions(overviewModel(data(), ov, NOW), ov, NOW);
+  assert.ok(r.head.includes('href="#/p/p/issues"'));
+  assert.ok(r.head.includes('data-key="ov-issues"'));
+});

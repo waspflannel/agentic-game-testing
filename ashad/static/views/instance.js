@@ -1,5 +1,6 @@
 // Instance thread: header, tabs, camera and control bar (spec §8.5 A–C, §9). Markup and state are pure; app.js owns I/O.
-import { esc, icon, newId, runGoal, humanize, badge, modelLabel, providerModels, modelMenuHTML, runConfigurationId } from '../core.js';
+import { esc, icon, href, newId, runGoal, humanize, badge, modelLabel, providerModels, modelMenuHTML, runConfigurationId } from '../core.js';
+import { typeLabel } from './issues.js';
 
 const enc = encodeURIComponent;
 const LIVE_STATES = new Set(['Starting', 'Running', 'Paused', 'Investigating', 'Stopping']);  // /live serves only these.
@@ -169,11 +170,9 @@ const ACTIONS = {
   stop: { label: 'Stop', icon: 'stop', cls: 'btn-danger' },
 };
 
-const ISSUE_TYPES = { unsupported_action: 'Unsupported action', crash: 'Crash', game_bug: 'Game bug' };
-
 export const issuesHead = issues => (issues.length ? `Issues · ${issues.length}` : 'Issues');
 
-export function issuesHTML(issues, { truncated, issueOpen = new Set() }) {
+export function issuesHTML(issues, { truncated, issueOpen = new Set(), projectId, runId }) {
   if (!issues.length) return `<p class="hint">No issues recorded in this instance. ASHAD logs unsupported actions, crashes and game bugs here as they happen.</p>`;
   const rows = issues.map(issue => {
     const counts = [`${issue.hit_count} ${issue.hit_count === 1 ? 'time' : 'times'} in this instance`]
@@ -181,12 +180,13 @@ export function issuesHTML(issues, { truncated, issueOpen = new Set() }) {
     const hits = issue.hits.map(hit => `<li class="issue-hit"><time data-ts="${esc(hit.at)}"></time><span>${esc(humanize(hit.source))}</span>`
       + `<span>${hit.kept ? 'Example kept' : 'Counted only'}</span></li>`).join('');
     const more = issue.hit_count > issue.hits.length ? `<p class="hint">Showing the newest ${issue.hits.length} of ${issue.hit_count} hits</p>` : '';
-    return `<li class="issue-row"><p class="issue-title"><span class="issue-type">${esc(ISSUE_TYPES[issue.type] || humanize(issue.type))}</span> <strong>${esc(issue.title)}</strong></p>`
+    return `<li class="issue-row"><p class="issue-title"><span class="issue-type">${esc(typeLabel(issue.type))}</span> <strong>${projectId ? `<a href="${href('p', projectId, 'issues', issue.issue_id)}" data-key="it-${esc(issue.issue_id)}">${esc(issue.title)}</a>` : esc(issue.title)}</strong></p>`
       + `<p class="issue-meta">${esc(counts.join(' · '))} · last <time data-ts="${esc(issue.last_at)}"></time> · ${esc(humanize(issue.status))}</p>`
       + (issue.file ? `<p class="issue-file"><span>File</span> <code>${esc(issue.file)}</code></p>` : '')
       + `<details class="issue-hits"${issueOpen.has(issue.issue_id) ? ' open' : ''} data-issue="${esc(issue.issue_id)}"><summary data-key="issue-${esc(issue.issue_id)}">Hits</summary><ol>${hits}</ol>${more}</details></li>`;
   }).join('');
-  return `<ol class="issue-list">${rows}</ol>`
+  return (projectId ? `<p class="issue-board-link"><a href="${href('p', projectId, 'issues')}?run=${encodeURIComponent(runId)}" data-key="issues-board">View in project Issues</a></p>` : '')
+    + `<ol class="issue-list">${rows}</ol>`
     + (truncated ? `<p class="hint">Only the newest 500 issue events were read.</p>` : '');
 }
 
@@ -223,7 +223,7 @@ export function threadRegions(run, ctx) {
     : '';
 
   return { head, banner, players,
-    issues: issuesHTML(run.issues || [], { truncated: run.issues_truncated, issueOpen }),
+    issues: issuesHTML(run.issues || [], { truncated: run.issues_truncated, issueOpen, projectId: run.project_id, runId: run.id }),
     'issues-head': issuesHead(run.issues || []),
     overlay: overlayHTML(run, status, cameraStatus), controls: controlsHTML(status, pending, error), tabs: tabsHTML(tab), instruction: instructionHTML(ui, pending) };
 }

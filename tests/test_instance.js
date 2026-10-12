@@ -309,3 +309,17 @@ test('Actions panel has no Improvement loop section', async () => {
   assert.equal('loop' in regions, false);
   assert.equal('loop-head' in regions, false);
 });
+
+test('instance issues link titles to the issue view and the filtered board', async () => {
+  const { issuesHTML } = await load();
+  const html = issuesHTML(ISSUES, issueOpts({ projectId: 'p1', runId: 'r1' }));
+  assert.ok(html.includes('href="#/p/p1/issues/issue_a"'));
+  assert.ok(html.includes('href="#/p/p1/issues?run=r1"'));
+});
+
+test('no board link without project_id', async () => {
+  const { issuesHTML } = await load();
+  const html = issuesHTML(ISSUES, issueOpts());
+  assert.ok(!html.includes('issues-board') && !html.includes('#/p/'));
+  assert.ok(html.includes('Agent could not'));
+});

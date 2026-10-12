@@ -109,3 +109,19 @@ test("the active instance's delete button is disabled with a reason", async () =
   assert.doesNotMatch(tag('r2'), /aria-disabled/);
   assert.match(tag('r2'), /title="Delete instance"/);
 });
+
+test('project row has an Issues tool', async () => {
+  const { sidebarModel, sidebarHTML } = await load();
+  const html = sidebarHTML(sidebarModel(data(), ui()));
+  assert.ok(html.includes('href="#/p/p/issues"'));
+  assert.ok(html.includes('aria-label="Issues: Agronauts"'));
+});
+
+test('issues routes mark the project current', async () => {
+  const { sidebarModel } = await load();
+  for (const route of [{ name: 'issues', id: 'p' }, { name: 'issue', id: 'p', issueId: 'x' }]) {
+    const g = sidebarModel(data(), ui({ route })).projects.find(x => x.id === 'p');
+    assert.equal(g.current, true);
+    assert.equal(g.expanded, true);
+  }
+});

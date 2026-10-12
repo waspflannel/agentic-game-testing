@@ -440,7 +440,7 @@ async def test_blocked_plan_replans_with_operator_instruction_after_hand_back(tm
     assert len(coordinator.planning_contexts) == 1
     assert coordinator.planning_contexts[0]["operator_instruction"]["text"] == "Use the oven"
     assert store.require("runs", "run")["subgoal_plan"]["status"] != "blocked"
-    assert getattr(coordinator, "investigation", None) is None or coordinator.investigation[1] != "planner_blocked"
+    assert not hasattr(coordinator, "investigation")
 
 
 @pytest.mark.asyncio

@@ -25,6 +25,7 @@ from . import repair_tasks
 from .repository import Repository, sha256_file
 from .reports import generate_report
 from .game_controls import BUSY, MODEL_NOT_ALLOWED, SIGN_IN_WAIT, GameControls, migrate_configuration_names, migrate_tuned_configurations
+from .migrations import retire_fixer
 from .projects import Projects
 from .workspace_environment import inspect_fresh_environment, prepare_environment, validate_build
 from .instances import Instances, InstanceRequest, SaveLoadRequest, default_model
@@ -94,6 +95,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
     ai = OpenAI(store, credentials, backend=ai_backend, claude_backend=claude_backend)
     migrate_configuration_names(store)
     migrate_tuned_configurations(store)
+    retire_fixer(store)
     controls = GameControls(store, ai)
     coordinator = Coordinator(store, credentials, ai)
     coordinator.fixer.checkout_root = Path(checkout_root) if checkout_root else None

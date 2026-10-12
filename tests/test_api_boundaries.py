@@ -12,6 +12,7 @@ from ashad.app import create_app
 from ashad.game_controls import CONFIGURATION_RETIRED, controls_file
 from ashad.models import MODEL, CLAUDE_MODEL
 from ashad.projects import Projects
+from ashad.store import Store
 from test_controller import MemoryCredentials, FakeCodexBackend
 
 HEADERS = {"X-ASHAD-Request": "1"}
@@ -543,8 +544,11 @@ def test_settings_ignore_fixer_minutes(tmp_path):
 
 
 def test_startup_migration_drops_fixer_minutes(tmp_path):
-    from ashad.store import Store
     seed = Store(tmp_path)
     seed.put("settings", {"id": "main", "fixer_daily_minutes": 90})
     seed.close()
-    assert "fixer_daily_minutes" not in offline_app(tmp_path).state.store.require("settings", "main")
+    app = offline_app(tmp_path)
+    try:
+        assert "fixer_daily_minutes" not in app.state.store.require("settings", "main")
+    finally:
+        app.state.store.close()

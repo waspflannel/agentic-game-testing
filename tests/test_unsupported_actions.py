@@ -28,7 +28,8 @@ def no_http_inference(monkeypatch):
 
 
 def example(**overrides):
-    value = {"example_id": "uae_1", "at": "2026-10-11T00:00:00+00:00", "run_id": "run-1", "player_id": "player-1",
+    value = {"example_id": "uae_1", "at": "2026-10-11T00:00:00+00:00", "run_id": "run-1", "project_id": "project-1",
+        "player_id": "player-1",
         "scenario_id": "scenario-1", "scenario_revision": 1, "model": "model-1", "controller_version": "1",
         "build": {"id": "build-1", "source_revision": "rev"}, "source": "agent_signal",
         "intent": {"primary_goal": "Plant a crop", "current_goal": None, "goal_path": [], "plan_reason": None},
@@ -57,7 +58,7 @@ def basis(**overrides):
 
 
 def files(store):
-    return sorted(issue_directory(store).glob("*.json"))
+    return sorted(issue_directory(store).rglob("*.json"))
 
 
 def test_repeat_groups_into_one_issue_and_caps_examples(tmp_path):
@@ -67,7 +68,7 @@ def test_repeat_groups_into_one_issue_and_caps_examples(tmp_path):
     publish_issues(store)
     [path] = files(store)
     issue = json.loads(path.read_text(encoding="utf-8"))
-    assert issue["schema"] == "ashad.issue/1" and issue["occurrences"] == 12 and issue["status"] == "open"
+    assert issue["schema"] == "ashad.issue/2" and issue["occurrences"] == 12 and issue["status"] == "open"
     assert len(issue["examples"]) == 10 and issue["examples_kept"] == 10 and issue["examples_dropped"] == 2
     assert "published_revision" not in issue and "id" not in issue
 
@@ -113,7 +114,7 @@ def test_issue_cap_drops_new_signatures(tmp_path, monkeypatch):
     assert record_issue(store, "unsupported_action", basis(), example()) == "kept"
     assert record_issue(store, "unsupported_action", basis(verb="ui_click"), example()) == "full"
     assert len(store.list("issues")) == 1
-    assert issue_room(store, "unsupported_action", basis(verb="ui_click")) == "full"
+    assert issue_room(store, "project-1", "unsupported_action", basis(verb="ui_click")) == "full"
 
 
 def test_publish_pending_also_publishes_issues(tmp_path):
@@ -207,7 +208,7 @@ def stuck(payload):
 
 
 def issue_files(store):
-    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(issue_directory(store).glob("*.json"))]
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(issue_directory(store).rglob("*.json"))]
 
 
 @pytest.mark.asyncio
@@ -359,7 +360,7 @@ async def test_secrets_never_reach_issue_file(environment, monkeypatch):
     store.event(run["id"], "action_result", {"player_id": "player-1", "result": {"token": "private-token-value"}})
     coord.ai = OpenAI(store, backend=Backend(stuck))
     await coord.player_turn(run["id"], "player-1")
-    [path] = issue_directory(store).glob("*.json")
+    [path] = issue_directory(store).rglob("*.json")
     text = path.read_text(encoding="utf-8")
     for secret in ("sk-sensitivevalue123456", "private-test-key", "abc.def.ghi", "private-token-value"):
         assert secret not in text
@@ -392,7 +393,7 @@ async def test_issues_survive_run_deletion(environment, monkeypatch):
     with store.transaction():
         coord._forget_run_records(store.require("runs", run["id"]))
     assert len(store.list("issues")) == 1
-    assert len(list(issue_directory(store).glob("*.json"))) == 1
+    assert len(list(issue_directory(store).rglob("*.json"))) == 1
 
 
 def test_issue_title_reads_for_other_verb_and_missing_target():

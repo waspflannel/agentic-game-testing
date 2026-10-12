@@ -83,8 +83,9 @@ def test_retire_saves_deletes_rows_and_strips_issue_links(tmp_path):
     assert issue["revision"] == 4
     assert archive.exists()
     assert store.events("run-1")[0]["payload"]["save_before"] == "save_1"
-    published = list(issue_directory(store).glob("*.json"))
+    published = list(issue_directory(store).rglob("*.json"))
     assert len(published) == 1
+    assert published[0].parent.name == "unassigned"
     assert json.loads(published[0].read_text())["first_seen"] == {"at": "t"}
 
 

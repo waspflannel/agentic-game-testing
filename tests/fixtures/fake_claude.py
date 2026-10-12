@@ -40,6 +40,10 @@ elif scenario == "server-error":
     sys.exit(1)
 elif scenario == "list-output":
     print(success(structured_output=["a"]), end="")
+elif scenario == "string-output":
+    print(success(structured_output=json.dumps({"answer": "ok"})), end="")
+elif scenario == "string-garbage":
+    print(success(structured_output="not json"), end="")
 elif scenario == "missing-output":
     print(success(), end="")
 elif scenario == "oversized":

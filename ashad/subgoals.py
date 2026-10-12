@@ -34,8 +34,8 @@ class Contract(BaseModel):
 
 class Evidence(Contract):
     source: Literal["observation", "controls", "objective"]
-    path: str = Field(max_length=300, description="JSON pointer within observation; empty for controls/objective.")
-    quote: str = Field(min_length=1, max_length=1200, description="Exact excerpt from the referenced value, not an invented fact.")
+    path: str = Field(max_length=300, description="JSON pointer from the observation root, e.g. /state/tiles/0 or /entities/0/state/recipes/1; empty for controls/objective.")
+    quote: str = Field(min_length=1, max_length=1200, description="Verbatim copy of the JSON or string found at path; never a paraphrase.")
 
 
 class Match(Contract):
@@ -139,6 +139,8 @@ def active_goal(plan):
 def pointer(value, path):
     if not path.startswith("/"):
         raise ValueError("Evidence must reference a JSON pointer in the supplied observation")
+    if path.startswith("/observation/") and not (isinstance(value, dict) and "observation" in value):
+        path = path[len("/observation"):]
     for part in path[1:].split("/"):
         part = part.replace("~1", "/").replace("~0", "~")
         if isinstance(value, dict) and part in value:
@@ -161,22 +163,31 @@ def string_leaves(value):
             yield from string_leaves(item)
 
 
-def grounded_evidence(references, context):
+def normalised(text):
+    """Quotes copied from escaped or re-wrapped JSON still count; the words must still match exactly."""
+    return re.sub(r"\s+", " ", text.replace('\\"', '"')).strip()
+
+
+def grounded_evidence(references, context, location="evidence"):
     excerpts = []
-    for ref in references:
+    for index, ref in enumerate(references):
         if ref["source"] == "observation":
-            value = pointer(context["observation"], ref["path"])
+            try:
+                value = pointer(context["observation"], ref["path"])
+            except ValueError as exc:
+                raise ValueError(f"{exc} (at {location}.{index}.path)") from exc
         else:
             if ref["path"]:
-                raise ValueError("Only observation evidence accepts a path")
+                raise ValueError(f"Only observation evidence accepts a path (at {location}.{index}.path)")
             value = context["game_controls"] if ref["source"] == "controls" else context["goal"]
         text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
         compact = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-        if ref["quote"] not in text and ref["quote"] not in compact and not any(ref["quote"] in leaf for leaf in string_leaves(value)):
-            raise ValueError("Planner evidence quote does not occur in its cited source")
+        quote = normalised(ref["quote"])
+        if quote not in normalised(text) and quote not in normalised(compact) and not any(quote in normalised(leaf) for leaf in string_leaves(value)):
+            raise ValueError(f"Planner evidence quote does not occur in its cited source (at {location}.{index}.quote)")
         excerpts.append(text)
     if not any(ref["source"] == "observation" for ref in references):
-        raise ValueError("Every proposed goal needs a current observation reference")
+        raise ValueError(f"Every proposed goal needs a current observation reference (at {location})")
     return "\n".join(excerpts)
 
 
@@ -251,8 +262,8 @@ def validate_quantity(condition, references, context, objective, parent):
         raise ValueError("Completion quantity lacks cited requirement, recipe, parent, or primary-objective support")
 
 
-def validate_condition(condition, references, context, previous=None, *, objective="", parent=None):
-    text = grounded_evidence(references, context)
+def validate_condition(condition, references, context, previous=None, *, objective="", parent=None, location="evidence"):
+    text = grounded_evidence(references, context, location)
     # Do not let a revision quietly lower ten wheat to one, or replace a quest with a button click.
     if previous and previous["kind"] != "unknown":
         old_check = json.dumps({k: v for k, v in previous.items() if k != "description"}, sort_keys=True)
@@ -515,11 +526,12 @@ def apply_decision(plan, raw, context):
         parent = generated[proposed["parent_key"]] if proposed["parent_key"] else focus
         ancestors = goal_path(result, parent["id"])
         if len(ancestors) >= MAX_DEPTH:
-            raise ValueError("Goal decomposition is too deep; choose an executable goal or report the blocker")
+            raise ValueError(f"Goal decomposition is too deep; choose an executable goal or report the blocker (at subgoals.{index})")
         if proposed["objective"].strip().casefold() in {g["objective"].strip().casefold() for g in ancestors}:
-            raise ValueError("Recursive goal repeats an ancestor instead of making progress")
+            raise ValueError(f"Recursive goal repeats an ancestor instead of making progress (at subgoals.{index})")
         validate_condition(proposed["completion"], proposed["evidence"], context,
-                           objective=proposed["objective"], parent=parent["completion"])
+                           objective=proposed["objective"], parent=parent["completion"],
+                           location=f"subgoals.{index}.evidence")
         goal = {"id": f"goal-{result['revision'] + 1}-{index}", "parent_id": parent["id"],
                 "objective": proposed["objective"], "completion": proposed["completion"],
                 "evidence": proposed["evidence"], "source_observation": observation_ref(context["observation"]),

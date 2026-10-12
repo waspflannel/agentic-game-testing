@@ -7,8 +7,6 @@ import json
 import math
 import time
 
-from pydantic import ValidationError
-
 from .codex_backend import CodexBackend, CodexError
 from .claude_backend import ClaudeBackend, ClaudeError
 from .credentials import Credentials
@@ -206,12 +204,11 @@ class OpenAI:
         label = self._checked_model(model)
         if not isinstance(context, dict):
             raise ValueError(f"{label} planning requires a context object")
-        input = json.dumps(context, ensure_ascii=False)
         schema = PlanningDecision.model_json_schema()
-        input_bytes = len(json.dumps({"evidence": input, "schema": schema}, ensure_ascii=False).encode("utf-8"))
+        input_bytes = len(json.dumps({"evidence": context, "schema": schema}, ensure_ascii=False).encode("utf-8"))
         if input_bytes + 4608 > 128000:
             raise ProviderError("context_limit", "Planning evidence exceeds the bounded context budget. Reduce context before continuing.")
-        return await self._request(input, None, "planning", run_id, model, input_bytes, planning_schema=schema)
+        return await self._request(context, None, "planning", run_id, model, input_bytes, planning_schema=schema)
 
     async def write_controls(self, evidence, *, stage="manual"):
         model = CLAUDE_MODEL
@@ -287,10 +284,11 @@ class OpenAI:
 
     @staticmethod
     def _plan(data, label):
-        try:
-            return PlanningDecision.model_validate(data.get("answers") if isinstance(data, dict) else None).model_dump()
-        except ValidationError as exc:
-            raise ProviderError("invalid_plan", f"{label} returned invalid subgoal planning JSON; no action was executed.") from exc
+        # The contract rules are checked once, in subgoals.apply_decision, so a planner mistake is retried with feedback.
+        answers = data.get("answers") if isinstance(data, dict) else None
+        if not isinstance(answers, dict):
+            raise ProviderError("invalid_plan", f"{label} returned invalid subgoal planning JSON; no action was executed.")
+        return answers
 
     @staticmethod
     def _tuning_instructions(data, label, stage, repair, diagnostic):

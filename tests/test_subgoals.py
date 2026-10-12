@@ -279,6 +279,51 @@ def test_quote_matches_a_raw_string_leaf_with_escapes():
         goals.grounded_evidence([obs_ref("/state/objectives/0", "Say goodbye")], context(obs))
 
 
+def test_context_rooted_observation_path_resolves():
+    text = goals.grounded_evidence([obs_ref("/observation/state/tiles/0", "tile-1")], context())
+    assert "tile-1" in text
+    for path in ("/observation", "/observations/state/tiles/0"):
+        with pytest.raises(ValueError, match=r"missing observation field \(at evidence.0.path\)"):
+            goals.grounded_evidence([obs_ref(path, "tile-1")], context())
+
+
+def test_real_observation_key_wins_over_context_root_prefix():
+    obs = observe()
+    obs["observation"] = {"note": "nested-note"}
+    text = goals.grounded_evidence([obs_ref("/observation/note", "nested-note")], context(obs))
+    assert "nested-note" in text
+
+
+@pytest.mark.parametrize("quote", ['\\"state\\": \\"UNTILLED\\"', '{"id": "tile-1",\n  "ground": true'])
+def test_escaped_or_rewrapped_quote_matches(quote):
+    goals.grounded_evidence([obs_ref("/state/tiles/0", quote)], context())
+
+
+@pytest.mark.parametrize("quote", ['"state": "untilled"', "Tile is untilled"])
+def test_paraphrase_or_case_change_is_rejected(quote):
+    with pytest.raises(ValueError, match=r"\(at evidence.0.quote\)"):
+        goals.grounded_evidence([obs_ref("/state/tiles/0", quote)], context())
+
+
+def test_operator_instruction_is_not_observation_evidence():
+    ctx = {**context(), "operator_instruction": {"text": "Till tile-1 first, then plant the wheat seeds there", "after": "resume"}}
+    ref = obs_ref("/state/objectives/0", "Till tile-1 first, then plant the wheat seeds there")
+    with pytest.raises(ValueError, match=r"does not occur .* \(at evidence.0.quote\)"):
+        goals.grounded_evidence([ref], ctx)
+
+
+def test_rejection_names_the_subgoal_and_evidence_item():
+    plan = goals.new_plan("Make an apple pie", "p", "run")
+    goals.reconcile(plan, observe(), 1)
+    second = proposed("g2", "", "Obtain wheat", condition("inventory_quantity", "wheat"), True)
+    second["evidence"] = [*evidence()[:1], obs_ref("/telemetry/x", "x")]
+    response = decision(plan, "expand", subgoals=[
+        proposed("g1", "", "Have an apple pie", condition("inventory_quantity", "apple_pie")), second])
+    with pytest.raises(ValueError) as caught:
+        goals.apply_decision(plan, response, context())
+    assert goals.rejection_message(caught.value) == "Evidence refers to a missing observation field (at subgoals.1.evidence.1.path)"
+
+
 def test_malformed_recipe_ingredient_is_ignored():
     obs = observe()
     obs["entities"][0]["state"]["recipes"][0]["ingredients"] = ["flour", {"item_id": "apple", "count": 2}]
@@ -552,7 +597,7 @@ async def test_rejections_are_logged_as_planner_rejected_issues(tmp_path):
     run["build"]["id"] = "build-1"
     store.put("runs", run)
     await rejected_twice(store, coordinator, service)
-    reason = "Planner evidence quote does not occur in its cited source"
+    reason = "Planner evidence quote does not occur in its cited source (at evidence.#.quote)"
     [record] = [i for i in issue_files(store) if i["type"] == "planner_rejected"]
     assert record["occurrences"] == 2
     assert record["signature_basis"] == {"reason": reason, "focus_objective": "till ## tiles", "mode": "act"}
@@ -621,6 +666,27 @@ async def test_provider_failure_still_blames_the_provider(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_contract_violation_is_retried_then_pauses_as_planner_rejected(tmp_path):
+    store, coordinator, service = runtime(tmp_path)
+    coordinator.player_turn = AsyncMock(side_effect=ProviderError("decision_needs_instructions", "Need a prerequisite"))
+    await service.turn("run", "p")
+    async def parent_marked_actionable(context):
+        return decision(store.require("runs", "run")["subgoal_plan"], "expand", subgoals=[
+            proposed("parent", "", "Have an apple pie", condition("inventory_quantity", "apple_pie"), True),
+            proposed("child", "parent", "Obtain 2 apples", condition("inventory_quantity", "apple", 2), True)])
+    coordinator.plan_response = parent_marked_actionable
+    await service.turn("run", "p")
+    rejected = [e["payload"] for e in store.events("run", limit=1000) if e["kind"] == "subgoal_plan_rejected"]
+    assert len(rejected) == 2
+    assert all(r["reason"].startswith("A goal with unfinished prerequisites is not actionable") for r in rejected)
+    assert "previous_attempt_rejected" in coordinator.planning_contexts[1]
+    assert coordinator.investigation[1] == "planner_rejected"
+    [record] = [i for i in issue_files(store) if i["type"] == "planner_rejected"]
+    assert record["occurrences"] == 2
+    store.close()
+
+
+@pytest.mark.asyncio
 async def test_second_attempt_sees_the_rejection(tmp_path):
     store, coordinator, service = runtime(tmp_path)
     coordinator.player_turn = AsyncMock(side_effect=ProviderError("decision_needs_instructions", "Need a prerequisite"))
@@ -634,7 +700,7 @@ async def test_second_attempt_sees_the_rejection(tmp_path):
     revision = store.require("runs", "run")["subgoal_plan"]["revision"]
     await service.turn("run", "p")
     assert len(coordinator.planning_contexts) == 2
-    assert coordinator.planning_contexts[1]["previous_attempt_rejected"]["reason"] == "Planner evidence quote does not occur in its cited source"
+    assert coordinator.planning_contexts[1]["previous_attempt_rejected"]["reason"] == "Planner evidence quote does not occur in its cited source (at evidence.0.quote)"
     assert "previous_attempt_rejected" not in coordinator.planning_contexts[0]
     assert store.require("runs", "run")["subgoal_plan"]["revision"] == revision + 1
     assert not hasattr(coordinator, "investigation")
@@ -656,6 +722,9 @@ def test_planning_prompt_explains_identifiers_and_rejections():
     assert "previous_attempt_rejected" in instructions
     assert "identifiers, not quantities" in instructions
     assert "operator_instruction" in instructions
+    assert "observation object's root" in instructions
+    assert "verbatim" in instructions
+    assert "not observation evidence" in instructions
     assert len(instructions.encode("utf-8")) < 4608
 
 

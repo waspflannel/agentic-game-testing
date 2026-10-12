@@ -94,7 +94,7 @@ async def test_success_returns_codex_shape(backend):
     ("unauthorized", "invalid_authentication"), ("rate-limited", "rate_limited"),
     ("server-error", "provider_failure"), ("crash", "provider_failure"), ("nonzero-exit", "provider_failure"),
     ("list-output", "invalid_decision"), ("missing-output", "invalid_decision"),
-    ("list-output", "invalid_plan"), ("missing-output", "invalid_plan")])
+    ("list-output", "invalid_plan"), ("missing-output", "invalid_plan"), ("string-garbage", "invalid_plan")])
 @pytest.mark.asyncio
 async def test_failures_map_to_status(backend, name, status):
     use_scenario(backend, name)
@@ -106,6 +106,18 @@ async def test_failures_map_to_status(backend, name, status):
     assert caught.value.status == status
     assert "raw-provider-secret" not in caught.value.message
     assert TOKEN not in caught.value.message
+
+
+@pytest.mark.asyncio
+async def test_string_structured_output_is_parsed(backend):
+    use_scenario(backend, "string-output")
+    assert (await backend.plan(EVIDENCE, SCHEMA))["answers"] == {"answer": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_plan_stdin_embeds_the_evidence_object(backend):
+    await backend.plan({"observation": {"ready": True}}, SCHEMA)
+    assert json.loads(invocation(backend)["stdin"]) == {"evidence": {"observation": {"ready": True}}}
 
 
 @pytest.mark.asyncio

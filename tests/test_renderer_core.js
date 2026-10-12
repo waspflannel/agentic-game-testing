@@ -181,3 +181,10 @@ test('runStatus has no Fixing state', async () => {
   const { runStatus } = await load();
   assert.deepEqual(runStatus({ state: 'Fixing' }), { tone: 'muted', label: 'Unknown' });
 });
+
+test('parseRoute issues and issue routes', async () => {
+  const { parseRoute } = await load();
+  assert.deepEqual(parseRoute('#/p/p1/issues?run=r1'), { name: 'issues', id: 'p1', query: { run: 'r1' } });
+  assert.deepEqual(parseRoute('#/p/p1/issues/issue_ab'), { name: 'issue', id: 'p1', issueId: 'issue_ab', query: {} });
+  assert.deepEqual(parseRoute('#/p/p1/issues/a/b'), { name: 'redirect', to: '#/' });
+});

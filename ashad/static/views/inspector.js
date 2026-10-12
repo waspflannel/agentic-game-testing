@@ -139,7 +139,9 @@ const progress = goal => (Number.isFinite(goal?.measured) && MEASURED.has(goal.c
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const HISTORY_KINDS = {
-  subgoal_planning_context: { label: 'Observed', text: p => `Planning for “${p.context?.current_goal?.objective ?? 'the primary goal'}”` },
+  subgoal_planning_context: { label: 'Observed', text: p => `Planning for “${p.context?.current_goal?.objective ?? 'the primary goal'}”${p.context?.operator_instruction?.text ? ' with your instruction' : ''}` },
+  intervention: { label: 'Operator', when: p => ['resume', 'takeover_finish'].includes(p.command) && Boolean(p.reason),
+    text: p => `${p.command === 'takeover_finish' ? 'Hand back' : 'Resume'} with instruction: ${p.reason}` },
   subgoal_plan_updated: { label: 'Plan', text: p => {
     const added = (p.plan?.goals || []).filter(g => String(g.id).startsWith(`goal-${p.plan.revision}-`)).length;
     return added ? `Revision ${p.plan.revision} added ${plural(added, 'goal')}: ${p.plan.reason ?? ''}` : `Revision ${p.plan?.revision}: ${p.plan?.reason ?? ''}`;
@@ -156,7 +158,7 @@ const HISTORY_ROWS = 20;
 
 // Newest planning events first, each as one clipped sentence with the label of its Activity chip.
 export function planHistory(events) {
-  return events.filter(e => HISTORY_KINDS[e.kind])
+  return events.filter(e => HISTORY_KINDS[e.kind] && (HISTORY_KINDS[e.kind].when?.(e.payload || {}) ?? true))
     .map(e => ({ seq: e.seq, timestamp: e.timestamp, text: clip(HISTORY_KINDS[e.kind].text(e.payload || {}), 200), label: HISTORY_KINDS[e.kind].label }))
     .sort((a, b) => b.seq - a.seq).slice(0, HISTORY_ROWS);
 }
@@ -164,19 +166,20 @@ export function planHistory(events) {
 const primaryHTML = (plan, root) => `<p class="section-title">Primary goal</p><p class="goal-primary">${esc(plan.primary_goal ?? root?.objective)}</p>`
   + `<p class="insp-dim">Judged by you, not by ASHAD. Plan revision ${plan.revision ?? 0}.</p>`;
 
-function workingNowHTML(plan, nodes, rootId) {
+function workingNowHTML(plan, nodes, rootId, run) {
+  const instruction = run.recovery_instruction ? `<p class="insp-dim">Your instruction: ${esc(run.recovery_instruction)}</p>` : '';
   const active = nodes.get(plan.active_goal_id);
   const open = '<section class="goal-now" aria-label="Working on now"><p class="goal-now-title">Working on now</p>';
   // The root never completes, so it is active both before the first goal and after every child completes; a blocked root waits on review.
   if (!active || active.id === rootId) {
-    return `${open}<p class="goal-now-objective">${plan.status === 'blocked' ? 'Waiting for your review.' : 'Choosing the next concrete goal under the primary goal.'}</p></section>`;
+    return `${open}<p class="goal-now-objective">${plan.status === 'blocked' ? 'Waiting for your review.' : 'Choosing the next concrete goal under the primary goal.'}</p>${instruction}</section>`;
   }
   const ancestors = [];
   for (let g = nodes.get(active.parent_id); g && ancestors.length < 8; g = nodes.get(g.parent_id)) ancestors.unshift(g.objective);
   return `${open}<p class="goal-now-objective">${esc(active.objective)}</p>`
     + `${active.completion?.description ? `<p>${esc(active.completion.description)}</p>` : ''}`
     + `${progress(active) ? `<p>${progress(active)}</p>` : ''}`
-    + `${plan.reason ? `<p class="insp-dim">Why: ${esc(plan.reason)}</p>` : ''}`
+    + `${plan.reason ? `<p class="insp-dim">Why: ${esc(plan.reason)}</p>` : ''}${instruction}`
     + `${ancestors.length ? `<p class="goal-path">${ancestors.map(esc).join(' › ')}</p>` : ''}</section>`;
 }
 
@@ -216,7 +219,7 @@ function goalHTML(run, { events, goalOpen }) {
       + `${children(goal.id).length ? `<ul class="goal-tree">${children(goal.id).map(c => row(c, depth + 1)).join('')}</ul>` : ''}</li>`;
   };
   const root = nodes.get(rootId);
-  return primaryHTML(plan, root) + workingNowHTML(plan, nodes, rootId) + reviewHTML(run, plan)
+  return primaryHTML(plan, root) + workingNowHTML(plan, nodes, rootId, run) + reviewHTML(run, plan)
     + (root ? `<p class="section-title">Goal tree</p><ul class="goal-tree goal-root">${row(root, 0)}</ul>` : '') + historyHTML(events);
 }
 

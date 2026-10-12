@@ -2,17 +2,18 @@
 
 ## Purpose
 
-An issue file is one grouped, versioned JSON record of a problem the agent hit, with enough detail that a developer never has to reproduce the run. There are three types:
+An issue file is one grouped, versioned JSON record of a problem the agent hit, with enough detail that a developer never has to reproduce the run. There are four types:
 
 - `unsupported_action`: an action the agent needed but the interface could not perform.
 - `crash`: the game or its environment died or hung.
 - `game_bug`: the game contradicted itself, rendered wrongly or did not respond after an offered action.
+- `planner_rejected`: the planner's proposed plan failed ASHAD's validators; logged on every attempt.
 
-The instance page reads them: each instance lists its own hits from its ledger. All three types are only recorded. Each issue belongs to one project; a project's issues are listed by `GET /api/projects/{id}/issues`.
+The instance page reads them: each instance lists its own hits from its ledger. All four types are only recorded; a planner rejection pauses the run through the planner (`planner_rejected` investigation), not through the issue. Each issue belongs to one project; a project's issues are listed by `GET /api/projects/{id}/issues`.
 
 ## Location
 
-`<task_directory>/issues/<project_id>/<type>__<signature16>.json`; issues from instances without a project go to `issues/unassigned/`. For example `unsupported_action__0123456789abcdef.json`, `crash__0123456789abcdef.json` or `game_bug__0123456789abcdef.json`.
+`<task_directory>/issues/<project_id>/<type>__<signature16>.json`; issues from instances without a project go to `issues/unassigned/`. For example `unsupported_action__0123456789abcdef.json`, `crash__0123456789abcdef.json` or `game_bug__0123456789abcdef.json` or `planner_rejected__0123456789abcdef.json`.
 
 `task_directory` is `<store root>/repair-tasks`, or `<repo>/repair-tasks` for the checkout store (`.data/controller`). The desktop default is `~/.config/ASHAD/controller/repair-tasks/issues/<project_id>/` on Linux and `%APPDATA%\ASHAD\controller\repair-tasks\issues\<project_id>\` on Windows.
 
@@ -26,7 +27,7 @@ The store rewrites a file whenever its issue changes, and rewrites a deleted fil
 |---|---|
 | `schema` | `"ashad.issue/2"` (the type-specific example sections are identified by `type`) |
 | `project_id` | the instance's project, or `null` |
-| `type` | `unsupported_action \| crash \| game_bug` |
+| `type` | `unsupported_action \| crash \| game_bug \| planner_rejected` |
 | `issue_id` | the record id: `issue_` + 16 hex; legacy records keep their v1 id |
 | `signature`, `signature_basis` | sha256 of `[type, basis]`; basis keys per type are listed below |
 | `title` | per type, see below |
@@ -50,6 +51,7 @@ Basis keys per type:
 | `unsupported_action` | `tool, verb, blocker, target_kind, target_label, error_code` |
 | `crash` | `kind, detector, exit` |
 | `game_bug` | `symptom, expected, observed, action_verb, target_kind, target_label` |
+| `planner_rejected` | `reason, focus_objective, mode`; `focus_objective` is the focused goal's objective normalised like `target_label` (digits become `#`, case-folded, at most 60 chars); list indices in `reason`'s location become `#` (`subgoals.2.completion` → `subgoals.#.completion`) |
 
 Titles per type:
 
@@ -58,6 +60,7 @@ Titles per type:
 | `unsupported_action` | `"Agent could not <verb> on <target_label or target_kind>"`; verb `other` reads "perform an action this interface does not offer", and the "on ..." part is left out when there is no target |
 | `crash` | `"<kind title> (<exit or detector>)"`, for example `Game process exited (signal:SIGSEGV)` or `Game worker was lost (worker_unreachable)`. Kind titles: `game_exit` "Game process exited", `game_hang` "Game stopped responding", `worker_lost` "Game worker was lost", `desktop_lost` "Game desktop was lost" |
 | `game_bug` | `"Game bug (<symptom>): expected <expected>, observed <observed>"`, then `" on <target_label or target_kind>"` when there is a target (a `target_kind` of `none` counts as none), then `" after <action_verb>"` when there is an action |
+| `planner_rejected` | `"Planner rejected: <reason> while planning “<focus_objective>”"` |
 
 ## Example fields
 
@@ -65,7 +68,7 @@ Every example has these common fields:
 
 | Example field | Contents |
 |---|---|
-| `example_id` | prefix + hex (also the pin id): `uae_` for `unsupported_action`, `crash_` for `crash`, `bug_` for `game_bug` |
+| `example_id` | prefix + hex (also the pin id): `uae_` for `unsupported_action`, `crash_` for `crash`, `bug_` for `game_bug`, `plan_` for `planner_rejected` |
 | run metadata | `at`, `run_id`, `player_id`, `scenario_id`, `scenario_revision`, `model`, `controller_version`, `build: {id, source_revision}` |
 | `source` | see Sources |
 | `intent` | `{primary_goal, current_goal: {id, objective, completion} or null, goal_path: [objective...], plan_reason}` |
@@ -86,6 +89,7 @@ On top of the common fields, each type adds its own sections:
 | | `last_action` | `{event_id, at, verb, target_id, status}` of the player's last `structured_action_intent` within the last 120 events (`status` is the matching `action_result` status or `null`), or `null` |
 | | `timing` | `{detected_at, launched_at, telemetry_received_at, feed_captured_at, simulation_advanced_at}` |
 | `game_bug` | `report` | `{symptom, expected, observed, target_id, target_kind, target_label, target_state, related_action: {action_id, verb, target_id, parameters, status, intent_event_id, result_event_id} or null}` |
+| `planner_rejected` | `planner` | `{source, attempt (1 or 2), reason (one line), mode, proposal (the raw model answer, or null when trimmed), goal: {primary_goal, focus: {id, objective, completion}, goal_path: [objective...]}, plan_revision}`; `screenshot.status` is always `unavailable` (no pin) |
 
 A section that does not apply to a type is absent, not `null`.
 
@@ -99,6 +103,8 @@ A section that does not apply to a type is absent, not `null`.
 | `loop_backstop` | `unsupported_action` | Six consecutive dispatched decisions on an unchanged game state. |
 | `agent_signal` | `game_bug` | The agent picks `report_game_bug`; one fixed-choice follow-up describes it. |
 | `monitor` | `crash` | The coordinator's tick or monitor detects a crash, see Crash detectors. |
+| `turn_planning` | `planner_rejected` | A proposal from turn planning fails validation (attempt 1 or 2). |
+| `recalculation` | `planner_rejected` | A proposal during Recalculate goals fails validation (attempt 1 or 2); the focus is the new plan's root. |
 
 Recording never blocks or fails a turn, a tick or a monitor pass.
 
@@ -163,8 +169,9 @@ Excluded: run, player, build, ids, positions and free text. The last action of a
   3. `game_state.observation.entities` keeps the first 20
   4. `recent_decisions[*].payload` becomes `null`
   5. `wanted.parameters` is trimmed
-  6. `crash.log_tail` keeps its last 1024 characters
-  7. `game_state.observation` becomes `{"observation_id": ...}`
+  6. `planner.proposal` becomes `null`
+  7. `crash.log_tail` keeps its last 1024 characters
+  8. `game_state.observation` becomes `{"observation_id": ...}`
 
 ## Ledger events
 
@@ -172,7 +179,7 @@ Each is written to the run ledger after the record is stored, never before, so t
 
 | Event | Payload |
 |---|---|
-| `unsupported_action_recorded`, `crash_recorded`, `game_bug_recorded` | `{player_id, issue_id, example_id, source, kept, outcome}`; `outcome` is `kept` or `counted`, and nothing is written for a failed record |
+| `unsupported_action_recorded`, `crash_recorded`, `game_bug_recorded`, `planner_rejected_recorded` | `{player_id, issue_id, example_id, source, kept, outcome}`; `outcome` is `kept` or `counted`, and nothing is written for a failed record |
 | `issue_reopened` | `{player_id, issue_id, example_id}` |
 | `issue_cap_reached` | `{player_id, issue_type, signature}` |
 | `game_bug_report_rejected` | `{player_id, reason}` |

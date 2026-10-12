@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from ashad import subgoals as goals
 from ashad.instances import InstanceRequest, Instances
 from test_controller import environment  # noqa: F401
+from test_crash_bug_issues import issue_files
 from test_instances import profile  # noqa: F401
 from test_subgoals import condition, context, decision, observe, proposed
 from test_ui_http import app_at
@@ -338,6 +339,13 @@ async def test_recalculation_retries_once_after_a_rejected_proposal(environment,
     assert rejected[0]["attempt"] == 1 and rejected[0]["goal_id"] == "root"
     assert rejected[0]["proposal"]["evidence"][0]["quote"] == "invented"
     assert goals.active_goal(revised["subgoal_plan"])["objective"] == "Obtain 10 wheat"
+    [record] = [i for i in issue_files(store) if i["type"] == "planner_rejected"]
+    assert record["occurrences"] == 1
+    [example] = record["examples"]
+    assert example["planner"]["source"] == "recalculation" and example["planner"]["attempt"] == 1
+    assert example["planner"]["goal"]["focus"]["id"] == "root"
+    assert example["screenshot"]["status"] == "unavailable"
+    assert not any(path == "/pin" for path, _ in calls)
 
 
 @pytest.mark.asyncio
@@ -355,4 +363,7 @@ async def test_recalculation_fails_in_plain_words_after_two_rejections(environme
     assert coordinator.ai.plan_subgoals.await_count == 2
     rejected = [e["payload"] for e in store.events(run["id"], limit=1000) if e["kind"] == "subgoal_plan_rejected"]
     assert [r["attempt"] for r in rejected] == [1, 2]
+    [record] = [i for i in issue_files(store) if i["type"] == "planner_rejected"]
+    assert record["occurrences"] == 2
+    assert [e["planner"]["attempt"] for e in record["examples"]] == [1, 2]
     assert not any(path == "/resume" for path, _ in calls)

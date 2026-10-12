@@ -45,14 +45,19 @@ const BUG = () => ({
   ...UNSUPPORTED(), id: 'i3', type: 'game_bug', title: 'Door stuck',
   examples: [example({ report: { symptom: 'door_stuck', expected: 'opens', observed: 'stays shut', target_id: 'door1', target_kind: 'door', target_label: 'Door', target_state: { open: false }, related_action: { verb: 'use', target_id: 'door1', status: 'failed' } } })],
 });
+const PLANNER = (proposal = { mode: 'act', subgoals: [] }) => ({
+  ...UNSUPPORTED(), id: 'i5', type: 'planner_rejected', title: 'Planner rejected',
+  examples: [example({ planner: { source: 'turn_planning', attempt: 2, reason: 'Completion threshold <b>x</b>', mode: 'act', proposal,
+    goal: { primary_goal: 'Craft', focus: { objective: 'Plant in plot 3' }, goal_path: [] } } })],
+});
 const ids = new Set(['r1']);
 const view = (record, extra = {}) => ({ record, loading: false, error: '', exampleId: null, pending: false, ...extra });
 
 test('boardModel groups by type in fixed order', async () => {
   const { boardModel } = await issues();
-  const m = boardModel(data(), 'p1', null, { rows: [...SUMMARIES, summary({ issue_id: 'x', type: 'other' })] });
-  assert.deepEqual(m.groups.map(g => g.type), ['unsupported_action', 'crash', 'game_bug']);
-  assert.deepEqual(m.groups.map(g => g.rows.length), [2, 0, 1]);
+  const m = boardModel(data(), 'p1', null, { rows: [...SUMMARIES, summary({ issue_id: 'x', type: 'other' }), summary({ issue_id: 'i5', type: 'planner_rejected', title: 'Planner rejected: x' })] });
+  assert.deepEqual(m.groups.map(g => g.type), ['unsupported_action', 'crash', 'game_bug', 'planner_rejected']);
+  assert.deepEqual(m.groups.map(g => g.rows.length), [2, 0, 1, 1]);
   assert.equal(m.projectName, 'Agronauts');
 });
 
@@ -167,6 +172,29 @@ test('issueInfoHTML bug shows the report and the related action', async () => {
   assert.match(html, /Related action/);
   assert.match(html, /use/);
   assert.match(html, /door1/);
+});
+
+test('issueInfoHTML planner rejection shows the rule, the goal and the rejected proposal', async () => {
+  const { issueInfoHTML, typeLabel } = await issues();
+  const r = PLANNER();
+  const html = issueInfoHTML(r, r.examples[0], { runIds: ids });
+  assert.match(html, /<dt>Planning for<\/dt><dd>Plant in plot 3<\/dd>/);
+  assert.match(html, /Completion threshold &lt;b&gt;x&lt;\/b&gt;/);
+  assert.doesNotMatch(html, /<b>x/);
+  assert.match(html, /<dt>Attempt<\/dt><dd>2<\/dd>/);
+  assert.match(html, /<dt>Mode<\/dt><dd>act<\/dd>/);
+  assert.match(html, /<dt>Source<\/dt><dd>Turn planning<\/dd>/);
+  assert.match(html, /Rejected proposal[\s\S]*<summary>Proposal<\/summary><pre class="mono">/);
+  assert.match(html, /Not recorded for this issue type\./);
+  assert.equal(typeLabel('planner_rejected'), 'Planner rejection');
+});
+
+test('issueInfoHTML planner rejection says when the proposal was trimmed', async () => {
+  const { issueInfoHTML } = await issues();
+  const r = PLANNER(null);
+  const html = issueInfoHTML(r, r.examples[0], { runIds: ids });
+  assert.match(html, /The proposal was trimmed from this example\./);
+  assert.match(html, /<dt>Mode<\/dt><dd>act<\/dd>/);
 });
 
 test('issueInfoHTML screenshot notes read in words', async () => {

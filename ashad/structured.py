@@ -5,6 +5,7 @@ import copy
 import hashlib
 import json
 import logging
+import re
 import time
 from datetime import datetime, timezone
 
@@ -17,7 +18,7 @@ from . import repair_tasks, subgoals
 
 LOG = logging.getLogger(__name__)
 LOOP_BACKSTOP_DECISIONS = 6
-ISSUE_PREFIXES = {"unsupported_action": "uae_", "crash": "crash_", "game_bug": "bug_"}
+ISSUE_PREFIXES = {"unsupported_action": "uae_", "crash": "crash_", "game_bug": "bug_", "planner_rejected": "plan_"}
 
 
 def meaningful_signature(observation):
@@ -434,6 +435,23 @@ class StructuredPlayers:
         except Exception:
             LOG.exception("Could not report game bug for %s/%s", run_id, player_id)
 
+    async def report_planner_rejection(self, run_id, player_id, source, plan, proposal, reason, attempt, observation):
+        """Record one rejected planner proposal; never raises or blocks planning."""
+        try:
+            run, ps = self.binding(run_id, player_id)
+            focus = subgoals.active_goal(plan)
+            mode = proposal.get("mode") if isinstance(proposal, dict) else None
+            # List indices in the validator location ("subgoals.2.completion") would split one rule into many issues.
+            rule = re.sub(r"(?<=\.)\d+(?=[.)])", "#", reason)
+            basis = {"reason": rule, "focus_objective": repair_tasks.target_label(focus["objective"]), "mode": mode}
+            sections = {"planner": {"source": source, "attempt": attempt, "reason": reason, "mode": mode, "proposal": proposal,
+                "goal": {"primary_goal": plan["primary_goal"], "focus": {k: focus[k] for k in ("id", "objective", "completion")},
+                         "goal_path": [g["objective"] for g in subgoals.goal_path(plan)]},
+                "plan_revision": plan["revision"]}}
+            await self._record(run, ps, player_id, "planner_rejected", basis, source, observation, sections, skip_pin=True)
+        except Exception:
+            LOG.exception("Could not record planner rejection for %s/%s", run_id, player_id)
+
     def forget_run(self, run_id):
         for counters in (self.loop_counts, self.bug_reports):
             for key in [k for k in counters if k[0] == run_id]:
@@ -531,6 +549,7 @@ class StructuredPlayers:
                 focus = subgoals.active_goal(latest_plan)
                 self.store.event(run_id, "subgoal_plan_rejected", {"player_id": player_id, "reason": reason, "attempt": attempt + 1,
                                  "goal_id": focus["id"], "objective": focus["objective"], "revision": revision, "proposal": proposal})
+                await self.report_planner_rejection(run_id, player_id, "turn_planning", latest_plan, proposal, reason, attempt + 1, fresh)
                 if attempt:
                     message = f"The planner proposed a plan for “{focus['objective']}” that ASHAD could not verify: {reason}"
                     self.status(run_id, player_id, "error", message, generation, last_error=message, error_at=time.time())

@@ -7,10 +7,11 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from ashad import subgoals as goals
+from ashad import repair_tasks, subgoals as goals
 from ashad.ai import ProviderError
 from ashad.structured import StructuredPlayers
 from ashad.store import Store
+from test_crash_bug_issues import issue_files
 from test_structured import CoordinatorDouble, seed_run
 from test_controller import environment  # noqa: F401
 from test_instances import profile  # noqa: F401
@@ -479,6 +480,84 @@ async def test_no_action_candidate_returns_to_planner_and_bad_plan_never_execute
     store.close()
 
 
+async def rejected_twice(store, coordinator, service):
+    """Two turns whose planner answers fail the quote check, so the run pauses as planner_rejected."""
+    coordinator.player_turn = AsyncMock(side_effect=ProviderError("decision_needs_instructions", "Need a prerequisite"))
+    await service.turn("run", "p")
+    async def invalid(context):
+        response = decision(store.require("runs", "run")["subgoal_plan"])
+        response["evidence"][0]["quote"] = "invented recipe"
+        return response
+    coordinator.plan_response = invalid
+    await service.turn("run", "p")
+
+
+@pytest.mark.asyncio
+async def test_rejections_are_logged_as_planner_rejected_issues(tmp_path):
+    store, coordinator, service = runtime(tmp_path)
+    run = store.require("runs", "run")
+    run["project_id"] = "project-1"
+    run["build"]["id"] = "build-1"
+    store.put("runs", run)
+    await rejected_twice(store, coordinator, service)
+    reason = "Planner evidence quote does not occur in its cited source"
+    [record] = [i for i in issue_files(store) if i["type"] == "planner_rejected"]
+    assert record["occurrences"] == 2
+    assert record["signature_basis"] == {"reason": reason, "focus_objective": "till ## tiles", "mode": "act"}
+    assert record["title"] == f"Planner rejected: {reason} while planning “till ## tiles”"
+    assert [e["planner"]["attempt"] for e in record["examples"]] == [1, 2]
+    for e in record["examples"]:
+        assert e["planner"]["source"] == "turn_planning" and e["planner"]["mode"] == "act"
+        assert e["planner"]["proposal"]["evidence"][0]["quote"] == "invented recipe"
+        assert e["planner"]["goal"]["focus"]["objective"] == "Till 10 tiles"
+        assert e["intent"]["current_goal"]["objective"] == "Till 10 tiles"
+        assert e["game_state"]["observation_id"]
+        assert e["screenshot"]["status"] == "unavailable"
+        assert e["example_id"].startswith("plan_")
+    assert len([e for e in store.events("run", limit=1000) if e["kind"] == "planner_rejected_recorded"]) == 2
+    hits = repair_tasks.run_issues(store, "run")[0]
+    assert [h["hit_count"] for h in hits if h["type"] == "planner_rejected"] == [2]
+    assert "planner_rejected" in [s["type"] for s in repair_tasks.project_issues(store, "project-1", "run")]
+    assert coordinator.investigation[1] == "planner_rejected"
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_rejections_group_by_rule_and_digit_free_objective(tmp_path):
+    store, _, service = runtime(tmp_path)
+    a, b = hierarchy(), hierarchy()
+    goals.active_goal(a)["objective"] = "Plant a seed in plot 3"
+    goals.active_goal(b)["objective"] = "Plant a seed in plot 7"
+    proposal, obs = {"mode": "act"}, observe()
+    await service.report_planner_rejection("run", "p", "turn_planning", a, proposal, "Rule A", 1, obs)
+    await service.report_planner_rejection("run", "p", "turn_planning", b, proposal, "Rule A", 1, obs)
+    await service.report_planner_rejection("run", "p", "turn_planning", a, proposal, "Rule B", 1, obs)
+    await service.report_planner_rejection("run", "p", "turn_planning", a, proposal, "Rule C (at subgoals.0.completion)", 1, obs)
+    await service.report_planner_rejection("run", "p", "turn_planning", a, proposal, "Rule C (at subgoals.2.completion)", 1, obs)
+    by_rule = {i["signature_basis"]["reason"]: i for i in issue_files(store) if i["type"] == "planner_rejected"}
+    assert sorted(by_rule) == ["Rule A", "Rule B", "Rule C (at subgoals.#.completion)"]
+    assert by_rule["Rule C (at subgoals.#.completion)"]["occurrences"] == 2
+    assert by_rule["Rule A"]["occurrences"] == 2
+    assert by_rule["Rule A"]["signature_basis"]["focus_objective"] == "plant a seed in plot #"
+    assert by_rule["Rule B"]["occurrences"] == 1
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_issue_recording_failure_never_blocks_planning(tmp_path, monkeypatch):
+    def raising(label):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(repair_tasks, "target_label", raising)
+    store, coordinator, service = runtime(tmp_path)
+    await rejected_twice(store, coordinator, service)
+    kinds = [e["kind"] for e in store.events("run", limit=1000)]
+    assert coordinator.investigation[1] == "planner_rejected"
+    assert kinds.count("subgoal_plan_rejected") == 2
+    assert kinds.count("planner_rejected_recorded") == 0
+    assert issue_files(store) == []
+    store.close()
+
+
 @pytest.mark.asyncio
 async def test_provider_failure_still_blames_the_provider(tmp_path):
     store, coordinator, service = runtime(tmp_path, goals.new_plan("Make an apple pie", "p", "run"))
@@ -515,6 +594,7 @@ def test_planner_rejected_pause_does_not_blame_ai_settings():
     pause = Coordinator.pause_details("planner_rejected", "x", ["p"])
     assert pause["recovery"].startswith("Your AI settings are not the problem")
     assert "Check AI Settings" not in pause["recovery"]
+    assert "Issues board" in pause["recovery"]
     assert Coordinator.pause_details("provider_failure", "x", ["p"])["recovery"].startswith("Check AI Settings")
 
 

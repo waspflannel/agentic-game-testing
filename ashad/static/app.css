@@ -544,30 +544,35 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .issue-group-head { font-size: var(--fs-title); font-weight: 600; padding-bottom: 8px; border-bottom: 1px solid var(--border); }
 .issue-count { color: var(--text-2); font-weight: 400; font-variant-numeric: tabular-nums; margin-left: 4px; }
 .issue-group .hint { padding: 8px 0; }
-.issue-board-list { list-style: none; margin: 0; padding: 0; }
-.issue-board-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; align-items: baseline; gap: 16px; padding: 8px 0; border-bottom: 1px solid var(--border); }
+/* One grid per group; rows are subgrids so status, count, source and seen line up down the list. */
+.issue-board-list { list-style: none; margin: 0; padding: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto auto auto auto; column-gap: 16px; }
+.issue-board-row { grid-column: 1 / -1; display: grid; grid-template-columns: subgrid; align-items: baseline; padding: 8px 0; border-bottom: 1px solid var(--border); }
 .issue-board-title { overflow-wrap: anywhere; }
 .issue-board-status, .issue-board-source, .issue-board-seen { font-size: var(--fs-meta); color: var(--text-2); }
 .issue-board-count { font-size: var(--fs-meta); color: var(--text-2); font-variant-numeric: tabular-nums; text-align: right; min-width: 8ch; }
 .issue-board-seen time { font-variant-numeric: tabular-nums; }
 .issue-closed, .issue-closed .issue-board-title { color: var(--text-2); }
 .issue-filter { justify-self: start; }
+.issues-page [data-region="filter"]:empty { display: none; }
 .issue-board-link { margin: 0 0 8px; font-size: var(--fs-meta); }
 .issue-status { font-size: var(--fs-meta); }
 .issue-info-section { padding: 16px 0; border-top: 1px solid var(--border); min-width: 0; }
-.issue-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 16px; margin: 0; font-size: var(--fs-meta); }
+.issue-fields { display: grid; grid-template-columns: 128px minmax(0, 1fr); gap: 4px 16px; margin: 0; font-size: var(--fs-meta); }
+.issue-info-section > * + * { margin-top: 8px; }
 .issue-fields dt { color: var(--text-2); }
 .issue-fields dd { margin: 0; overflow-wrap: anywhere; }
 .issue-decisions, .issue-candidates { margin: 0; padding-left: 20px; font-size: var(--fs-meta); }
 .issue-decisions li + li { margin-top: 4px; }
+.issue-decisions time { color: var(--text-2); }
 .issue-shot { display: block; max-width: 100%; height: auto; border: 1px solid var(--border); border-radius: var(--r-row); }
 .issue-info pre { font-family: var(--mono); font-size: var(--fs-meta); overflow: auto; max-height: 320px; margin: 4px 0 0; padding: 8px; background: var(--surface); border-radius: var(--r-row); white-space: pre-wrap; overflow-wrap: anywhere; }
+.issue-info-section > pre { max-height: none; }
 .issue-info details summary { font-size: var(--fs-meta); color: var(--text-2); cursor: pointer; }
 @media (max-width: 480px) {
+  .issue-board-list { display: block; }
   .issue-board-row { grid-template-columns: auto auto minmax(0, 1fr); gap: 4px 12px; }
   .issue-board-title { grid-column: 1 / -1; }
   .issue-board-seen { grid-column: 1 / -1; }
-  .issue-fields { grid-template-columns: minmax(0, 1fr); }
 }
 .insp-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; color: var(--text-2); }
 .insp-meta .dot-live { animation: none; }

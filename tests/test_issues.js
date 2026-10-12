@@ -136,6 +136,16 @@ test('issueInfoHTML unsupported shows what happened, actions, decisions, screens
   assert.doesNotMatch(html, /Crash log|Bug report/);
 });
 
+test('issueInfoHTML leaves out fields whose list is empty', async () => {
+  const { issueInfoHTML } = await issues();
+  const r = UNSUPPORTED();
+  Object.assign(r.examples[0].capabilities, { game_verbs: [] });
+  r.examples[0].game_state.telemetry.completed_quests = [];
+  const html = issueInfoHTML(r, r.examples[0], { runIds: ids });
+  assert.doesNotMatch(html, /Game verbs|Completed quests/);
+  assert.match(html, /<dt>Target actions<\/dt><dd>None<\/dd>/);
+});
+
 test('issueInfoHTML crash shows the symptom and log tail and says actions are not recorded', async () => {
   const { issueInfoHTML } = await issues();
   const r = CRASH();

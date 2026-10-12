@@ -83,7 +83,7 @@ export function issueViewRegions(view, data) {
 }
 
 const section = (title, body) => `<section class="issue-info-section"><h2 class="section-title">${title}</h2>${body}</section>`;
-const blank = v => v === null || v === undefined || v === '';
+const blank = v => v === null || v === undefined || v === '' || (Array.isArray(v) && !v.length);
 function fields(pairs) {
   const rows = pairs.filter(([, v]) => !blank(v)).map(([label, v]) => `<dt>${label}</dt><dd>${esc(Array.isArray(v) ? v.join(', ') : v)}</dd>`);
   return rows.length ? `<dl class="issue-fields">${rows.join('')}</dl>` : '';

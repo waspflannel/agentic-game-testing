@@ -254,17 +254,17 @@ function button(action, pending, extra = '') {
 }
 
 // Split buttons: the main half does the common thing, the caret opens the alternative.
-function split(action, label, iconName, alt, altLabel, pending) {
-  const busy = pending.has(action) || pending.has(alt);
+function split(action, label, iconName, alts, pending) {
+  const busy = pending.has(action) || alts.some(([a]) => pending.has(a));
   return `<span class="split"><button type="button" class="btn btn-primary" data-action="ctl" data-ctl="${action}" data-key="ctl-${action}"${busy ? ' aria-busy="true" aria-disabled="true"' : ''}>`
     + `${icon(busy ? 'loader' : iconName, busy ? 'icon spin' : 'icon')}${label}</button>`
     + `<button type="button" class="btn btn-primary split-caret" popovertarget="menu-${action}" data-key="ctl-${action}-more" aria-label="More ${label} options" title="More options">${icon('chevron-down')}</button>`
-    + `<div id="menu-${action}" class="popover menu" popover><button type="button" class="menu-item" data-action="ctl" data-ctl="${alt}" data-key="ctl-${alt}">${esc(altLabel)}</button></div></span>`;
+    + `<div id="menu-${action}" class="popover menu" popover>${alts.map(([a, l]) => `<button type="button" class="menu-item" data-action="ctl" data-ctl="${a}" data-key="ctl-${a}">${esc(l)}</button>`).join('')}</div></span>`;
 }
 
 function controlsHTML(status, pending, error) {
-  const left = status.left.map(action => action === 'resume' ? split('resume', 'Resume', 'play', 'resume-with', 'Resume with an instruction…', pending)
-    : action === 'handback' ? split('handback', 'Hand back', 'play', 'handback-paused', 'Hand back, keep bots paused', pending)
+  const left = status.left.map(action => action === 'resume' ? split('resume', 'Resume', 'play', [['resume-with', 'Resume with an instruction…']], pending)
+    : action === 'handback' ? split('handback', 'Hand back', 'play', [['handback-with', 'Hand back with an instruction…'], ['handback-paused', 'Hand back, keep bots paused']], pending)
     : button(action, pending)).join('');
   const menuBusy = status.menu.some(action => pending.has(action));
   const menu = status.menu.length
@@ -279,10 +279,11 @@ function controlsHTML(status, pending, error) {
 
 function instructionHTML(ui, pending) {
   if (!ui.instructionOpen) return '';
+  const handback = ui.instructionOpen === 'handback';
   return `<form class="instruction" data-form="resume-instruction"><label for="resume-reason">Recovery instruction</label>`
     // The typed text is not in the markup (app.js restores it), so a poll never re-creates the field mid-typing.
-    + `<textarea id="resume-reason" class="textarea" name="reason" rows="2" required maxlength="4000" data-key="ins-text" placeholder="For example: try the path past the bridge before returning to the objective"></textarea>`
+    + `<textarea id="resume-reason" class="textarea" name="reason" rows="2" required maxlength="4000" data-key="ins-text" placeholder="${handback ? 'For example: I opened the shop menu; buy the hoe, then return to the field' : 'For example: try the path past the bridge before returning to the objective'}"></textarea>`
     + `<p class="hint">Used until the next resume.</p><div class="instruction-actions">`
     + `<button type="button" class="btn btn-ghost" data-action="instruction-cancel" data-key="ins-cancel">Cancel</button>`
-    + `<button type="submit" class="btn btn-primary" data-key="ins-send"${pending.has('resume-with') ? ' aria-busy="true" aria-disabled="true"' : ''}>${icon('play')}Resume with instruction</button></div></form>`;
+    + `<button type="submit" class="btn btn-primary" data-key="ins-send"${pending.has(handback ? 'handback-with' : 'resume-with') ? ' aria-busy="true" aria-disabled="true"' : ''}>${icon('play')}${handback ? 'Hand back' : 'Resume'} with instruction</button></div></form>`;
 }

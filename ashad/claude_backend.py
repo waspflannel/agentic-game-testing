@@ -193,6 +193,12 @@ class ClaudeBackend:
         selection = {"usage": usage if isinstance(usage, dict) else None, "usage_scope": operation + "_total",
             "thread_id": decoded.get("session_id"), "turn_id": None}
         answers = decoded.get("structured_output")
+        # Some CLI versions return the object as a JSON string.
+        if isinstance(answers, str):
+            try:
+                answers = json.loads(answers)
+            except ValueError:
+                pass
         if not isinstance(answers, dict):
             raise ClaudeError("invalid_plan" if operation == "planning" else "invalid_decision",
                 f"Claude returned invalid {operation} JSON; no action was executed.", selection=selection)

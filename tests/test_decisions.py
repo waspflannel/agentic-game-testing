@@ -328,9 +328,9 @@ async def test_planning_validates_schema_and_keeps_frozen_model_and_usage(tmp_pa
     await ai.validate("gpt-6-luna")
     evidence = context()
     result = await ai.plan_subgoals(evidence, run["id"])
-    assert type(result) is dict and result == PlanningDecision.model_validate(response["answers"]).model_dump()
+    assert type(result) is dict and result == response["answers"]
     assert "usage" not in result and not backend.calls
-    backend.plan.assert_awaited_once_with(json.dumps(evidence, ensure_ascii=False),
+    backend.plan.assert_awaited_once_with(evidence,
         PlanningDecision.model_json_schema(), model="gpt-6-sol")
     [usage], [request] = store.list("usage"), store.list("provider_requests")
     assert usage["purpose"] == request["purpose"] == "planning"
@@ -347,23 +347,11 @@ async def test_planning_validates_schema_and_keeps_frozen_model_and_usage(tmp_pa
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("damage", ["not_object", "missing", "completed", "status", "mode", "condition", "subgoals"])
-async def test_invalid_planning_shape_is_metered_and_never_selects_actions(tmp_path, damage):
+async def test_non_object_planning_answer_is_metered_and_never_selects_actions(tmp_path):
     store, backend = Store(tmp_path), Backend()
     store.put("runs", {"id": "run-plan", "model": MODEL})
     response = planning_answers()
-    if damage == "not_object":
-        response["answers"] = []
-    elif damage == "missing":
-        response["answers"].pop("goal_id")
-    elif damage in {"completed", "status"}:
-        response["answers"][damage] = True if damage == "completed" else "completed"
-    elif damage == "mode":
-        response["answers"]["mode"] = "execute"
-    elif damage == "condition":
-        response["answers"]["completion"]["kind"] = "tutorial_partial_checklist"
-    else:
-        response["answers"]["subgoals"] = [{"tool": "perform_action", "args": {"verb": "debug_grant"}}]
+    response["answers"] = []
     backend.plan = AsyncMock(return_value=response)
     ai = OpenAI(store, Credentials(), backend=backend)
     with pytest.raises(ProviderError) as caught:
@@ -375,6 +363,31 @@ async def test_invalid_planning_shape_is_metered_and_never_selects_actions(tmp_p
     assert usage["purpose"] == request["purpose"] == "planning"
     assert usage["usage"] == response["usage"] and usage["usage_scope"] == "planning_total"
     assert store.events("run-plan")[-1]["payload"]["status"] == "invalid_plan"
+    assert all(event["kind"] != "decision_selected" for event in store.events("run-plan"))
+    store.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damage", ["missing", "completed", "status", "mode", "condition", "subgoals"])
+async def test_contract_damage_passes_through_to_the_planner(tmp_path, damage):
+    store, backend = Store(tmp_path), Backend()
+    store.put("runs", {"id": "run-plan", "model": MODEL})
+    response = planning_answers()
+    if damage == "missing":
+        response["answers"].pop("goal_id")
+    elif damage in {"completed", "status"}:
+        response["answers"][damage] = True if damage == "completed" else "completed"
+    elif damage == "mode":
+        response["answers"]["mode"] = "execute"
+    elif damage == "condition":
+        response["answers"]["completion"]["kind"] = "tutorial_partial_checklist"
+    else:
+        response["answers"]["subgoals"] = [{"tool": "perform_action", "args": {"verb": "debug_grant"}}]
+    backend.plan = AsyncMock(return_value=response)
+    ai = OpenAI(store, Credentials(), backend=backend)
+    assert await ai.plan_subgoals(context(), "run-plan") == response["answers"]
+    [usage] = store.list("usage")
+    assert usage["status"] == "completed" and not backend.calls
     assert all(event["kind"] != "decision_selected" for event in store.events("run-plan"))
     store.close()
 
@@ -468,4 +481,21 @@ async def test_active_leaf_and_ancestors_reach_both_action_selection_stages(tmp_
         assert all(key in instructions for key in ("current_goal", "goal_path", "subgoal_plan", "root objective"))
         assert "Verify actual effects" in instructions and "Input completion is not proof" in instructions
     dispatch.assert_awaited_once()
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_planning_payload_is_an_object_not_a_string(tmp_path):
+    from ashad.subgoals import PlanningDecision
+    store, backend = Store(tmp_path), Backend()
+    store.put("runs", {"id": "run-plan", "model": MODEL})
+    backend.plan = AsyncMock(return_value=planning_answers())
+    ai = OpenAI(store, Credentials(), backend=backend)
+    evidence = context()
+    await ai.plan_subgoals(evidence, "run-plan")
+    sent = backend.plan.await_args.args[0]
+    assert isinstance(sent, dict) and sent["observation"] == evidence["observation"]
+    [request] = store.list("provider_requests")
+    schema = PlanningDecision.model_json_schema()
+    assert request["input_bytes"] == len(json.dumps({"evidence": evidence, "schema": schema}, ensure_ascii=False).encode("utf-8"))
     store.close()

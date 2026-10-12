@@ -1183,8 +1183,9 @@ async function onRoute() {
     if (route.section === 'account') refreshAccount();  // Status on view open; it checks the account without inference.
   }
   if (route.name === 'usage' && previous.name !== 'usage') loadUsage();
-  if (route.name === 'issues' && (previous.name !== 'issues' || boardKey(previous) !== boardKey(route))) loadIssues();
-  if (route.name === 'issue' && (previous.name !== 'issue' || previous.issueId !== route.issueId)) loadIssue(route.issueId);
+  // Compared with the loaded record, not the previous route: on a deep link the initial state.route already equals route.
+  if (route.name === 'issues' && (previous.name !== 'issues' || state.issues?.key !== boardKey(route))) loadIssues();
+  if (route.name === 'issue' && (previous.name !== 'issue' || state.issue?.id !== route.issueId)) loadIssue(route.issueId);
   if (route.name === 'project' && (previous.name !== 'project' || previous.id !== route.id)) overviewFor(route.id).readiness = null;  // Probe on view open.
   rememberProject(route);
   syncDirty();

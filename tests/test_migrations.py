@@ -1,15 +1,15 @@
 """Startup migrations: temporary stores only; every migration must be safe to run twice."""
+import hashlib
 import json
 
-from test_unsupported_actions import basis, example
-
+from ashad.app import create_app
 from ashad.coordinator import Coordinator
 from ashad.migrations import migrate_issue_projects, retire_fixer, retire_saves
-from test_controller import FakeCodexBackend, MemoryCredentials
-from ashad.app import create_app
 from ashad.repair_tasks import issue_directory, issue_filename, issue_signature, record_issue
 from ashad.store import Store
 from test_api_boundaries import offline_app
+from test_controller import FakeCodexBackend, MemoryCredentials
+from test_unsupported_actions import basis, example
 
 
 def test_retire_fixer_ends_fixing_runs_once(tmp_path):
@@ -114,7 +114,7 @@ def test_startup_runs_retire_saves(tmp_path):
 
 def v1(id, **fields):
     record = {"id": id, "issue_id": id, "schema": "ashad.issue/1", "type": "unsupported_action",
-              "signature": f"{abs(hash(id)) % 16 ** 8:08x}".ljust(64, "0"), "status": "open", "status_history": [],
+              "signature": hashlib.sha256(id.encode()).hexdigest(), "status": "open", "status_history": [],
               "fix": {"state": "none"}, "first_seen": {"at": "t", "run_id": None}, "last_seen": {"at": "t"},
               "runs": [], "builds": [], "examples": [], "examples_kept": 0, "examples_dropped": 0, "occurrences": 1, "revision": 1, "published_revision": 1}
     record.update(fields)

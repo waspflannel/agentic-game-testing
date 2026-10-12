@@ -108,37 +108,24 @@ def test_issue_detail_screenshot_notes(tmp_path):
     store.put("runs", {"id": "ended", "state": "Ended"})
     store.put("runs", {"id": "active", "state": "Running"})
     frame = "pinned/x/f.jpg"
-    (store.run_dir("ended") / "workers" / "player-1" / "pinned" / "x").mkdir(parents=True)
-    (store.run_dir("ended") / "workers" / "player-1" / frame).write_bytes(b"jpg")
-
-    def shot(status="pinned"):
-        return {"status": status, "frames": [frame]}
-
-    examples = [
-        example(example_id="a", run_id="ended", screenshot=shot("unavailable")),
-        example(example_id="b", run_id="gone", screenshot=shot()),
-        example(example_id="c", run_id="active", screenshot=shot()),
-        example(example_id="d", run_id="ended", screenshot=shot()),
-        example(example_id="e", run_id="active", screenshot={"status": "pinned", "frames": []}),
-    ]
-    for item in examples:
+    retained = store.run_dir("ended") / "workers" / "player-1" / frame
+    retained.parent.mkdir(parents=True)
+    retained.write_bytes(b"jpg")
+    pinned = {"status": "pinned", "frames": [frame]}
+    for item in [example(example_id="unpinned", run_id="ended"),
+                 example(example_id="gone", run_id="unknown", screenshot=pinned),
+                 example(example_id="running", run_id="active", screenshot=pinned),
+                 example(example_id="kept", run_id="ended", screenshot=pinned),
+                 example(example_id="lost", run_id="ended", player_id="player-2", screenshot=pinned)]:
         record_issue(store, "unsupported_action", basis(), item)
-    store.put("runs", {"id": "ended", "state": "Ended"})
-    (store.run_dir("ended") / "workers" / "player-1" / frame).unlink()
-    record = store.list("issues")[0]
-    record["examples"] = [repair_tasks.shrink_example(e) for e in examples]
-    (store.run_dir("ended") / "workers" / "player-1" / frame).write_bytes(b"jpg")
-    store.put("issues", record)
-    # "d" is retained; add one more ended example whose file is absent.
-    record["examples"].append(repair_tasks.shrink_example(
-        example(example_id="f", run_id="ended", player_id="player-2", screenshot=shot())))
-    store.put("issues", record)
+    [record] = store.list("issues")
 
     detail = repair_tasks.issue_detail(store, record["id"])
-    notes = {e["example_id"]: e["screenshot"] for e in detail["examples"]}
-    assert [notes[k]["note"] for k in "abcdef"] == ["unavailable", "deleted", "pending", "retained", "unavailable", "missing"]
-    assert notes["d"]["url"] == "/api/runs/ended/files/workers/player-1/pinned/x/f.jpg"
-    assert notes["a"]["url"] is None
+    shots = {e["example_id"]: e["screenshot"] for e in detail["examples"]}
+    assert {k: shot["note"] for k, shot in shots.items()} == {
+        "unpinned": "unavailable", "gone": "deleted", "running": "pending", "kept": "retained", "lost": "missing"}
+    assert shots["kept"]["url"] == "/api/runs/ended/files/workers/player-1/pinned/x/f.jpg"
+    assert all(shot["url"] is None for k, shot in shots.items() if k != "kept")
     assert "published_revision" not in detail
     assert detail["file"] == str(repair_tasks.issue_path(store, record))
     assert repair_tasks.issue_detail(store, "issue_nope") is None

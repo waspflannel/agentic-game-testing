@@ -51,12 +51,14 @@ def retire_saves(store):
 
 
 def _legacy_project(store, issue):
-    for run_id in [(issue.get("first_seen") or {}).get("run_id"), *issue.get("runs", [])]:
-        if run_id and (store.get("runs", run_id) or {}).get("project_id"):
-            return store.get("runs", run_id)["project_id"]
-    for build_id in issue.get("builds", []):
-        if build_id and (store.get("builds", build_id) or {}).get("project_id"):
-            return store.get("builds", build_id)["project_id"]
+    """The project of the first run, then any run, then any build that still exists and has one."""
+    candidates = [("runs", (issue.get("first_seen") or {}).get("run_id")),
+                  *(("runs", run_id) for run_id in issue.get("runs", [])),
+                  *(("builds", build_id) for build_id in issue.get("builds", []))]
+    for kind, key in candidates:
+        project_id = key and (store.get(kind, key) or {}).get("project_id")
+        if project_id:
+            return project_id
     return None
 
 

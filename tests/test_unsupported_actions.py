@@ -28,9 +28,8 @@ def no_http_inference(monkeypatch):
 
 
 def example(**overrides):
-    value = {"example_id": "uae_1", "at": "2026-10-11T00:00:00+00:00", "run_id": "run-1", "project_id": "project-1",
-        "player_id": "player-1",
-        "scenario_id": "scenario-1", "scenario_revision": 1, "model": "model-1", "controller_version": "1",
+    value = {"example_id": "uae_1", "at": "2026-10-11T00:00:00+00:00", "run_id": "run-1", "player_id": "player-1",
+        "project_id": "project-1", "scenario_id": "scenario-1", "scenario_revision": 1, "model": "model-1", "controller_version": "1",
         "build": {"id": "build-1", "source_revision": "rev"}, "source": "agent_signal",
         "intent": {"primary_goal": "Plant a crop", "current_goal": None, "goal_path": [], "plan_reason": None},
         "wanted": {"tool": "perform_action", "verb": "ui_drag", "target_id": "slot-3", "target_kind": "inventory_slot",

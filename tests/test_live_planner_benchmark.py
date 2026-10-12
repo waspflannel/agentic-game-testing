@@ -2,7 +2,7 @@
 
 Needs CLAUDE_CODE_OAUTH_TOKEN in the environment and ~/.local/bin/claude; the token is never read from the keyring
 and Fast mode stays off (ClaudeBackend._environment). Never runs in CI or without the token.
-  CLAUDE_CODE_OAUTH_TOKEN=... .venv/bin/python -m pytest tests/test_live_planner_benchmark.py -q -s -p no:cacheprovider
+  ASHAD_PLANNER_BENCH=1 CLAUDE_CODE_OAUTH_TOKEN=... .venv/bin/python -m pytest tests/test_live_planner_benchmark.py -q -s -p no:cacheprovider
 """
 import json
 import os
@@ -25,8 +25,9 @@ INSTRUCTION = "Till tile-1 first, then plant the wheat seeds there"
 OBJECTIVES = ["Harvest 10 wheat", "Plant a wheat seed in plot 3"]
 INSTRUCTIONS = [None, (INSTRUCTION, "hand_back"), (INSTRUCTION, "resume")]
 
-pytestmark = pytest.mark.skipif(not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or not CLI.is_file(),
-                                reason="needs CLAUDE_CODE_OAUTH_TOKEN and ~/.local/bin/claude")
+# Opt-in only: a token in the environment must never turn ./scripts/test.sh into a live model run.
+pytestmark = pytest.mark.skipif(os.environ.get("ASHAD_PLANNER_BENCH") != "1" or not os.environ.get("CLAUDE_CODE_OAUTH_TOKEN") or not CLI.is_file(),
+                                reason="opt-in: set ASHAD_PLANNER_BENCH=1; needs CLAUDE_CODE_OAUTH_TOKEN and ~/.local/bin/claude")
 
 
 class EnvCredentials:

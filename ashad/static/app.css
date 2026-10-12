@@ -596,8 +596,8 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .goal-now-title { font-size: var(--fs-meta); color: var(--text-2); }
 .goal-now-objective { font-weight: 600; overflow-wrap: anywhere; }
 .goal-path { color: var(--text-3); overflow-wrap: anywhere; }
-.goal-review { color: var(--attention); }
-.goal-review span { color: var(--text); }
+.goal-review { color: var(--text); }
+.goal-now, .goal-review { margin-bottom: 8px; }
 .plan-history ol { list-style: none; margin: 0; padding: 0; display: grid; }
 .plan-history li { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 4px 12px; align-items: baseline; padding: 4px 0; border-top: 1px solid var(--border); font-size: var(--fs-meta); }
 .plan-history li span { overflow-wrap: anywhere; }

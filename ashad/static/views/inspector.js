@@ -183,7 +183,7 @@ function reviewHTML(run, plan) {
   const pause = run.pause;
   const reason = ['planner_rejected', 'planner_blocked'].includes(pause?.category) || (pause?.category === 'goal_recalculation' && !recalculating) ? pause.reason
     : plan.status === 'blocked' ? plan.reason : '';
-  return reason ? `<p class="note goal-review">${icon('alert')}<span>Needs review: ${esc(reason)}</span></p>` : '';
+  return reason ? `<p class="note goal-review">Needs review: ${esc(reason)}</p>` : '';
 }
 
 function historyHTML(events) {

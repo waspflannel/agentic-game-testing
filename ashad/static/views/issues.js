@@ -13,9 +13,8 @@ export function boardModel(data, projectId, runId, board) {
   const project = (data?.projects || []).find(p => p.id === projectId);
   const run = runId ? runs.find(r => r.id === runId) : null;
   const row = r => {
-    const linked = runs.some(x => x.id === r.last_run_id);
     const last = runs.find(x => x.id === r.last_run_id);
-    return { id: r.issue_id, title: r.title, status: r.status, count: r.occurrences, source: { id: r.last_run_id, label: linked ? runGoal(last) : 'Deleted instance', linked },
+    return { id: r.issue_id, title: r.title, status: r.status, count: r.occurrences, source: { id: r.last_run_id, label: last ? runGoal(last) : 'Deleted instance', linked: Boolean(last) },
       more: Math.max(0, (r.runs?.length || 0) - 1), first: r.first_at, last: r.last_at };
   };
   return {
@@ -91,7 +90,6 @@ function fields(pairs) {
 }
 const json = (summary, value) => `<details><summary>${summary}</summary><pre class="mono">${esc(typeof value === 'string' ? value : JSON.stringify(value, null, 2))}</pre></details>`;
 const SHOT_NOTES = { pending: 'Saved when the instance ends.', deleted: 'Deleted with its instance.', missing: 'Frames were not retained.' };
-const dd = path => `<dd><code>${esc(path)}</code></dd>`;
 
 export function issueInfoHTML(issue, example, { runIds }) {
   const type = issue.type;
@@ -132,21 +130,21 @@ export function issueInfoHTML(issue, example, { runIds }) {
   sections.push(section('Screenshot', shot?.url ? `<img class="issue-shot" src="${esc(shot.url)}" alt="Screen 10 seconds before the issue" loading="lazy">`
     : `<p class="note">${icon('info')}<span>${SHOT_NOTES[shot?.note] || 'No screenshot was pinned for this hit.'}</span></p>`));
 
-  const state = example.game_state || {};
-  const stateBody = fields([['Completed quests', state.telemetry?.completed_quests]])
-    + (state.progress != null ? json('Progress', state.progress) : '') + (state.observation != null ? json('Observation', state.observation) : '');
+  const game = example.game_state || {};
+  const stateBody = fields([['Completed quests', game.telemetry?.completed_quests]])
+    + (game.progress != null ? json('Progress', game.progress) : '') + (game.observation != null ? json('Observation', game.observation) : '');
   sections.push(section('Game state', stateBody || `<p class="hint">No game state recorded.</p>`));
 
   if (type === 'crash') sections.push(section('Crash log', crash?.log_tail ? `<pre class="mono">${esc(crash.log_tail)}</pre>` : `<p class="hint">No log was captured.</p>`));
   if (type === 'game_bug') {
-    const state = report?.target_state;
-    sections.push(section('Bug report', fields([['Target ID', report?.target_id], ['Target state', state !== null && typeof state === 'object' ? JSON.stringify(state) : state]])
+    const targetState = report?.target_state;
+    sections.push(section('Bug report', fields([['Target ID', report?.target_id], ['Target state', targetState !== null && typeof targetState === 'object' ? JSON.stringify(targetState) : targetState]])
       + (report?.related_action ? json('Related action', report.related_action) : '')));
   }
 
   const ev = example.evidence || {};
   const paths = [['Run folder', ev.run_dir], ['Ledger', ev.ledger], ['Report', ev.report]].filter(([, p]) => p);
-  sections.push(section('Evidence', (paths.length ? `<dl class="issue-fields">${paths.map(([label, p]) => `<dt>${label}</dt>${dd(p)}`).join('')}</dl>` : '')
+  sections.push(section('Evidence', (paths.length ? `<dl class="issue-fields">${paths.map(([label, p]) => `<dt>${label}</dt><dd><code>${esc(p)}</code></dd>`).join('')}</dl>` : '')
     + (runIds.has(example.run_id) ? `<p><a href="${href('i', example.run_id)}" data-key="issue-instance">Open instance</a></p>` : `<p class="hint">Instance deleted.</p>`)));
   return sections.join('');
 }

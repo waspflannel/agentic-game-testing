@@ -1,7 +1,11 @@
-"""One-way, idempotent startup migrations for retired features; running one twice changes nothing the second time."""
+"""One-way, idempotent startup migrations; running one twice changes nothing the second time."""
+import logging
 import time
+from datetime import datetime, timezone
 
 from . import repair_tasks
+
+LOG = logging.getLogger(__name__)
 
 
 def retire_fixer(store):
@@ -44,3 +48,40 @@ def retire_saves(store):
                 issue["revision"] = issue.get("revision", 0) + 1
                 store.put("issues", issue)
     repair_tasks.publish_issues(store)
+
+
+def _legacy_project(store, issue):
+    for run_id in [(issue.get("first_seen") or {}).get("run_id"), *issue.get("runs", [])]:
+        if run_id and (store.get("runs", run_id) or {}).get("project_id"):
+            return store.get("runs", run_id)["project_id"]
+    for build_id in issue.get("builds", []):
+        if build_id and (store.get("builds", build_id) or {}).get("project_id"):
+            return store.get("builds", build_id)["project_id"]
+    return None
+
+
+def migrate_issue_projects(store):
+    """Issues belong to projects: give ashad.issue/1 records a project and open/closed status, republish, and drop their flat files."""
+    with store.transaction():
+        for issue in store.list("issues"):
+            if issue.get("schema") == repair_tasks.ISSUE_SCHEMA:
+                continue
+            issue["project_id"] = _legacy_project(store, issue)
+            status = "closed" if issue.get("status") == "fixed" else "open"
+            if status != issue.get("status"):
+                history = issue.setdefault("status_history", [])
+                history.append({"at": datetime.now(timezone.utc).isoformat(), "from": issue.get("status"),
+                                "to": status, "by": "migration"})
+                del history[:-repair_tasks.MAX_STATUS_HISTORY]
+                issue["status"] = status
+            issue["schema"] = repair_tasks.ISSUE_SCHEMA
+            issue["revision"] = issue.get("revision", 0) + 1
+            store.put("issues", issue)
+    repair_tasks.publish_issues(store)
+    names = {repair_tasks.issue_filename(r) for r in store.list("issues")}
+    for path in repair_tasks.issue_directory(store).glob("*.json"):
+        if path.name in names:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                LOG.warning("Could not remove legacy issue file %s", path)

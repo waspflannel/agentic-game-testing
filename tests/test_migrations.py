@@ -1,9 +1,13 @@
 """Startup migrations: temporary stores only; every migration must be safe to run twice."""
 import json
 
+from test_unsupported_actions import basis, example
+
 from ashad.coordinator import Coordinator
-from ashad.migrations import retire_fixer, retire_saves
-from ashad.repair_tasks import issue_directory
+from ashad.migrations import migrate_issue_projects, retire_fixer, retire_saves
+from test_controller import FakeCodexBackend, MemoryCredentials
+from ashad.app import create_app
+from ashad.repair_tasks import issue_directory, issue_filename, issue_signature, record_issue
 from ashad.store import Store
 from test_api_boundaries import offline_app
 
@@ -106,3 +110,80 @@ def test_startup_runs_retire_saves(tmp_path):
             assert app.state.store.list("saves") == []
         finally:
             app.state.store.close()
+
+
+def v1(id, **fields):
+    record = {"id": id, "issue_id": id, "schema": "ashad.issue/1", "type": "unsupported_action",
+              "signature": f"{abs(hash(id)) % 16 ** 8:08x}".ljust(64, "0"), "status": "open", "status_history": [],
+              "fix": {"state": "none"}, "first_seen": {"at": "t", "run_id": None}, "last_seen": {"at": "t"},
+              "runs": [], "builds": [], "examples": [], "examples_kept": 0, "examples_dropped": 0, "occurrences": 1, "revision": 1, "published_revision": 1}
+    record.update(fields)
+    return record
+
+
+def test_migrate_issue_projects_assigns_project_and_maps_status(tmp_path):
+    store = Store(tmp_path)
+    store.put("runs", {"id": "run-a", "project_id": "p1"})
+    store.put("runs", {"id": "run-b", "project_id": "p2"})
+    store.put("builds", {"id": "build-c", "project_id": "p3"})
+    fix = {"state": "fixed", "note": "keep"}
+    store.put("issues", v1("issue_a", first_seen={"at": "t", "run_id": "run-a"}, status="fixed", fix=fix))
+    store.put("issues", v1("issue_b", first_seen={"at": "t", "run_id": "deleted"}, runs=["gone", "run-b"], status="fixing"))
+    store.put("issues", v1("issue_c", builds=["build-c"]))
+    store.put("issues", v1("issue_d"))
+    migrate_issue_projects(store)
+    a, b, c, d = (store.require("issues", i) for i in ("issue_a", "issue_b", "issue_c", "issue_d"))
+    assert [a["project_id"], b["project_id"], c["project_id"], d["project_id"]] == ["p1", "p2", "p3", None]
+    assert a["status"] == "closed" and [h["by"] for h in a["status_history"]] == ["migration"]
+    assert a["status_history"][0]["from"] == "fixed" and a["status_history"][0]["to"] == "closed"
+    assert b["status"] == "open" and [h["by"] for h in b["status_history"]] == ["migration"]
+    assert c["status"] == "open" and c["status_history"] == []
+    assert a["fix"] == fix and a["issue_id"] == "issue_a" and a["id"] == "issue_a"
+    assert all(r["schema"] == "ashad.issue/2" for r in (a, b, c, d))
+    assert (issue_directory(store) / "unassigned" / issue_filename(d)).exists()
+    assert (issue_directory(store) / "p1" / issue_filename(a)).exists()
+
+
+def test_migrate_issue_projects_is_idempotent_and_removes_only_legacy_flat_files(tmp_path):
+    store = Store(tmp_path)
+    store.put("runs", {"id": "run-a", "project_id": "p1"})
+    record = v1("issue_a", first_seen={"at": "t", "run_id": "run-a"})
+    store.put("issues", record)
+    issue_directory(store).mkdir(parents=True)
+    flat = issue_directory(store) / issue_filename(record)
+    flat.write_text("{}")
+    notes = issue_directory(store) / "notes.json"
+    notes.write_text("{}")
+    migrate_issue_projects(store)
+    first = store.require("issues", "issue_a")
+    migrate_issue_projects(store)
+    assert store.require("issues", "issue_a") == first
+    assert first["revision"] == 2
+    assert not flat.exists() and notes.exists()
+    assert (issue_directory(store) / "p1" / issue_filename(record)).exists()
+
+
+def test_migrated_issue_keeps_counting_under_old_id(tmp_path):
+    store = Store(tmp_path)
+    store.put("issues", v1("issue_old", signature=issue_signature("unsupported_action", basis()),
+                           first_seen={"at": "t", "run_id": "run-a"}))
+    store.put("runs", {"id": "run-a", "project_id": "p1"})
+    migrate_issue_projects(store)
+    record_issue(store, "unsupported_action", basis(), example(project_id="p1"))
+    [issue] = store.list("issues")
+    assert issue["id"] == "issue_old" and issue["occurrences"] == 2
+
+
+def test_startup_migrates_issues_before_retire_saves_publishes(tmp_path):
+    store = Store(tmp_path)
+    store.put("runs", {"id": "run-x", "project_id": "project-x"})
+    store.put("issues", v1("issue_a", first_seen={"at": "t", "run_id": "run-x"},
+                           last_seen={"at": "t", "save_before": "save_1"}))
+    store.close()
+    app = create_app(store.root, MemoryCredentials(None), start_services=False, ai_backend=FakeCodexBackend())
+    try:
+        [path] = (issue_directory(app.state.store) / "project-x").glob("*.json")
+        assert "save_before" not in json.loads(path.read_text())["last_seen"]
+        assert not (issue_directory(app.state.store) / "unassigned").exists()
+    finally:
+        app.state.store.close()

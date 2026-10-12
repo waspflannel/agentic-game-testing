@@ -1060,11 +1060,8 @@ async function onControl(action) {
     case 'pause': return command('pause', control(run, 'pause'), 'Paused. Bot input is held; the game may keep simulating.');
     case 'resume': return command('resume', control(run, 'resume'), 'Resumed.');
     case 'resume-with':
-      state.thread.instructionOpen = 'resume';
-      renderView();
-      return $('#resume-reason')?.focus();
     case 'handback-with':
-      state.thread.instructionOpen = 'handback';
+      state.thread.instructionOpen = action === 'handback-with' ? 'handback' : 'resume';
       renderView();
       return $('#resume-reason')?.focus();
     case 'stop':

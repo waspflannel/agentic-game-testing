@@ -253,13 +253,13 @@ function button(action, pending, extra = '') {
     + `${icon(busy ? 'loader' : a.icon, busy ? 'icon spin' : 'icon')}${a.label}</button>`;
 }
 
-// Split buttons: the main half does the common thing, the caret opens the alternative.
+// Split buttons: the main half does the common thing, the caret opens the alternatives.
 function split(action, label, iconName, alts, pending) {
-  const busy = pending.has(action) || alts.some(([a]) => pending.has(a));
+  const busy = pending.has(action) || alts.some(([alt]) => pending.has(alt));
   return `<span class="split"><button type="button" class="btn btn-primary" data-action="ctl" data-ctl="${action}" data-key="ctl-${action}"${busy ? ' aria-busy="true" aria-disabled="true"' : ''}>`
     + `${icon(busy ? 'loader' : iconName, busy ? 'icon spin' : 'icon')}${label}</button>`
     + `<button type="button" class="btn btn-primary split-caret" popovertarget="menu-${action}" data-key="ctl-${action}-more" aria-label="More ${label} options" title="More options">${icon('chevron-down')}</button>`
-    + `<div id="menu-${action}" class="popover menu" popover>${alts.map(([a, l]) => `<button type="button" class="menu-item" data-action="ctl" data-ctl="${a}" data-key="ctl-${a}">${esc(l)}</button>`).join('')}</div></span>`;
+    + `<div id="menu-${action}" class="popover menu" popover>${alts.map(([alt, altLabel]) => `<button type="button" class="menu-item" data-action="ctl" data-ctl="${alt}" data-key="ctl-${alt}">${esc(altLabel)}</button>`).join('')}</div></span>`;
 }
 
 function controlsHTML(status, pending, error) {

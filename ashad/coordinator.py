@@ -1279,7 +1279,7 @@ class Coordinator:
             await self.hold_inputs(run)
             publish_pending(self.store)
 
-    async def _resume(self, run, reason, command_id, after="resume"):
+    async def _resume(self, run, reason, command_id, after):
         run_id = run["id"]
         await self.close_human_control(run)
         for ps in run["players"].values():

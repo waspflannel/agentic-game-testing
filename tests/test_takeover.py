@@ -52,7 +52,7 @@ async def takeover(coord, run, command_id="takeover"):
 
 @pytest.mark.asyncio
 async def test_handback_instruction_is_recorded_as_hand_back_and_reaches_the_next_context(environment, monkeypatch):
-    store, coord, _, _ = environment
+    _, coord, _, _ = environment
     run = await ready_run(environment)
     game_context_worker(monkeypatch, environment[3]["worker-1"], run)
     desktop_controls(environment)
@@ -62,14 +62,13 @@ async def test_handback_instruction_is_recorded_as_hand_back_and_reaches_the_nex
     assert actual["recovery_after"] == "hand_back"
     coord.ai.player_turn = AsyncMock(return_value={"status": "selected"})
     await coord.player_turn(run["id"], "player-1")
-    print([ (e["kind"], e["payload"]) for e in store.events(run["id"])][-6:])
     assert coord.ai.player_turn.call_args.args[0]["operator_instruction"] == {"text": "Go to the oven", "after": "hand_back"}
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("reason", ["", "   "])
 async def test_handback_with_blank_instruction_feeds_nothing(environment, monkeypatch, reason):
-    store, coord, _, _ = environment
+    _, coord, _, _ = environment
     run = await ready_run(environment)
     game_context_worker(monkeypatch, environment[3]["worker-1"], run)
     desktop_controls(environment)

@@ -532,7 +532,7 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .issue-type { font-size: var(--fs-meta); color: var(--text-2); margin-right: 4px; }
 .issue-meta { margin: 4px 0 0; font-size: var(--fs-meta); color: var(--text-2); font-variant-numeric: tabular-nums; }
 .issue-file { margin: 4px 0 0; font-size: var(--fs-meta); color: var(--text-3); }
-.issue-file code { font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-3); overflow-wrap: anywhere; }
+.issue-file code, .issue-fields code { font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-3); overflow-wrap: anywhere; }
 .issue-hits { margin-top: 4px; }
 .issue-hits summary { font-size: var(--fs-meta); color: var(--text-2); cursor: pointer; }
 .issue-hits ol { list-style: none; margin: 4px 0 0; padding: 0; }
@@ -553,13 +553,11 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .issue-closed, .issue-closed .issue-board-title { color: var(--text-2); }
 .issue-filter { justify-self: start; }
 .issue-board-link { margin: 0 0 8px; font-size: var(--fs-meta); }
-.issue-status { margin-top: 4px; font-size: var(--fs-meta); color: var(--text-2); }
-.issue-info { display: grid; gap: 0; }
+.issue-status { font-size: var(--fs-meta); }
 .issue-info-section { padding: 16px 0; border-top: 1px solid var(--border); min-width: 0; }
 .issue-fields { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 16px; margin: 0; font-size: var(--fs-meta); }
 .issue-fields dt { color: var(--text-2); }
 .issue-fields dd { margin: 0; overflow-wrap: anywhere; }
-.issue-fields code { font-family: var(--mono); font-size: var(--fs-meta); color: var(--text-3); }
 .issue-decisions, .issue-candidates { margin: 0; padding-left: 20px; font-size: var(--fs-meta); }
 .issue-decisions li + li { margin-top: 4px; }
 .issue-shot { display: block; max-width: 100%; height: auto; border: 1px solid var(--border); border-radius: var(--r-row); }

@@ -7,7 +7,7 @@ from ashad import repair_tasks
 from ashad.repair_tasks import issue_directory, issue_filename, record_issue, publish_issues
 from ashad.store import Store
 from test_controller import MemoryCredentials, environment  # noqa: F401
-from test_instance_issues import PLAYER, act, events, issue_files, running
+from test_instance_issues import PLAYER, act, api, call, events, issue_files, running  # noqa: F401
 from test_unsupported_actions import basis, example
 
 
@@ -171,3 +171,75 @@ async def test_recurrence_reopens_with_event_and_pin(environment, monkeypatch):
     assert reopened["payload"] == {"player_id": PLAYER, "issue_id": record["issue_id"], "example_id": example_id}
     pins = [data for path, data in env.desktop.calls if path == "/pin"]
     assert [p["incident_id"] for p in pins] == [example_id]
+
+
+@pytest.mark.asyncio
+async def test_close_and_reopen_persist_to_file(environment, monkeypatch, api):
+    env = await running(environment, monkeypatch, reject_verbs={"interact"})
+    await act(env)
+    [record] = issue_files(env.store)
+    path = f"/api/issues/{record['issue_id']}/status"
+
+    def on_disk():
+        return issue_files(env.store)[0]
+
+    response = await call(api, "POST", path, status="closed")
+    assert response.status_code == 200
+    assert response.json()["status"] == "closed"
+    assert on_disk()["status"] == "closed"
+    assert [h["by"] for h in on_disk()["status_history"]] == ["user"]
+    assert (await call(api, "POST", path, status="closed")).status_code == 200
+    assert len(on_disk()["status_history"]) == 1
+    assert (await call(api, "POST", path, status="open")).status_code == 200
+    assert on_disk()["status"] == "open"
+
+
+@pytest.mark.asyncio
+async def test_bad_status_is_422_and_unknown_issue_is_404(api):
+    store = api.state.store
+    record_issue(store, "unsupported_action", basis(), example())
+    [record] = store.list("issues")
+    path = f"/api/issues/{record['id']}/status"
+    assert (await call(api, "POST", path, status="fixed")).status_code == 422
+    assert (await call(api, "POST", path, status="closed", x=1)).status_code == 422
+    assert (await call(api, "POST", "/api/issues/issue_nope/status", status="closed")).status_code == 404
+    assert (await call(api, "GET", "/api/issues/issue_nope")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_project_issues_endpoint_filters_by_run_and_project(api):
+    store = api.state.store
+    store.put("projects", {"id": "project-1", "name": "One"})
+    for n, (verb, run, project, at) in enumerate([("ui_drag", "run-1", "project-1", "2026-10-11T00:00:00+00:00"),
+                                                  ("ui_click", "run-2", "project-1", "2026-10-12T00:00:00+00:00"),
+                                                  ("ui_key", "run-3", "p2", "2026-10-13T00:00:00+00:00")]):
+        record_issue(store, "unsupported_action", basis(verb=verb),
+                     example(example_id=f"uae_{n}", run_id=run, project_id=project, at=at))
+    for record in store.list("issues"):
+        store.event(record["first_seen"]["run_id"], "unsupported_action_recorded", {"issue_id": record["id"]})
+    listed = (await call(api, "GET", "/api/projects/project-1/issues")).json()["issues"]
+    assert [i["last_run_id"] for i in listed] == ["run-2", "run-1"]
+    only = (await call(api, "GET", "/api/projects/project-1/issues?run_id=run-1")).json()["issues"]
+    assert [i["last_run_id"] for i in only] == ["run-1"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_project_is_404(api):
+    assert (await call(api, "GET", "/api/projects/nope/issues")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_retained_screenshot_url_is_served(api):
+    store = api.state.store
+    store.put("runs", {"id": "run-1", "state": "Ended"})
+    frame = "pinned/uae_1/f.jpg"
+    folder = store.run_dir("run-1") / "workers" / "player-1" / "pinned" / "uae_1"
+    folder.mkdir(parents=True)
+    (folder / "f.jpg").write_bytes(b"jpg")
+    record_issue(store, "unsupported_action", basis(),
+                 example(screenshot={"status": "pinned", "frames": [frame]}))
+    [record] = store.list("issues")
+    detail = (await call(api, "GET", f"/api/issues/{record['id']}")).json()
+    shot = detail["examples"][0]["screenshot"]
+    assert shot["note"] == "retained"
+    assert (await call(api, "GET", shot["url"])).status_code == 200

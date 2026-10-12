@@ -60,7 +60,7 @@ def events(env, kind, run_id=None):
 
 
 def issue_files(store):
-    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(issue_directory(store).glob("*.json"))]
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(issue_directory(store).rglob("*.json"))]
 
 
 @pytest.fixture
@@ -131,7 +131,7 @@ def hit(store, run_id, kind, issue_id, **payload):
 def test_run_issues_groups_this_runs_hits_only(tmp_path):
     store = Store(tmp_path / "data")
     repair_tasks.record_issue(store, "unsupported_action", basis(), example())
-    key = repair_tasks.issue_id("unsupported_action", basis())
+    key = repair_tasks.issue_key(store, "project-1", "unsupported_action", basis())
     # Ledger events written before save/load was removed still carry save_before; hits no longer expose it.
     hit(store, "run1", "unsupported_action_recorded", key, save_before="s1")
     hit(store, "run1", "unsupported_action_recorded", key, save_before=None)
@@ -141,7 +141,7 @@ def test_run_issues_groups_this_runs_hits_only(tmp_path):
     assert issue["issue_id"] == key and issue["hit_count"] == 2
     assert len(issue["hits"]) == 2 and all("save_before" not in h for h in issue["hits"])
     assert issue["status"] == "open" and issue["occurrences_total"] == 1
-    assert issue["file"] == str(issue_directory(store) / repair_tasks.issue_filename(store.get("issues", key)))
+    assert issue["file"] == str(repair_tasks.issue_path(store, store.get("issues", key)))
     assert truncated is False
     assert repair_tasks.run_issues(store, "run2")[0][0]["type"] == "crash"
     assert repair_tasks.run_issues(store, "run3") == ([], False)
@@ -205,7 +205,7 @@ async def test_run_detail_without_hits_has_empty_issues(environment, monkeypatch
 async def test_delete_run_drops_history_keeps_issue_file(environment, monkeypatch):
     env = await running(environment, monkeypatch, reject_verbs={"interact"})
     await act(env)
-    [issue_path] = list(issue_directory(env.store).glob("*.json"))
+    [issue_path] = list(issue_directory(env.store).rglob("*.json"))
     await asyncio.create_task(env.coord.finish(env.rid, "user_stopped", terminate=True))
     pending = [t for key, t in env.coord.tasks.items() if key[0] == env.rid]
     for task in pending:

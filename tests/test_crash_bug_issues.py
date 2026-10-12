@@ -59,7 +59,7 @@ def test_crash_and_bug_examples_shrink_under_limit():
 
 
 def issue_files(store):
-    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(issue_directory(store).glob("*.json"))]
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(issue_directory(store).rglob("*.json"))]
 
 
 async def crash_setup(environment, monkeypatch, status=None, fail=None, telemetry=None):
@@ -109,7 +109,7 @@ async def test_game_exit_records_crash_with_exit_signal_log_tail_and_frames(envi
     assert ex["last_action"]["verb"] == "interact" and ex["last_action"]["status"] == "completed"
     assert set(ex["timing"]) == {"detected_at", "launched_at", "telemetry_received_at", "feed_captured_at", "simulation_advanced_at"}
     assert ex["screenshot"]["status"] == "pinned" and ex["screenshot"]["pin_id"] == ex["example_id"]
-    assert "sk-sensitivevalue123456" not in (next(issue_directory(store).glob('*.json'))).read_text(encoding="utf-8")
+    assert "sk-sensitivevalue123456" not in (next(issue_directory(store).rglob('*.json'))).read_text(encoding="utf-8")
     actual = store.require("runs", run["id"])
     assert actual["state"] == "Investigating" and actual["validity"] == "invalid"
     [recorded] = [e for e in store.events(run["id"], limit=500) if e["kind"] == "crash_recorded"]

@@ -20,12 +20,12 @@ from .claude_backend import ClaudeError
 from .codex_backend import CodexError
 from .coordinator import Coordinator, InstanceConflict
 from .credentials import Credentials
-from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, provider_of, AI_API, ACTIVE_STATES, RecalculateGoalsRequest
+from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, provider_of, AI_API, ACTIVE_STATES, RecalculateGoalsRequest, IssueStatusRequest
 from . import repair_tasks
 from .repository import Repository, sha256_file
 from .reports import generate_report
 from .game_controls import BUSY, MODEL_NOT_ALLOWED, SIGN_IN_WAIT, GameControls, migrate_configuration_names, migrate_tuned_configurations
-from .migrations import retire_fixer, retire_saves
+from .migrations import retire_fixer, migrate_issue_projects, retire_saves
 from .projects import Projects
 from .workspace_environment import inspect_fresh_environment, prepare_environment, validate_build
 from .instances import Instances, InstanceRequest, default_model
@@ -95,6 +95,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
     migrate_configuration_names(store)
     migrate_tuned_configurations(store)
     retire_fixer(store)
+    migrate_issue_projects(store)
     retire_saves(store)
     controls = GameControls(store, ai)
     coordinator = Coordinator(store, credentials, ai)
@@ -277,6 +278,26 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         return {**store.require("projects", project_id),
                 **{kind: [record for record in store.list(kind) if record.get("project_id") == project_id]
                    for kind in ("builds", "configurations", "runs")}}
+
+    @app.get("/api/projects/{project_id}/issues")
+    async def project_issues_list(project_id: str, run_id: str | None = None):
+        if store.get("projects", project_id) is None:
+            raise HTTPException(404, "Project not found")
+        return {"issues": await asyncio.to_thread(repair_tasks.project_issues, store, project_id, run_id)}
+
+    @app.get("/api/issues/{issue_id}")
+    async def issue_detail(issue_id: str):
+        detail = await asyncio.to_thread(repair_tasks.issue_detail, store, issue_id)
+        if detail is None:
+            raise HTTPException(404, "Issue not found")
+        return detail
+
+    @app.post("/api/issues/{issue_id}/status")
+    async def issue_status(issue_id: str, body: IssueStatusRequest):
+        found = await asyncio.to_thread(repair_tasks.set_issue_status, store, issue_id, body.status)
+        if found is None:
+            raise HTTPException(404, "Issue not found")
+        return await asyncio.to_thread(repair_tasks.issue_detail, store, issue_id)
 
     @app.get("/api/projects/{project_id}/readiness")
     async def project_readiness(project_id: str, build_id: str, configuration_id: str | None = None, model: str | None = None):

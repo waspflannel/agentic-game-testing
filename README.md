@@ -86,6 +86,8 @@ Interrupted imports from older ASHAD versions block editing and admission until 
 
 Configurations from earlier versions are converted once on upgrade to controls files; any that cannot be converted are retired. The conversion is one-way.
 
+**Issues:** unsupported actions, crashes and game bugs are grouped per project and written to `repair-tasks/issues/<project>/`. An issue can be closed and reopened; a new hit on a closed issue reopens it. See [docs/issue-records.md](docs/issue-records.md).
+
 **Desktop prerequisites:** Docker Desktop's Linux engine (Windows) or Docker Engine (Linux), and separately supplied supported game files are required. Confirmed preparation may build a content-addressed bundled worker image and create one owner-labelled desktop, persistent volumes and local service/desktop credential references; it never starts gameplay or recreates/adopts unrelated containers. Changed/legacy artifacts lacking exact supported pins require a new registration. Each Prepare request reconciles one desktop per project and build. Provisioning completion alone is not readiness.
 
 **Steam limitation:** Steam is unavailable until fresh actual matching identity, real App ID and licence are proven. The current idle passive worker cannot supply that proof without application initialization, so copied account readiness or an old verification never enables it. ASHAD never substitutes App ID 480, ENet or offline transport. Supported owned Steam-start/integration work and live acceptance remain separate gates; ENet is an explicit user choice.

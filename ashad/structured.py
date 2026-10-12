@@ -309,7 +309,7 @@ class StructuredPlayers:
         root = self.store.run_dir(run["id"])
         telemetry = ps.get("telemetry") or {}
         return {"example_id": example_id, "at": datetime.now(timezone.utc).isoformat(), "run_id": run["id"],
-            "player_id": player_id, "scenario_id": run.get("scenario_id"),
+            "project_id": run.get("project_id"), "player_id": player_id, "scenario_id": run.get("scenario_id"),
             "scenario_revision": run.get("scenario_revision"), "model": run.get("model"),
             "controller_version": run.get("controller_version"),
             "build": {"id": run["build"].get("id"), "source_revision": run["build"].get("source_revision")},
@@ -328,7 +328,10 @@ class StructuredPlayers:
         """Write one issue example of any type; returns the outcome, or None when recording failed."""
         try:
             run_id = run["id"]
-            room = repair_tasks.issue_room(self.store, issue_type, basis)
+            project_id = run.get("project_id")
+            key = repair_tasks.issue_key(self.store, project_id, issue_type, basis)
+            previous = self.store.get("issues", key)
+            room = repair_tasks.issue_room(self.store, project_id, issue_type, basis)
             if room == "full":
                 self.store.event(run_id, "issue_cap_reached", {"player_id": player_id, "issue_type": issue_type,
                     "signature": repair_tasks.issue_signature(issue_type, basis)})
@@ -339,8 +342,10 @@ class StructuredPlayers:
             outcome = repair_tasks.record_issue(self.store, issue_type, basis, example)
             if outcome in {"kept", "counted"}:
                 self.store.event(run_id, f"{issue_type}_recorded", {"player_id": player_id,
-                    "issue_id": repair_tasks.issue_id(issue_type, basis), "example_id": example_id,
+                    "issue_id": key, "example_id": example_id,
                     "source": source, "kept": outcome == "kept", "outcome": outcome})
+                if previous and previous["status"] == "closed":
+                    self.store.event(run_id, "issue_reopened", {"player_id": player_id, "issue_id": key, "example_id": example_id})
             elif outcome == "full":
                 self.store.event(run_id, "issue_cap_reached", {"player_id": player_id, "issue_type": issue_type,
                     "signature": repair_tasks.issue_signature(issue_type, basis)})

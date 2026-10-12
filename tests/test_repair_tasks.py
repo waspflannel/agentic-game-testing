@@ -82,7 +82,7 @@ async def test_issue_files_do_not_appear_as_repair_tasks(environment, monkeypatc
     await coord.player_turn(run["id"], "player-1")
     await coord.investigate(run["id"], "decision_needs_instructions", message, ["player-1"])
     assert issue_directory(store).is_dir()
-    assert len(list(issue_directory(store).glob("*.json"))) == 1
+    assert len(list(issue_directory(store).rglob("*.json"))) == 1
     for path, _ in tasks(store):
         assert path.suffix == ".md" and path.parent == task_directory(store)
 

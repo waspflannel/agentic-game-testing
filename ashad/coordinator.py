@@ -13,7 +13,7 @@ import uuid
 from .models import Plan, MODEL, PROVIDERS, provider_of, CONTROLLER_VERSION, ACTIVE_STATES, TERMINAL_QUEST, require_same_provider
 from .game_controls import remove_controls_file
 from .reports import generate_report
-from .repair_tasks import record_task, publish_pending
+from .repair_tasks import record_task, publish_pending, remove_project_issue_files
 from .store import uid
 from .worker_client import WorkerError
 from . import subgoals
@@ -143,7 +143,7 @@ class Coordinator:
             return {"deleted": run_id, "files_removed": self._remove_run_dir(run_id)}
 
     async def delete_project(self, project_id):
-        """Forget a project with its instances, project configurations, game controls files and build registrations; build files on disk are kept."""
+        """Forget a project with its instances, project configurations, game controls files, build registrations and issues; build files on disk are kept."""
         from .projects import Projects
         async with self.lock:
             self.store.require("projects", project_id)
@@ -156,7 +156,8 @@ class Coordinator:
                 Projects(self.store).delete(project_id)
             # A list, not a generator: every directory is attempted even after one fails.
             files_removed = all([*(self._remove_run_dir(run["id"]) for run in runs),
-                                 *(remove_controls_file(self.store, i) for i in config_ids)])
+                                 *(remove_controls_file(self.store, i) for i in config_ids),
+                                 remove_project_issue_files(self.store, project_id)])
             return {"deleted": project_id, "instances": len(runs), "files_removed": files_removed}
 
     def _require_deletable(self, run_ids, message):

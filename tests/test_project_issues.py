@@ -243,3 +243,18 @@ async def test_retained_screenshot_url_is_served(api):
     shot = detail["examples"][0]["screenshot"]
     assert shot["note"] == "retained"
     assert (await call(api, "GET", shot["url"])).status_code == 200
+
+
+@pytest.mark.asyncio
+async def test_delete_project_removes_its_issues_and_folder_only(environment):
+    store, coord, _plan, _desktops = environment
+    store.put("projects", {"id": "p2", "name": "Other"})
+    for project in ("project-1", "p2"):
+        record_issue(store, "unsupported_action", basis(), example(project_id=project))
+    publish_issues(store)
+    keep = next(r for r in store.list("issues") if r["project_id"] == "p2")
+    result = await coord.delete_project("project-1")
+    assert result["files_removed"] is True
+    assert [r["project_id"] for r in store.list("issues")] == ["p2"]
+    assert not (issue_directory(store) / "project-1").exists()
+    assert (issue_directory(store) / "p2" / issue_filename(keep)).is_file()

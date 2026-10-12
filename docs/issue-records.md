@@ -8,13 +8,13 @@ An issue file is one grouped, versioned JSON record of a problem the agent hit, 
 - `crash`: the game or its environment died or hung.
 - `game_bug`: the game contradicted itself, rendered wrongly or did not respond after an offered action.
 
-The instance page reads them: each instance lists its own hits from its ledger. All three types are only recorded.
+The instance page reads them: each instance lists its own hits from its ledger. All three types are only recorded. Each issue belongs to one project; a project's issues are listed by `GET /api/projects/{id}/issues`.
 
 ## Location
 
-`<task_directory>/issues/<type>__<signature16>.json`, for example `unsupported_action__0123456789abcdef.json`, `crash__0123456789abcdef.json` or `game_bug__0123456789abcdef.json`.
+`<task_directory>/issues/<project_id>/<type>__<signature16>.json`; issues from instances without a project go to `issues/unassigned/`. For example `unsupported_action__0123456789abcdef.json`, `crash__0123456789abcdef.json` or `game_bug__0123456789abcdef.json`.
 
-`task_directory` is `<store root>/repair-tasks`, or `<repo>/repair-tasks` for the checkout store (`.data/controller`). The desktop default is `~/.config/ASHAD/controller/repair-tasks/issues/` on Linux and `%APPDATA%\ASHAD\controller\repair-tasks\issues\` on Windows.
+`task_directory` is `<store root>/repair-tasks`, or `<repo>/repair-tasks` for the checkout store (`.data/controller`). The desktop default is `~/.config/ASHAD/controller/repair-tasks/issues/<project_id>/` on Linux and `%APPDATA%\ASHAD\controller\repair-tasks\issues\<project_id>\` on Windows.
 
 The SQLite record kind `issues` is the source of truth; the file is rendered from it. Issues survive run deletion so examples stay self-contained.
 
@@ -24,14 +24,15 @@ The store rewrites a file whenever its issue changes, and rewrites a deleted fil
 
 | Issue field | Value |
 |---|---|
-| `schema` | `"ashad.issue/1"` (unchanged; the type-specific example sections are identified by `type`) |
+| `schema` | `"ashad.issue/2"` (the type-specific example sections are identified by `type`) |
+| `project_id` | the instance's project, or `null` |
 | `type` | `unsupported_action \| crash \| game_bug` |
-| `issue_id` | `"issue_" + signature[:16]` |
+| `issue_id` | the record id: `issue_` + 16 hex; legacy records keep their v1 id |
 | `signature`, `signature_basis` | sha256 of `[type, basis]`; basis keys per type are listed below |
 | `title` | per type, see below |
-| `status` | `open`; records from before the fixer was removed may still hold `fixing` or `fixed` |
-| `status_history` | `[{at, from, to}]`, the last 50 changes; `[]` until the first change (older entries also carry `loop_id`, `attempt_id`) |
-| `fix` | `null` on new records; older records may keep the removed fixer's `{loop_id, attempt_id, pr_url, merge_sha, verified, reverted}` |
+| `status` | `open \| closed` |
+| `status_history` | `[{at, from, to, by, run_id?, example_id?}]`, the last 50 changes; `by` is `user`, `recurrence` or `migration`; `[]` until the first change |
+| `fix` | absent on new records; v1 records keep the removed fixer's block as history |
 | `untrusted_text` | fixed warning string |
 | `first_seen`, `last_seen` | `{at, run_id, example_id, build_id, source_revision}` |
 | `occurrences` | every hit |
@@ -145,7 +146,7 @@ After a report, the offer is hidden for that player while the game state signatu
 
 ## Signature
 
-The signature is sha256 of `[type, basis]` with sorted keys. Basis keys by type are in the Issue fields section. For `unsupported_action`, `error_code` is the error code, or the HTTP status when there is no code. `source` is not part of the basis; it stays in each example, so the same missing action from two sources is one issue.
+Issues group by `(project_id, signature)`: the same signature in two projects is two issues. The signature is sha256 of `[type, basis]` with sorted keys. Basis keys by type are in the Issue fields section. For `unsupported_action`, `error_code` is the error code, or the HTTP status when there is no code. `source` is not part of the basis; it stays in each example, so the same missing action from two sources is one issue.
 
 `target_label` is normalized: case-folded, every digit replaced by `#`, whitespace collapsed, trimmed, cut to 60 characters. `Slot 4` and `slot 7` therefore group together; each digit becomes its own `#`, so `slot 12` (`slot ##`) does not group with `slot 3` (`slot #`).
 
@@ -155,7 +156,7 @@ Excluded: run, player, build, ids, positions and free text. The last action of a
 
 - 10 examples kept in full per issue; later hits only bump `occurrences`, `examples_dropped`, `last_seen`, `runs` and `builds`.
 - 50 run ids and 20 build ids per issue.
-- 500 issues, shared across all types. At the cap a new signature is not stored and an `issue_cap_reached` ledger event is written; existing issues keep counting.
+- 500 issues per project, shared across all types. At the cap a new signature is not stored and an `issue_cap_reached` ledger event is written; existing issues keep counting.
 - 64 KiB (65536 bytes) per example, measured as JSON after redaction. While over the limit, trim in this order, adding each name to `truncated`. A step whose section is absent from the example is skipped and not named.
   1. `capabilities.candidate_actions` becomes `[]`
   2. `game_state.telemetry.diagnostics` becomes `null`
@@ -172,6 +173,7 @@ Each is written to the run ledger after the record is stored, never before, so t
 | Event | Payload |
 |---|---|
 | `unsupported_action_recorded`, `crash_recorded`, `game_bug_recorded` | `{player_id, issue_id, example_id, source, kept, outcome}`; `outcome` is `kept` or `counted`, and nothing is written for a failed record |
+| `issue_reopened` | `{player_id, issue_id, example_id}` |
 | `issue_cap_reached` | `{player_id, issue_type, signature}` |
 | `game_bug_report_rejected` | `{player_id, reason}` |
 
@@ -180,6 +182,14 @@ Each is written to the run ledger after the record is stored, never before, so t
 An instance's issues are its `<type>_recorded` ledger events grouped by `issue_id`. The newest 500 events are read and 20 hits are shown per issue. `GET /api/runs/{run_id}` returns them as `issues` and `issues_truncated`.
 
 Deleting the instance removes its history, not the issue files.
+
+## Close and reopen
+
+`POST /api/issues/{issue_id}/status` with `{"status": "open" | "closed"}`. Setting the current status is a no-op. Other values return 422, an unknown id 404. The file is republished.
+
+A hit on a closed issue reopens it (`by: "recurrence"`), always keeps the example (the oldest is dropped at 10) and pins a screenshot.
+
+`GET /api/issues/{issue_id}` returns the record plus `file`.
 
 ## Run behavior
 
@@ -200,10 +210,19 @@ Never included: transport, environment, build command, credentials, agent memory
 
 ## Screenshots
 
-Each kept example requests a worker `POST /pin` with `incident_id = example_id`, 10 seconds before and none after. Counted (dropped) hits are not pinned, and a `worker_lost` crash is never pinned because the worker is gone. If pinning fails, `screenshot.status` is `unavailable` and the turn continues.
+Each kept example requests a worker `POST /pin` with `incident_id = example_id`, 10 seconds before and none after. Counted (dropped) hits are not pinned, and a `worker_lost` crash is never pinned because the worker is gone. The pin is the only moment-of-failure evidence. `GET /api/issues/{id}` adds `screenshot.url` (the last frame, or `null`) and `screenshot.note`: `retained`, `pending` (instance still running), `deleted` (instance deleted), `missing` (frames not retained) or `unavailable` (never pinned). If pinning fails, `screenshot.status` is `unavailable` and the turn continues.
 
 Frames land under `runs/<run>/workers/<player>/pinned/<example_id>/` after teardown; `screenshot.retained_path_prefix` names that location.
 
 ## Migration
 
 Files written before stage 2 for `unsupported_action` have a basis that includes `source`. New hits group under the new basis (without `source`), so one such stage-1 issue may stop growing while a new file starts for the same missing action.
+
+Issues written as `ashad.issue/1` are migrated once at startup to `ashad.issue/2`:
+
+- The project comes from the `first_seen` run, then any `runs[]` run, then any `builds[]` build, else `null`.
+- `fixed` becomes `closed`, anything else `open`. A `by: "migration"` history entry is added only when the value changes.
+- `fix` and ids are kept.
+- Flat `issues/*.json` files named after a record are deleted after republishing; other files stay.
+
+Deleting a project deletes its issue records and folder; deleting an instance keeps issues.

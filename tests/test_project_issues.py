@@ -1,9 +1,13 @@
 """Project-scoped issues: grouping, files, close/reopen, API and screenshot notes. Fakes and temporary data only."""
 import json
 
+import pytest
+
 from ashad import repair_tasks
 from ashad.repair_tasks import issue_directory, issue_filename, record_issue, publish_issues
 from ashad.store import Store
+from test_controller import MemoryCredentials, environment  # noqa: F401
+from test_instance_issues import PLAYER, act, events, issue_files, running
 from test_unsupported_actions import basis, example
 
 
@@ -138,3 +142,32 @@ def test_issue_detail_screenshot_notes(tmp_path):
     assert "published_revision" not in detail
     assert detail["file"] == str(repair_tasks.issue_path(store, record))
     assert repair_tasks.issue_detail(store, "issue_nope") is None
+
+
+@pytest.mark.asyncio
+async def test_hit_records_the_runs_project(environment, monkeypatch):
+    env = await running(environment, monkeypatch, reject_verbs={"interact"})
+    await act(env)
+    [record] = issue_files(env.store)
+    assert record["project_id"] == "project-1"
+    [recorded] = events(env, "unsupported_action_recorded")
+    assert recorded["payload"]["issue_id"] == record["issue_id"]
+    assert (issue_directory(env.store) / "project-1" / issue_filename(record)).exists()
+
+
+@pytest.mark.asyncio
+async def test_recurrence_reopens_with_event_and_pin(environment, monkeypatch):
+    monkeypatch.setattr(repair_tasks, "MAX_EXAMPLES", 1)
+    env = await running(environment, monkeypatch, reject_verbs={"interact"})
+    await act(env)
+    [record] = issue_files(env.store)
+    repair_tasks.set_issue_status(env.store, record["issue_id"], "closed")
+    env.desktop.calls.clear()
+    await act(env)
+    [record] = issue_files(env.store)
+    assert record["status"] == "open"
+    example_id = record["examples"][-1]["example_id"]
+    [reopened] = events(env, "issue_reopened")
+    assert reopened["payload"] == {"player_id": PLAYER, "issue_id": record["issue_id"], "example_id": example_id}
+    pins = [data for path, data in env.desktop.calls if path == "/pin"]
+    assert [p["incident_id"] for p in pins] == [example_id]

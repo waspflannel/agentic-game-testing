@@ -231,7 +231,7 @@ def test_launch_handshake_validates_boundaries_without_echoing_keys(tmp_path):
               "owner_key": secrets.token_urlsafe(32), "instance_id": "launch-id"}
     assert read_launch_config(io.StringIO(json.dumps(config))) == config
     for changed in ({**config, "data_root": "relative"}, {**config, "owner_key": config["session_key"]},
-                    {**config, "instance_id": "../escape"}, {**config, "command": "shell"},
+                    {**config, "instance_id": "../escape"}, {**config, "command": "shell"}, {**config, "checkout_root": str(tmp_path)},
                     {**config, "session_key": "x" * 42}, {**config, "owner_key": "x" * 43 + "\n"}):
         with pytest.raises(ValueError):
             read_launch_config(io.StringIO(json.dumps(changed)))

@@ -55,6 +55,26 @@ def decision(plan, mode="act", completion=None, subgoals=None):
             "evidence": evidence(), "reason": "Follow the observed recipe and missing prerequisites.", "subgoals": subgoals or []}
 
 
+def obs_ref(path, quote):
+    return {"source": "observation", "path": path, "quote": quote}
+
+
+CASES = [
+    ("Plant a seed in plot 3", condition("observed_count", quantity=1, collection="tiles", matches=[{"field": "plant", "value": "wheat_seed"}]),
+     [obs_ref("/state/tiles/0", "tile-1"), obs_ref("/state/player/inventory", "wheat_seed")], None),
+    ("Till the tile with id tile-3", condition("observed_count", quantity=1, collection="tiles", matches=[{"field": "state", "value": "TILLED"}]), None, None),
+    ("Reach day 5 and harvest wheat", condition("inventory_quantity", "wheat", 1), None, None),
+    ("Harvest 10 wheat from plot 3", condition("inventory_quantity", "wheat", 1), None, "explicit quantity"),
+    ("Harvest 10 wheat from plot 3", condition("inventory_quantity", "wheat", 10), None, None),
+    ("Obtain 10 wheat", condition("inventory_quantity", "wheat", 1), None, "explicit quantity"),
+    ("Obtain wheat", condition("inventory_quantity", "wheat", 500), None, "lacks cited"),
+    ("Make 3 apple pies", condition("inventory_quantity", "apple_pie", 1), None, "explicit quantity"),
+    ("Make tile-3 tilled", condition("observed_count", quantity=1, collection="tiles", matches=[{"field": "state", "value": "TILLED"}]), None, None),
+    ("Plant 10 wheat seeds", condition("observed_count", quantity=4, collection="tiles", matches=[{"field": "plant", "value": "wheat_seed"}]), None, "explicit quantity"),
+    ("Plant wheat in 10 tiles", condition("observed_count", quantity=4, collection="tiles", matches=[{"field": "plant", "value": "wheat"}]), None, "explicit quantity"),
+]
+
+
 def hierarchy():
     plan = goals.new_plan("Make an apple pie", "p", "run")
     goals.reconcile(plan, observe(), 1)
@@ -218,10 +238,71 @@ def test_free_text_root_and_unproven_quantities_cannot_silently_end_the_work():
     for invented_finish in (condition("world_ready"), condition("inventory_quantity", "apple_pie")):
         with pytest.raises(ValueError, match="manual acceptance"):
             goals.apply_decision(plan, decision(plan, completion=invented_finish), context())
-    for objective, count, expected in (("Obtain 10 wheat", 1, "explicit quantity"), ("Obtain wheat", 500, "lacks cited")):
-        response = decision(plan, "expand", subgoals=[proposed("wheat", "", objective, condition("inventory_quantity", "wheat", count), True)])
+
+
+@pytest.mark.parametrize("objective, completion, evidence, expected", CASES)
+def test_objective_numbers_count_only_before_the_counted_thing(objective, completion, evidence, expected):
+    plan = goals.new_plan("Make an apple pie", "p", "run")
+    goals.reconcile(plan, observe(), 1)
+    child = proposed("g", "", objective, completion, True)
+    if evidence is not None:
+        child["evidence"] = evidence
+    response = decision(plan, "expand", subgoals=[child])
+    if expected is None:
+        assert goals.active_goal(goals.apply_decision(plan, response, context()))["completion"]["quantity"] == completion["quantity"]
+    else:
         with pytest.raises(ValueError, match=expected):
             goals.apply_decision(plan, response, context())
+
+
+def test_identifier_followed_by_a_short_word_is_not_a_quantity():
+    assert goals.explicit_quantities("Water plot 3 to grow tomatoes", condition("inventory_quantity", "tomato", 1)) == set()
+
+
+def test_cited_quote_numbers_support_quantity():
+    obs = observe()
+    obs["state"]["objectives"][0] = {"id": "wheat_tutorial", "name": "Harvest 10 wheat"}
+    plan = goals.new_plan("Make an apple pie", "p", "run")
+    goals.reconcile(plan, obs, 1)
+    child = proposed("g", "", "Obtain 10 wheat", condition("inventory_quantity", "wheat", 10), True)
+    child["evidence"] = [obs_ref("/state/objectives/0", "Harvest 10 wheat")]
+    result = goals.apply_decision(plan, decision(plan, "expand", subgoals=[child]), context(obs))
+    assert goals.active_goal(result)["completion"]["quantity"] == 10
+
+
+def test_quote_matches_a_raw_string_leaf_with_escapes():
+    obs = observe()
+    obs["state"]["objectives"][0]["description"] = 'Say "hello" to the elder'
+    goals.grounded_evidence([obs_ref("/state/objectives/0", 'Say "hello" to the elder')], context(obs))
+    with pytest.raises(ValueError, match="does not occur"):
+        goals.grounded_evidence([obs_ref("/state/objectives/0", "Say goodbye")], context(obs))
+
+
+def test_malformed_recipe_ingredient_is_ignored():
+    obs = observe()
+    obs["entities"][0]["state"]["recipes"][0]["ingredients"] = ["flour", {"item_id": "apple", "count": 2}]
+    plan = goals.new_plan("Make an apple pie", "p", "run")
+    goals.reconcile(plan, obs, 1)
+    response = decision(plan, "expand", subgoals=[
+        proposed("pie", "", "Have an apple pie", condition("inventory_quantity", "apple_pie")),
+        proposed("apple", "pie", "Obtain 2 apples", condition("inventory_quantity", "apple", 2), True)])
+    active = goals.active_goal(goals.apply_decision(plan, response, context(obs)))
+    assert active["objective"] == "Obtain 2 apples"
+    assert active["completion"]["quantity"] == 2
+
+
+def test_rejection_message_is_one_line():
+    plan = goals.new_plan("Make an apple pie", "p", "run")
+    goals.reconcile(plan, observe(), 1)
+    response = decision(plan, "expand", subgoals=[proposed("g", "", "Obtain wheat", condition("inventory_quantity", "wheat"), True)])
+    response["mode"] = "execute"
+    with pytest.raises(ValueError) as caught:
+        goals.apply_decision(plan, response, context())
+    message = goals.rejection_message(caught.value)
+    assert "\n" not in message
+    assert "(at mode)" in message
+    assert "input_value" not in message
+    assert goals.rejection_message(ValueError("Planner evidence quote does not occur in its cited source")) == "Planner evidence quote does not occur in its cited source"
 
 
 def test_recipe_quantities_scale_to_parent_and_reject_short_ingredient_goals():
@@ -379,10 +460,69 @@ async def test_no_action_candidate_returns_to_planner_and_bad_plan_never_execute
         response["evidence"][0]["quote"] = "invented recipe"
         return response
     coordinator.plan_response = invalid
+    plan_before = store.require("runs", "run")["subgoal_plan"]
+    active_id, revision = goals.active_goal(plan_before)["id"], plan_before["revision"]
     await service.turn("run", "p")
-    assert coordinator.investigation[1] == "provider_failure"
+    assert coordinator.investigation[1] == "planner_rejected"
+    assert coordinator.investigation[2].startswith("The planner proposed")
+    assert "Till 10 tiles" in coordinator.investigation[2]
+    assert "does not occur" in coordinator.investigation[2]
+    assert "\n" not in coordinator.investigation[2]
+    rejected = [e["payload"] for e in store.events("run", limit=1000) if e["kind"] == "subgoal_plan_rejected"]
+    assert [r["attempt"] for r in rejected] == [1, 2]
+    for r in rejected:
+        assert r["objective"] == "Till 10 tiles" and r["goal_id"] == active_id and r["revision"] == revision
+        assert r["proposal"]["evidence"][0]["quote"] == "invented recipe"
+    failed = [e["payload"] for e in store.events("run", limit=1000) if e["kind"] == "agent_turn_failed"]
+    assert [f["category"] for f in failed] == ["planner_rejected"]
     assert not any(op.get("operation") == "perform_action" for op in coordinator.ops)
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_still_blames_the_provider(tmp_path):
+    store, coordinator, service = runtime(tmp_path, goals.new_plan("Make an apple pie", "p", "run"))
+    coordinator.plan_response = AsyncMock(side_effect=ProviderError("provider_failure", "boom"))
+    await service.turn("run", "p")
+    assert coordinator.investigation[1] == "provider_failure"
+    assert not [e for e in store.events("run", limit=1000) if e["kind"] == "subgoal_plan_rejected"]
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_second_attempt_sees_the_rejection(tmp_path):
+    store, coordinator, service = runtime(tmp_path)
+    coordinator.player_turn = AsyncMock(side_effect=ProviderError("decision_needs_instructions", "Need a prerequisite"))
+    await service.turn("run", "p")
+    async def respond(context):
+        response = decision(store.require("runs", "run")["subgoal_plan"])
+        if len(coordinator.planning_contexts) == 1:
+            response["evidence"][0]["quote"] = "invented recipe"
+        return response
+    coordinator.plan_response = respond
+    revision = store.require("runs", "run")["subgoal_plan"]["revision"]
+    await service.turn("run", "p")
+    assert len(coordinator.planning_contexts) == 2
+    assert coordinator.planning_contexts[1]["previous_attempt_rejected"]["reason"] == "Planner evidence quote does not occur in its cited source"
+    assert "previous_attempt_rejected" not in coordinator.planning_contexts[0]
+    assert store.require("runs", "run")["subgoal_plan"]["revision"] == revision + 1
+    assert not hasattr(coordinator, "investigation")
+    store.close()
+
+
+def test_planner_rejected_pause_does_not_blame_ai_settings():
+    from ashad.coordinator import Coordinator
+    pause = Coordinator.pause_details("planner_rejected", "x", ["p"])
+    assert pause["recovery"].startswith("Your AI settings are not the problem")
+    assert "Check AI Settings" not in pause["recovery"]
+    assert Coordinator.pause_details("provider_failure", "x", ["p"])["recovery"].startswith("Check AI Settings")
+
+
+def test_planning_prompt_explains_identifiers_and_rejections():
+    from ashad.prompts import planning_request
+    _, _, instructions = planning_request({}, {})
+    assert "previous_attempt_rejected" in instructions
+    assert "identifiers, not quantities" in instructions
 
 
 @pytest.mark.asyncio

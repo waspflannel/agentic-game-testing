@@ -527,11 +527,18 @@ class StructuredPlayers:
                 verified = subgoals.reconcile(revised, fresh, generation)
                 break
             except ValueError as exc:
-                self.store.event(run_id, "subgoal_plan_rejected", {"player_id": player_id, "reason": str(exc), "attempt": attempt + 1})
+                reason = subgoals.rejection_message(exc)
+                focus = subgoals.active_goal(latest_plan)
+                self.store.event(run_id, "subgoal_plan_rejected", {"player_id": player_id, "reason": reason, "attempt": attempt + 1,
+                                 "goal_id": focus["id"], "objective": focus["objective"], "revision": revision, "proposal": proposal})
                 if attempt:
-                    raise ProviderError("invalid_plan", f"Planner returned an unsupported or ungrounded goal: {exc}") from exc
+                    message = f"The planner proposed a plan for “{focus['objective']}” that ASHAD could not verify: {reason}"
+                    self.status(run_id, player_id, "error", message, generation, last_error=message, error_at=time.time())
+                    self.store.event(run_id, "agent_turn_failed", {"player_id": player_id, "category": "planner_rejected", "error": message, "attempts": 2})
+                    await self.coordinator.investigate(run_id, "planner_rejected", message, [player_id])
+                    return False
                 # One corrective retry: show the planner its rejected answer and the validator's reason.
-                context = {**context, "previous_attempt_rejected": {"reason": str(exc), "rejected_answer": proposal}}
+                context = {**context, "previous_attempt_rejected": {"reason": reason, "rejected_answer": proposal}}
         live["subgoal_plan"] = revised
         self.store.put("runs", live)
         self.store.event(run_id, "subgoal_plan_updated", {"player_id": player_id, "plan": revised})

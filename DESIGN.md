@@ -56,6 +56,7 @@ Get controls meter: one `<progress class="progress">` with real `batches_done / 
 Instance issues: plain hairline rows at the top of the Actions tab (type in words, title linking to the issue view, counts, status in words, file path in mono). Hits sit in a nested details list showing time, source and kept/counted in words. "View in project Issues" opens the board filtered to the instance. No colour-coded severity.
 Issues board: one page per project, with four plain groups in fixed order (Unsupported actions, Crashes, Game bugs, Planner rejections), each a subheading with its count and a hairline list. Rows: title link, status in words, occurrence count, last source instance (+N), first and last seen. Closed rows use --text-2. Empty groups say so; loading, error and Refresh follow the Usage page. An instance filter is a removable chip. No cards, tiles or colour-coded type.
 Issue information: one pure component (issueInfoHTML) rendering, in order, what happened, available actions, recent decisions, screenshot (an image or the reason in words), game state, crash log, bug report or rejected proposal, and evidence paths in mono. Sections are hairline-separated with section-title headings; JSON sits in details/pre. Absent sections are omitted; all game text is escaped.
+Goals tab: primary goal in words ("Judged by you, not by ASHAD." and the plan revision), one "Working on now" block with a 2px --live left rule (objective, completion, "n of m so far", why, ancestor path), a "Needs review" note in words when planning paused the run, the goal tree with status words (Now, Pending, Completed, Blocked, Not needed, Primary goal) and measured progress, and a hairline "Plan history" list (time, sentence, Activity chip). The --live rule is the tab's one signature; no breadcrumb chevrons, badges or colour-coded status.
 
 ## Changelog
 - 2026-10-11: DESIGN.md created from app.css :root; model menu added (feat/model-menu).
@@ -69,3 +70,4 @@ Issue information: one pure component (issueInfoHTML) rendering, in order, what 
 - 2026-10-11: save/load removed: no Save now, Saves section or per-hit Load (chore/remove-save-load).
 - 2026-10-11: project Issues board, issue view and Issue information component (feat/project-issues-board).
 - 2026-10-12: Issues board gains Planner rejections; issue view shows the rejected proposal (feat/planner-rejected-issues).
+- 2026-10-12: Goals tab shows the primary goal, Working on now, review notes and plan history; "Needs your acceptance" and the Currently chasing breadcrumb removed (feat/goals-tab).

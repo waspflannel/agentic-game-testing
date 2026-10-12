@@ -94,9 +94,9 @@ Configurations from earlier versions are converted once on upgrade to controls f
 
 Getting game controls does not launch a game. A new instance always uses fresh world and character setup; multiplayer planning, seeds and advanced scenario editing are deferred. Existing desktops and Steam profiles are retained between runs.
 
-The primary goal is free text. New instances maintain an automatic **goal hierarchy** and a **currently chasing** goal. The planner works backward from the desired outcome through missing prerequisites, then the existing game-action loop pursues one achievable goal at a time. Completing a child does not automatically complete its parent.
+The primary goal is free text. New instances maintain an automatic **goal hierarchy** and a **working on now** goal. The planner works backward from the desired outcome through missing prerequisites, then the existing game-action loop pursues one achievable goal at a time. Completing a child does not automatically complete its parent.
 
-Plans belong to the instance, not the reusable agent. They survive refreshes and controller recovery; resume/takeover handback rechecks fresh observations before acting. The live instance sidebar shows the hierarchy, current branch, completion conditions, blocked reasons and recorded evidence. Setup remains agent + primary goal + ENet/Steam.
+Plans belong to the instance, not the reusable agent. They survive refreshes and controller recovery; resume/takeover handback rechecks fresh observations before acting. The Goals tab shows the primary goal, the goal being worked on now, the hierarchy with measured progress, blocked reasons, evidence and the plan history. Setup remains agent + primary goal + ENet/Steam.
 
 The planner uses observed quests, visible recipes, inventory and game controls knowledge, not a guessed tutorial walkthrough. Each proposed goal cites supplied evidence. Completion checks are controller-evaluated quest IDs, current inventory quantities, matching observed tiles/entities/recipes, or world readiness. An unknown condition stays unverified. Inventory quantity does not prove cumulative harvesting, delivered input is not success, and the observation's `complete` flag only means coverage was not truncated.
 

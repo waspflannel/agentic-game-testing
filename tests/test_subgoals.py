@@ -454,10 +454,71 @@ async def test_no_action_candidate_returns_to_planner_and_bad_plan_never_execute
         response["evidence"][0]["quote"] = "invented recipe"
         return response
     coordinator.plan_response = invalid
+    plan_before = store.require("runs", "run")["subgoal_plan"]
+    active_id, revision = goals.active_goal(plan_before)["id"], plan_before["revision"]
     await service.turn("run", "p")
-    assert coordinator.investigation[1] == "provider_failure"
+    assert coordinator.investigation[1] == "planner_rejected"
+    assert coordinator.investigation[2].startswith("The planner proposed")
+    assert "Till 10 tiles" in coordinator.investigation[2]
+    assert "does not occur" in coordinator.investigation[2]
+    assert "\n" not in coordinator.investigation[2]
+    rejected = [e["payload"] for e in store.events("run", limit=1000) if e["kind"] == "subgoal_plan_rejected"]
+    assert [r["attempt"] for r in rejected] == [1, 2]
+    for r in rejected:
+        assert r["objective"] == "Till 10 tiles" and r["goal_id"] == active_id and r["revision"] == revision
+        assert r["proposal"]["evidence"][0]["quote"] == "invented recipe"
+    failed = [e["payload"] for e in store.events("run", limit=1000) if e["kind"] == "agent_turn_failed"]
+    assert [f["category"] for f in failed] == ["planner_rejected"]
     assert not any(op.get("operation") == "perform_action" for op in coordinator.ops)
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_provider_failure_still_blames_the_provider(tmp_path):
+    store, coordinator, service = runtime(tmp_path, goals.new_plan("Make an apple pie", "p", "run"))
+    coordinator.plan_response = AsyncMock(side_effect=ProviderError("provider_failure", "boom"))
+    await service.turn("run", "p")
+    assert coordinator.investigation[1] == "provider_failure"
+    assert not [e for e in store.events("run", limit=1000) if e["kind"] == "subgoal_plan_rejected"]
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_second_attempt_sees_the_rejection(tmp_path):
+    store, coordinator, service = runtime(tmp_path)
+    coordinator.player_turn = AsyncMock(side_effect=ProviderError("decision_needs_instructions", "Need a prerequisite"))
+    await service.turn("run", "p")
+    calls = []
+    async def respond(context):
+        calls.append(context)
+        response = decision(store.require("runs", "run")["subgoal_plan"])
+        if len(calls) == 1:
+            response["evidence"][0]["quote"] = "invented recipe"
+        return response
+    coordinator.plan_response = respond
+    revision = store.require("runs", "run")["subgoal_plan"]["revision"]
+    await service.turn("run", "p")
+    assert len(coordinator.planning_contexts) == 2
+    assert coordinator.planning_contexts[1]["previous_attempt_rejected"]["reason"] == "Planner evidence quote does not occur in its cited source"
+    assert "previous_attempt_rejected" not in coordinator.planning_contexts[0]
+    assert store.require("runs", "run")["subgoal_plan"]["revision"] == revision + 1
+    assert not hasattr(coordinator, "investigation")
+    store.close()
+
+
+def test_planner_rejected_pause_does_not_blame_ai_settings():
+    from ashad.coordinator import Coordinator
+    pause = Coordinator.pause_details("planner_rejected", "x", ["p"])
+    assert pause["recovery"].startswith("Your AI settings are not the problem")
+    assert "Check AI Settings" not in pause["recovery"]
+    assert Coordinator.pause_details("provider_failure", "x", ["p"])["recovery"].startswith("Check AI Settings")
+
+
+def test_planning_prompt_explains_identifiers_and_rejections():
+    from ashad.prompts import planning_request
+    _, _, instructions = planning_request({}, {})
+    assert "previous_attempt_rejected" in instructions
+    assert "identifiers, not quantities" in instructions
 
 
 @pytest.mark.asyncio

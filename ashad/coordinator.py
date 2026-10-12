@@ -246,6 +246,7 @@ class Coordinator:
             "coordinator_restarted": "Review the current game state, then Resume to continue with fresh observations.",
             "manual_pause": "Choose Resume when ready. Recovery instructions are optional.",
             "planner_blocked": "If the focused goal is obsolete, choose Recalculate goals to plan from current game state. Review the new goal, then Resume.",
+            "planner_rejected": "Your AI settings are not the problem: the model answered, but its plan failed ASHAD's checks twice. Choose Resume to plan again from fresh game state, or Recalculate goals to start the plan over. The rejected proposals are in Actions.",
             "goal_recalculation": "Review the recalculated goal, then Resume. If recalculation failed, correct the reported problem and retry Recalculate goals; no bot input has resumed.",
             "human_control": "Use the remote desktop to play, then choose Hand back to bots. Closing the viewer leaves bots paused.",
         }.get(category, "Inspect the latest observation and action result. Add optional recovery instructions, then Resume, or terminate the run.")

@@ -132,8 +132,9 @@ def test_run_issues_groups_this_runs_hits_only(tmp_path):
     store = Store(tmp_path / "data")
     repair_tasks.record_issue(store, "unsupported_action", basis(), example())
     key = repair_tasks.issue_id("unsupported_action", basis())
-    hit(store, "run1", "unsupported_action_recorded", key)
-    hit(store, "run1", "unsupported_action_recorded", key)
+    # Ledger events written before save/load was removed still carry save_before; hits no longer expose it.
+    hit(store, "run1", "unsupported_action_recorded", key, save_before="s1")
+    hit(store, "run1", "unsupported_action_recorded", key, save_before=None)
     hit(store, "run2", "crash_recorded", "issue_crash")
     issues, truncated = repair_tasks.run_issues(store, "run1")
     [issue] = issues

@@ -53,8 +53,7 @@ The selected row's quiet check plus the muted "Default" pill. Nothing else is de
 ## Components
 Model menu: a chip trigger (sliders icon, label, chevron) opens a native popover listbox anchored under it, flipping above if there is no room. Rows show the label, a muted "Default" pill on the default model and a quiet check on the selected one. Keyboard: opening focuses the selected row, ArrowUp and ArrowDown clamp at the ends, Home and End jump, Enter and Space pick, and Escape closes and returns focus to the trigger.
 Get controls meter: one `<progress class="progress">` with real `batches_done / batch_count`, the stage line and the stall note; no other decoration.
-Saves list: plain hairline rows in the Actions tab (time, trigger in words, game-save state in words, secondary Load). Load is never the accent; a disabled Load always shows its reason as text.
-Instance issues: plain hairline rows at the top of the Actions tab (type in words, title, counts, status in words, file path in mono). Hits sit in a nested details list; each hit's save uses the same secondary Load as the Saves list, and a disabled Load shows its reason as text. No colour-coded severity.
+Instance issues: plain hairline rows at the top of the Actions tab (type in words, title, counts, status in words, file path in mono). Hits sit in a nested details list showing time, source and kept/counted in words. No colour-coded severity.
 
 ## Changelog
 - 2026-10-11: DESIGN.md created from app.css :root; model menu added (feat/model-menu).
@@ -65,3 +64,4 @@ Instance issues: plain hairline rows at the top of the Actions tab (type in word
 - 2026-10-11: Fixes chip, Fixing/Needs you status and Improvement loop section (feat/fixer-loop).
 - 2026-10-11: Fixes chip becomes the shared popover menu; unready reasons are visible in the menu (fix/fixes-menu).
 - 2026-10-11: fixer removed: no Fixes chip, Fixing/Needs you status or Improvement loop section; the model menu is the only popover listbox again (chore/remove-fixer).
+- 2026-10-11: save/load removed: no Save now, Saves section or per-hit Load (chore/remove-save-load).

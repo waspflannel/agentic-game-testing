@@ -140,18 +140,32 @@ test('plan history lists planning events newest first with jump chips', async ()
     pe(5, 'subgoal_plan_updated', { plan: { revision: 2, reason: 'Recipe', goals: [{ id: 'root' }, { id: 'goal-2-0' }, { id: 'goal-2-1' }] } }),
     pe(6, 'goal_recalculation_failed', { reason: 'nope' }),
     pe(7, 'action_result', { result: { status: 'accepted' } }),
+    pe(8, 'intervention', { command: 'takeover_finish', reason: 'Buy <the> hoe' }),
+    pe(9, 'intervention', { command: 'resume', reason: '' }),
+    pe(10, 'intervention', { command: 'pause', reason: 'x' }),
+    pe(11, 'subgoal_planning_context', { context: { current_goal: { objective: 'Buy hoe' }, operator_instruction: { text: 'Buy the hoe', after: 'hand_back' } } }),
   ];
   const history = planHistory(events);
-  assert.deepEqual(history.map(h => h.seq), [6, 5, 4, 3]);
-  assert.deepEqual(history.map(h => h.text), ['Recalculation failed: nope', 'Revision 2 added 2 goals: Recipe', 'Proposal rejected (attempt 1): Bad <b>', 'Planning for “Obtain wheat”']);
+  assert.deepEqual(history.map(h => h.seq), [11, 8, 6, 5, 4, 3], 'resume with no reason and pause are not listed');
+  assert.deepEqual(history.map(h => h.text), ['Planning for “Buy hoe” with your instruction', 'Hand back with instruction: Buy <the> hoe', 'Recalculation failed: nope', 'Revision 2 added 2 goals: Recipe', 'Proposal rejected (attempt 1): Bad <b>', 'Planning for “Obtain wheat”']);
+  assert.equal(history.find(h => h.seq === 8).label, 'Operator');
   const html = panelRegions(run('Running', { subgoal_plan: applePlan() }), ctx(events)).goals;
-  assert.equal((html.match(/<li><time data-ts="\d+"><\/time>/g) || []).length, 4);
+  assert.equal((html.match(/<li><time data-ts="\d+"><\/time>/g) || []).length, 6);
+  assert.match(html, /Buy &lt;the&gt; hoe/);
   assert.match(html, /Bad &lt;b&gt;/);
   assert.doesNotMatch(html, /<b>/);
   const many = Array.from({ length: 25 }, (_, i) => pe(i + 1, 'subgoal_plan_rejected', { attempt: i, reason: 'r' }));
   assert.equal(planHistory(many).length, 20);
   assert.match(panelRegions(run('Running', { subgoal_plan: applePlan() }), ctx([])).goals, /No planning activity is loaded/);
   assert.ok(planHistory([pe(1, 'subgoal_plan_reset', { reason: 'y'.repeat(300) })])[0].text.length <= 200);
+});
+
+test('working on now shows the current instruction', async () => {
+  const { panelRegions } = await load();
+  const now = extra => panelRegions(run('Running', extra), ctx([])).goals.match(/<section class="goal-now".*?<\/section>/s)[0];
+  assert.ok(now({ subgoal_plan: applePlan(), recovery_instruction: '<b>go</b>' }).includes('Your instruction: &lt;b&gt;go&lt;/b&gt;'));
+  assert.ok(!now({ subgoal_plan: applePlan() }).includes('Your instruction'));
+  assert.ok(now({ subgoal_plan: applePlan({ active_goal_id: 'root' }), recovery_instruction: 'go' }).includes('Your instruction: go'));
 });
 
 test('goal text and plan reasons are escaped in every block', async () => {

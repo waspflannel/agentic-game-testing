@@ -323,3 +323,28 @@ test('no board link without project_id', async () => {
   assert.ok(!html.includes('issues-board') && !html.includes('#/p/'));
   assert.ok(html.includes('Agent could not'));
 });
+
+test('human control offers hand back with an instruction or paused', async () => {
+  const { instanceState, threadRegions } = await load();
+  const regionsFor = (r, ui = {}, pending = new Set()) => threadRegions(r, { status: instanceState(r), data: {}, ui, pending, cameraStatus: 'offline', player: 'p1', tab: 'bot' });
+  const human = regionsFor(run('Paused', { human_control: { player_id: 'p1', status: 'active' } }));
+  const ctls = human.controls.match(/data-ctl="[\w-]+"/g);
+  assert.deepEqual(ctls.slice(0, 3), ['data-ctl="handback"', 'data-ctl="handback-with"', 'data-ctl="handback-paused"']);
+  assert.equal(ctls.at(-1), 'data-ctl="stop"');
+  const paused = regionsFor(run('Paused')).controls;
+  assert.match(paused, /data-ctl="resume-with"/);
+  assert.doesNotMatch(paused, /handback-/);
+});
+
+test('the instruction form labels its submit by mode', async () => {
+  const { instanceState, threadRegions } = await load();
+  const r = run('Paused', { human_control: { player_id: 'p1', status: 'active' } });
+  const form = (instructionOpen, pending = new Set()) => threadRegions(r, { status: instanceState(r), data: {}, ui: { instructionOpen }, pending, cameraStatus: 'offline', player: 'p1', tab: 'bot' }).instruction;
+  assert.match(form('handback'), /Hand back with instruction/);
+  assert.doesNotMatch(form('handback'), /Resume with instruction/);
+  assert.match(form('resume'), /Resume with instruction/);
+  assert.doesNotMatch(form('resume'), /Hand back with instruction/);
+  assert.equal(form(false), '');
+  assert.match(form('handback', new Set(['handback-with'])), /aria-busy="true"/);
+  assert.doesNotMatch(form('handback'), /aria-busy/);
+});

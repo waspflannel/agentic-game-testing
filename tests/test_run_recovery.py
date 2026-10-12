@@ -34,13 +34,33 @@ async def test_pause_cancels_inference_and_resume_uses_optional_instructions(env
     await coord.control(run["id"], "resume", "Try the keyboard control", "resume")
     coord.ai.player_turn = AsyncMock(return_value={"status": "selected"})
     await coord.player_turn(run["id"], "player-1")
-    assert coord.ai.player_turn.call_args.args[0]["recovery_instruction"] == "Try the keyboard control"
+    assert coord.ai.player_turn.call_args.args[0]["operator_instruction"] == {"text": "Try the keyboard control", "after": "resume"}
+    assert "recovery_instruction" not in coord.ai.player_turn.call_args.args[0]
     assert coord.ai.player_turn.call_args.args[0]["transport"]["mode"] == "enet"
     assert store.require("runs", run["id"])["pause"] is None
     assert any(e["kind"] == "agent_task_cancelled" for e in store.events(run["id"]))
     await coord.control(run["id"], "pause", command_id="pause-again")
     resumed = await coord.control(run["id"], "resume", command_id="resume-blank")
     assert resumed["recovery_instruction"] == ""
+    assert resumed["recovery_after"] == ""
+    coord.ai.player_turn = AsyncMock(return_value={"status": "selected"})
+    await coord.player_turn(run["id"], "player-1")
+    assert "operator_instruction" not in coord.ai.player_turn.call_args.args[0]
+
+
+@pytest.mark.asyncio
+async def test_overlong_instruction_is_rejected_before_any_side_effect(environment):
+    store, coord, _, _ = environment
+    run = await ready_run(environment)
+    await coord.control(run["id"], "pause", command_id="pause")
+    before = len(store.require("runs", run["id"])["interventions"])
+    with pytest.raises(ValueError, match="under 4000"):
+        await coord.control(run["id"], "resume", "x" * 4001, "too-long")
+    assert len(store.require("runs", run["id"])["interventions"]) == before
+    assert not store.command(run["id"], "too-long")
+    assert store.require("runs", run["id"])["state"] == "Paused"
+    resumed = await coord.control(run["id"], "resume", "x" * 4000, "ok-length")
+    assert resumed["state"] == "Running"
 
 
 @pytest.mark.asyncio

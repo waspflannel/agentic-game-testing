@@ -96,7 +96,7 @@ Getting game controls does not launch a game. A new instance always uses fresh w
 
 The primary goal is free text. New instances maintain an automatic **goal hierarchy** and a **working on now** goal. The planner works backward from the desired outcome through missing prerequisites, then the existing game-action loop pursues one achievable goal at a time. Completing a child does not automatically complete its parent.
 
-Plans belong to the instance, not the reusable agent. They survive refreshes and controller recovery; resume/takeover handback rechecks fresh observations before acting. The Goals tab shows the primary goal, the goal being worked on now, the hierarchy with measured progress, blocked reasons, evidence and the plan history. Setup remains agent + primary goal + ENet/Steam.
+Plans belong to the instance, not the reusable agent. They survive refreshes and controller recovery; resume/takeover handback rechecks fresh observations before acting, and a resume or hand-back instruction steers that reassessment. The Goals tab shows the primary goal, the goal being worked on now, the hierarchy with measured progress, blocked reasons, evidence and the plan history. Setup remains agent + primary goal + ENet/Steam.
 
 The planner uses observed quests, visible recipes, inventory and game controls knowledge, not a guessed tutorial walkthrough. Each proposed goal cites supplied evidence. Completion checks are controller-evaluated quest IDs, current inventory quantities, matching observed tiles/entities/recipes, or world readiness. An unknown condition stays unverified. Inventory quantity does not prove cumulative harvesting, delivered input is not success, and the observation's `complete` flag only means coverage was not truncated.
 
@@ -110,7 +110,7 @@ The instance workspace has four tabs: **Bot view** (the live bot computer), **Go
 
 The live camera is for the human operator. Routine model decisions use the filtered JSON observation, profile instructions, objective and recent action outcomes. The executor sends bounded normal game controls; it does not directly grant inventory, complete quests or modify saves. Input delivery is not proof that an intended gameplay effect occurred.
 
-**Pause** holds bot input and inference; the game world may continue simulating. **Take over** pauses the bot and opens that desktop for human control. **Hand back to bots** closes human access and resumes from fresh observations, with optional instructions. Closing the viewer alone does not hand control back.
+**Pause** holds bot input and inference; the game world may continue simulating. **Take over** pauses the bot and opens that desktop for human control. **Hand back to bots** closes human access and resumes from fresh observations, with an optional instruction that the goal planner follows when it reassesses the current goal. Closing the viewer alone does not hand control back.
 
 **Recalculate goals** rebuilds the checklist from fresh player state under the same primary objective, model and profile. It holds input, archives the old plan/evidence (unfinished goals are retired, not completed), and leaves the run paused for inspection and a separate Resume. It is unavailable during human/external control. **Cancel recalculation** stops planning without replacing the old plan. The planner can also retire obsolete setup goals automatically rather than insist on returning to a screen already passed.
 

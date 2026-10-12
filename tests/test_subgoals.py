@@ -405,6 +405,58 @@ def runtime(tmp_path, plan=None):
     return store, coordinator, coordinator.structured
 
 
+def hand_back(store, text="Use the oven"):
+    live = store.require("runs", "run")
+    live["recovery_instruction"], live["recovery_after"] = text, "hand_back"
+    live["players"]["p"]["generation"] += 1
+    store.put("runs", live)
+
+
+@pytest.mark.asyncio
+async def test_operator_instruction_steers_one_reassessment_from_a_fresh_observation(tmp_path):
+    store, coordinator, service = runtime(tmp_path)
+    hand_back(store)
+    await service.turn("run", "p")
+    assert len(coordinator.planning_contexts) == 1
+    assert coordinator.planning_contexts[0]["operator_instruction"] == {"text": "Use the oven", "after": "hand_back"}
+    assert not coordinator.action_contexts
+    assert sum(op["operation"] == "observe" for op in coordinator.ops) == 2
+    assert not any(op["operation"] == "perform_action" for op in coordinator.ops)
+    await service.turn("run", "p")
+    assert len(coordinator.planning_contexts) == 1
+    assert len(coordinator.action_contexts) == 1
+    assert coordinator.action_contexts[0]["operator_instruction"]["text"] == "Use the oven"
+    planning = [e for e in store.events("run") if e["kind"] == "subgoal_planning_context"]
+    assert planning and planning[0]["payload"]["context"]["operator_instruction"]["text"] == "Use the oven"
+
+
+@pytest.mark.asyncio
+async def test_blocked_plan_replans_with_operator_instruction_after_hand_back(tmp_path):
+    plan = hierarchy()
+    goals.block(plan, "stuck")
+    store, coordinator, service = runtime(tmp_path, plan)
+    hand_back(store)
+    await service.turn("run", "p")
+    assert len(coordinator.planning_contexts) == 1
+    assert coordinator.planning_contexts[0]["operator_instruction"]["text"] == "Use the oven"
+    assert store.require("runs", "run")["subgoal_plan"]["status"] != "blocked"
+    assert not hasattr(coordinator, "investigation")
+
+
+@pytest.mark.asyncio
+async def test_hand_back_drops_a_pending_action_without_a_status_check(tmp_path):
+    store, coordinator, service = runtime(tmp_path)
+    service.pending[("run", "p")] = "act-1"
+    live = store.require("runs", "run")
+    live["players"]["p"]["pending_action"] = {"action_id": "act-1", "expires_at": time.time() + 60}
+    store.put("runs", live)
+    hand_back(store)
+    await service.turn("run", "p")
+    assert not any(op["operation"] == "get_action_status" for op in coordinator.ops)
+    assert store.require("runs", "run")["players"]["p"].get("pending_action") is None
+    assert coordinator.planning_contexts[0]["operator_instruction"]["text"] == "Use the oven"
+
+
 @pytest.mark.asyncio
 async def test_runtime_uses_active_leaf_and_progress_survives_store_reopen(tmp_path):
     store, coordinator, service = runtime(tmp_path)
@@ -603,6 +655,8 @@ def test_planning_prompt_explains_identifiers_and_rejections():
     _, _, instructions = planning_request({}, {})
     assert "previous_attempt_rejected" in instructions
     assert "identifiers, not quantities" in instructions
+    assert "operator_instruction" in instructions
+    assert len(instructions.encode("utf-8")) < 4608
 
 
 @pytest.mark.asyncio

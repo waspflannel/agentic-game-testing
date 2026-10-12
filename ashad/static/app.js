@@ -1060,7 +1060,8 @@ async function onControl(action) {
     case 'pause': return command('pause', control(run, 'pause'), 'Paused. Bot input is held; the game may keep simulating.');
     case 'resume': return command('resume', control(run, 'resume'), 'Resumed.');
     case 'resume-with':
-      state.thread.instructionOpen = true;
+    case 'handback-with':
+      state.thread.instructionOpen = action === 'handback-with' ? 'handback' : 'resume';
       renderView();
       return $('#resume-reason')?.focus();
     case 'stop':
@@ -1108,7 +1109,7 @@ async function takeOver(run) {
   const safe = url && ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash;
   // The password lives only in this dialog's DOM; openDialog empties it on close.
   await openDialog({ title: 'You have control', confirm: null, cancel: 'Close',
-    html: `<p>All bots are paused. Open the desktop and enter this password. Closing the desktop window does not hand back; choose Hand back when you are done.</p>`
+    html: `<p>All bots are paused. Open the desktop and enter this password. Closing the desktop window does not hand back; choose Hand back when you are done, with an instruction if the bots should change course.</p>`
       + `<div class="field"><label for="takeover-password">Desktop password</label><div class="copy-row">`
       + `<input id="takeover-password" class="input mono" value="${esc(result.password || '')}" readonly autocomplete="off" spellcheck="false">`
       + `<button type="button" class="btn btn-secondary" data-action="copy-password">Copy</button></div><span class="hint">Shown once. Cleared when this dialog closes.</span></div>`
@@ -1428,7 +1429,10 @@ document.addEventListener('submit', async event => {
     const run = threadRun();
     const reason = state.thread.instructionText.trim();
     if (!run || !reason) return;
-    if (await command('resume-with', control(run, 'resume', { reason }), 'Resumed with your instruction.')) {
+    const done = state.thread.instructionOpen === 'handback'
+      ? await command('handback-with', () => api(`${runPath(run)}/takeover/finish`, { method: 'POST', body: { resume: true, reason } }), 'Control handed back with your instruction.')
+      : await command('resume-with', control(run, 'resume', { reason }), 'Resumed with your instruction.');
+    if (done) {
       Object.assign(state.thread, { instructionOpen: false, instructionText: '' });
       renderView();
     }

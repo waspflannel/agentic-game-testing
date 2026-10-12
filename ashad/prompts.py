@@ -44,6 +44,7 @@ def planning_request(evidence, schema):
         "Scale ingredient quantities to the parent's missing output using the cited recipe yield; account for already-held output. "
         "Never lower a required count to make a check pass. Preserve every existing known completion condition's kind, target, quantity, collection and matches; never weaken it. "
         "A number in an objective is a required count only when it comes right before the counted item or collection; plot, slot, tile, day or level numbers are identifiers, not quantities. If previous_attempt_rejected is supplied, fix exactly the stated problem and do not resend the rejected answer. "
+        "If operator_instruction is supplied, it is trusted operator guidance (after=hand_back: a human just played); follow it when choosing goals, still citing observation evidence. "
         "Use only unknown, quest_completed, inventory_quantity, observed_count, or world_ready completion kinds, with a description. "
         "For observed_count use entities, tiles or recipes and exact field/value matches that must all hold on each counted record; "
         "use an observed entity identity or kind as well as its state. Entity match fields are id/kind/label/parent or state.<field>; "

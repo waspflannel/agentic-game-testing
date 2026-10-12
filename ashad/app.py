@@ -25,7 +25,7 @@ from . import repair_tasks
 from .repository import Repository, sha256_file
 from .reports import generate_report
 from .game_controls import BUSY, MODEL_NOT_ALLOWED, SIGN_IN_WAIT, GameControls, migrate_configuration_names, migrate_tuned_configurations
-from .migrations import retire_fixer
+from .migrations import retire_fixer, retire_saves
 from .projects import Projects
 from .workspace_environment import inspect_fresh_environment, prepare_environment, validate_build
 from .instances import Instances, InstanceRequest, SaveLoadRequest, default_model
@@ -96,6 +96,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
     migrate_configuration_names(store)
     migrate_tuned_configurations(store)
     retire_fixer(store)
+    retire_saves(store)
     controls = GameControls(store, ai)
     coordinator = Coordinator(store, credentials, ai)
     instances = Instances(coordinator)

@@ -24,7 +24,6 @@ const state = {
   polling: false,
   ui: { expanded: new Map(), showAll: new Set(), lastProject: null, goalOpen: new Set(), issueOpen: new Set() },
   drafts: new Map(),   // projectId -> composer draft
-  fixer: null,         // GET /api/fixer/status for the open composer; loaded on view open and Re-check, never on the poll
   readiness: null,     // { key, loading, result, error } for the open composer; probed on view open only
   isCurrent: () => true,
   runSlot: createRunSlot(),  // GET /api/runs/<id> for the open thread
@@ -188,17 +187,8 @@ function renderComposer(view, projectId) {
   const agent = agents.find(a => a.id === draft.configurationId);
   draft.model = draftModel(state.data, draft);
   if (state.readiness?.key !== readinessKey(projectId, agent, draft.model)) loadReadiness(projectId, agent, draft.model);
-  if (!state.fixer) loadFixer();
   mount(view, `composer:${projectId}`, composerSkeleton(projectId, draft));
-  patchRegions(view, composerRegions(composerModel(state.data, projectId, draft, state.readiness, state.fixer?.status), draft));
-}
-
-async function loadFixer() {
-  const record = state.fixer = { loading: true };
-  try { record.status = await api('/api/fixer/status'); }
-  catch (error) { record.status = { ready: false, reasons: [`Fixer status unavailable: ${error.message}`] }; }
-  record.loading = false;
-  if (state.fixer === record) renderView();
+  patchRegions(view, composerRegions(composerModel(state.data, projectId, draft, state.readiness), draft));
 }
 
 async function loadReadiness(projectId, agent, model) {
@@ -238,7 +228,7 @@ function dirtyGuard(route) {
 async function startFromComposer(projectId) {
   const draft = draftFor(projectId);
   if (draft.busy) return;
-  if (!composerModel(state.data, projectId, draft, state.readiness, state.fixer?.status).canStart) { $('#composer-status')?.scrollIntoView({ block: 'nearest' }); return; }
+  if (!composerModel(state.data, projectId, draft, state.readiness).canStart) { $('#composer-status')?.scrollIntoView({ block: 'nearest' }); return; }
   const current = state.isCurrent;
   draft.busy = true;
   draft.result = null;
@@ -1003,21 +993,6 @@ async function loadSave(saveId) {
   if (run?.id) location.hash = href('i', run.id);
 }
 
-const LOOP_CONFIRM = {
-  cancel: { title: 'Cancel the fix?', body: 'Stops the fixer and closes its open PR. A merged fix stays merged.', confirm: 'Cancel fix', danger: true, ok: 'Fix cancelled.' },
-  revert: { title: 'Revert the fix?', body: 'Opens a revert PR of the merged fix on main and gates it like a fix. In Auto mode ASHAD merges it; in Manual mode you merge it.', confirm: 'Revert fix', danger: true, ok: 'Reverting the fix.' },
-  apply: { title: 'Apply the merged PR?', body: 'ASHAD updates the checkout, restarts and continues the loop.', confirm: 'Apply fix', ok: 'Applying the fix.' },
-  dispatch: { ok: 'Fixer started.' },
-};
-
-async function onLoopCommand(name) {
-  const run = threadRun();
-  const spec = LOOP_CONFIRM[name];
-  if (!run?.loop || !spec) return;
-  if (spec.title && !await confirmDialog({ title: spec.title, body: spec.body, confirm: spec.confirm, danger: spec.danger })) return;
-  await command(`loop:${name}`, id => api(`/api/loops/${enc(run.loop.id)}/command`, { method: 'POST', body: { command: name, command_id: id } }), spec.ok, () => null);
-}
-
 const runPath = run => `/api/runs/${enc(run.id)}`;
 const control = (run, name, extra = {}) => id => api(`${runPath(run)}/control`, { method: 'POST', body: { command: name, command_id: id, ...extra } });
 
@@ -1142,7 +1117,7 @@ async function onRoute() {
   }
   state.route = route;
   state.isCurrent = epoch.next();  // Any response started for the previous route is now stale.
-  if (composerProject(route, state.data)) state.readiness = state.fixer = null;  // Readiness probes on view open, never on the poll.
+  if (composerProject(route, state.data)) state.readiness = null;  // Readiness probes on view open, never on the poll.
   if (route.name === 'composer' && route.query.configuration) draftFor(route.id).configurationId = route.query.configuration;
   if (route.name === 'instance' && state.thread.runId !== route.id) {
     state.thread = { runId: route.id, player: null, instructionOpen: false, instructionText: '', statusKey: null, tl: createTimeline(), worldView: 'latest', lastObs: null, tab: null, scroll: {} };
@@ -1204,11 +1179,6 @@ function chooseModel(field, model) {
   renderView();
 }
 
-function chooseFix(mode) {
-  draftFor(composerProject(state.route, state.data)).fix = mode;
-  renderView();
-}
-
 document.addEventListener('click', async event => {
   const row = event.target.closest('.tl-row');
   if (row) selectCard(row.closest('.tl-card').dataset.card);  // The native toggle still opens the body.
@@ -1224,10 +1194,8 @@ document.addEventListener('click', async event => {
   } else if (action === 'composer-retry') {
     startFromComposer(composerProject(state.route, state.data));
   } else if (action === 'composer-recheck') {
-    state.readiness = state.fixer = null;
+    state.readiness = null;
     renderView();
-  } else if (action === 'loop-command') {
-    if (target.getAttribute('aria-disabled') !== 'true') onLoopCommand(target.dataset.command);
   } else if (action === 'instance-delete') {
     if (target.getAttribute('aria-disabled') !== 'true') deleteInstance(id);
   } else if (action === 'ov-controls') {  // Shared by the project overview and the setup step 4 done view.
@@ -1251,13 +1219,11 @@ document.addEventListener('click', async event => {
   } else if (action === 'ctl') {
     target.closest('[popover]')?.hidePopover();
     if (target.getAttribute('aria-disabled') !== 'true') onControl(target.dataset.ctl);
-  } else if (action === 'pick-model' || action === 'pick-fix') {
-    if (target.getAttribute('aria-disabled') === 'true') return;
+  } else if (action === 'pick-model') {
     const menu = target.closest('[popover]');
     menu.hidePopover();
     document.querySelector(`[popovertarget="${menu.id}"]`)?.focus();  // patchHTML then keeps focus on the re-rendered trigger.
-    if (action === 'pick-model') chooseModel(target.dataset.field, target.dataset.value);
-    else chooseFix(target.dataset.value);
+    chooseModel(target.dataset.field, target.dataset.value);
   } else if (action === 'thread-tab') {
     setTab(target.dataset.tab);
   } else if (action === 'instruction-cancel') {

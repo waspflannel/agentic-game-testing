@@ -117,13 +117,13 @@ class DesktopLifecycle:
         self.lock = asyncio.Lock()
 
     def _owners(self):
-        return [o for o in self.app.state.coordinator.occupied_instances() if o["state"] != "Fixing"]
+        return self.app.state.coordinator.occupied_instances()
 
     def status(self):
         state = self.app.state
         backend = state.ai.backend
         login = getattr(backend, "login_wait", None)
-        operations = list(state.operations.values()) + state.coordinator.fixer.in_flight()
+        operations = list(state.operations.values())
         if login and not login.done():
             operations.append({"kind": "sign_in"})
         viewers = []
@@ -133,8 +133,7 @@ class DesktopLifecycle:
             if parsed.scheme in {"http", "https"} and parsed.hostname and not any((parsed.username, parsed.password, parsed.query, parsed.fragment)):
                 viewers.append(url)
         return {"owners": self._owners(), "operations": operations,
-                "draining": state.coordinator.draining, "viewer_urls": viewers,
-                "restart_for_fix": state.coordinator.fixer.restart_for_fix()}
+                "draining": state.coordinator.draining, "viewer_urls": viewers}
 
     async def shutdown(self, *, stop_runs=False, cancel_operations=False, expected_run_ids=None):
         async with self.lock:
@@ -148,7 +147,7 @@ class DesktopLifecycle:
                     return {"drained": False, "detail": "Confirm Stop and quit for every owned instance.", **current}
                 if current["operations"] and not cancel_operations:
                     return {"drained": False, "detail": "Wait for operations or explicitly cancel Get game controls/sign-in.", **current}
-                if any(op["kind"] not in {"controls", "sign_in", "fixer"} for op in current["operations"]):
+                if any(op["kind"] not in {"controls", "sign_in"} for op in current["operations"]):
                     return {"drained": False, "detail": "Wait for desktop/setup/lifecycle mutations to finish.", **current}
                 coord.draining = True
             try:
@@ -160,7 +159,6 @@ class DesktopLifecycle:
                 login = getattr(backend, "login_wait", None)
                 if login and not login.done():
                     await backend.login_cancel()
-                await coord.fixer.cancel_processes()
                 # Legacy data can contain multiple owners; stop/reconcile every one.
                 for owner in self._owners():
                     if owner["state"] == "Unknown":
@@ -190,10 +188,7 @@ def read_launch_config(stream):
         raise ValueError("Desktop launch configuration too large")
     config = json.loads(raw)
     required = {"data_root", "session_key", "owner_key", "instance_id"}
-    if not isinstance(config, dict) or not required <= set(config) <= required | {"checkout_root"}:
-        raise ValueError("Invalid desktop launch configuration")
-    checkout = config.get("checkout_root")
-    if checkout is not None and (not isinstance(checkout, str) or not Path(checkout).is_absolute() or not Path(checkout).is_dir()):
+    if not isinstance(config, dict) or set(config) != required:
         raise ValueError("Invalid desktop launch configuration")
     if not isinstance(config["data_root"], str) or not Path(config["data_root"]).is_absolute():
         raise ValueError("Desktop requires an absolute writable user-data root")
@@ -215,7 +210,7 @@ async def serve_desktop(config, controller_lock=None):
     port = listener.getsockname()[1]
     # Desktop starts with its own store only. Importing older data/credentials is
     # an explicit migration, never an automatic side effect.
-    app = create_app(config["data_root"], controller_lock=controller_lock, checkout_root=config.get("checkout_root"))
+    app = create_app(config["data_root"], controller_lock=controller_lock)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning", access_log=False,
                                          timeout_graceful_shutdown=5))
     lifecycle = DesktopLifecycle(app, server)
@@ -257,7 +252,7 @@ def main():
             # Forced loss is not successful drain. Retain independent authority
             # while any active/queued/unresolved ownership persists.
             with closing(Store(root)) as store:
-                owners = [o for o in Coordinator(store, None, None).occupied_instances() if o["state"] != "Fixing"]
+                owners = Coordinator(store, None, None).occupied_instances()
             if not owners:
                 watchdog.terminate()
                 watchdog.wait(timeout=10)

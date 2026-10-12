@@ -1,5 +1,5 @@
 // Empty workspace and the new-instance composer (spec §8.1, §8.2). Markup and the start flow are pure; app.js owns the DOM.
-import { esc, icon, href, newId, menuHTML, modelMenuHTML, ApiError } from '../core.js';
+import { esc, icon, href, newId, modelMenuHTML, ApiError } from '../core.js';
 
 const enc = encodeURIComponent;
 const chipDot = tone => `<span class="dot dot-${tone}" aria-hidden="true"></span>`;
@@ -42,7 +42,7 @@ function desktopReason(r) {
 }
 
 // readiness: { key, loading, result, error } from the probe run on view open. A record for another agent or build is ignored.
-export function composerModel(data, projectId, draft, readiness, fixer) {
+export function composerModel(data, projectId, draft, readiness) {
   const project = (data?.projects || []).find(p => p.id === projectId);
   const agents = projectConfigurations(data, projectId);
   const agent = agents.find(a => a.id === draft.configurationId) || agents[0];
@@ -76,7 +76,6 @@ export function composerModel(data, projectId, draft, readiness, fixer) {
   if (draft.transport === 'steam' && !steam.enabled) blockers.push(`${steam.reason}. No ENet fallback.`);
 
   return {
-    fixer: fixer || { ready: false, reasons: ['Checking the fixer…'] },
     project, agents, agent, build, model, modelOptions: data?.model_options || [], steam, desktop, blockers,
     projects: data?.projects || [],
     agentOptions: agents.map(a => ({ id: a.id, label: a.name || a.id, title: `${a.name || a.id} · build ${(data?.builds || []).find(b => b.id === a.build_id)?.name || a.build_id}` })),
@@ -106,19 +105,6 @@ export function noConfigurationsHTML(project) {
     + `<a class="btn btn-primary" href="#/setup?project=${enc(project.id)}" data-key="add-agent">Add project configuration</a></div>`;
 }
 
-// Fixes picker. While the fixer is not ready (or still being checked) Manual and Auto are aria-disabled and say why.
-function fixMenuHTML(fixer, fix) {
-  const blocked = !fixer.ready;
-  const reason = fixer.reasons[0];
-  const gated = (id, label, secondary) => ({ id, label, chipLabel: `Fixes: ${id}`, disabled: blocked, secondary: blocked ? reason : secondary });
-  return menuHTML({
-    key: 'c-fix', field: 'fix', action: 'pick-fix', label: 'Fixes', iconName: 'wrench', selected: fix || 'off',
-    options: [{ id: 'off', label: 'Off', chipLabel: 'Fixes off' }, gated('manual', 'Manual', 'You merge each fix PR'), gated('auto', 'Auto', 'ASHAD merges, checks and reverts')],
-    // One reason already shows on Manual and Auto; a footer only adds the full list when there are several.
-    footer: blocked && fixer.reasons.length > 1 ? fixer.reasons.map(r => `<p>${esc(r)}</p>`).join('') : '',
-  });
-}
-
 export function composerRegions(m, draft) {
   const name = esc(m.project.name || m.project.id);
   const projectChip = `<label class="chip chip-select">${icon('folder')}<span class="sr-only">Project</span>`
@@ -135,7 +121,6 @@ export function composerRegions(m, draft) {
     + `<select data-field="transport" data-key="c-transport" aria-label="Transport" aria-describedby="composer-steam-note">`
     + `<option value="enet"${draft.transport === 'enet' ? ' selected' : ''}>ENet</option>`
     + `<option value="steam"${draft.transport === 'steam' ? ' selected' : ''}${m.steam.enabled ? '' : ' disabled'}>Steam${m.steam.enabled ? '' : ' (unavailable)'}</option></select></label>`;
-  const fixChip = fixMenuHTML(m.fixer, draft.fix);
   const start = `<button type="submit" class="btn btn-primary btn-round" data-key="c-start" aria-label="Start instance" title="Start instance (Ctrl+Enter)"`
     + `${m.canStart ? '' : ' aria-disabled="true"'}${draft.busy ? ' aria-busy="true"' : ''}>${icon(draft.busy ? 'loader' : 'arrow-up', draft.busy ? 'icon spin' : 'icon')}</button>`;
 
@@ -145,7 +130,6 @@ export function composerRegions(m, draft) {
   if (draft.busy) notes.push(`<p class="note">${icon('loader', 'icon spin')}Starting… This can take a minute while the desktop is checked.</p>`);
   else if (res) notes.push(resultHTML(res));
   if (!m.steam.enabled) notes.push(draft.transport === 'steam' ? `<p class="note" id="composer-steam-note">${esc(m.steam.reason)}.</p>` : `<span class="sr-only" id="composer-steam-note">${esc(m.steam.reason)}.</span>`);
-  if (!m.fixer.ready && draft.fix && draft.fix !== 'off') notes.push(`<p class="note">${esc(m.fixer.reasons[0])}</p>`);  // A blocked choice stays explained while the menu is closed.
   if (!draft.busy && m.blockers.length) notes.push(`<div class="note note-blocked"><p>Start is unavailable:</p><ul>${m.blockers.map(b => `<li>${esc(b)}</li>`).join('')}</ul></div>`);
   notes.push(`<p class="note note-hint"><span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> to start</span></p>`);
 
@@ -153,7 +137,7 @@ export function composerRegions(m, draft) {
     hero: `What should the agent do in <strong>${name}</strong>?`,
     chips: projectChip + desktopChip + recheck,
     'goal-error': goalError,
-    bar: `<div class="composer-bar-left">${agentChip}${modelChip}${transportChip}${fixChip}</div><div class="composer-bar-right"><span class="composer-summary" title="${esc(m.summary)}">${esc(m.summary)}</span>${start}</div>`,
+    bar: `<div class="composer-bar-left">${agentChip}${modelChip}${transportChip}</div><div class="composer-bar-right"><span class="composer-summary" title="${esc(m.summary)}">${esc(m.summary)}</span>${start}</div>`,
     status: notes.join(''),
   };
 }
@@ -180,7 +164,7 @@ function resultHTML(res) {
 // what happened to the earlier one, so an accepted start is never silently resubmitted with different inputs.
 // Returns { kind: 'accepted' | 'in-progress' | 'not-started' | 'conflict' | 'earlier-accepted' | 'error', ... }.
 export async function startInstance(draft, projectId, api) {
-  const payload = { configuration_id: draft.configurationId, project_id: projectId, primary_goal: draft.goal.trim(), transport: draft.transport, model: draft.model, fix_mode: draft.fix || 'off' };
+  const payload = { configuration_id: draft.configurationId, project_id: projectId, primary_goal: draft.goal.trim(), transport: draft.transport, model: draft.model };
   if (!payload.configuration_id) return { kind: 'error', field: 'configuration', message: 'Choose a project configuration.' };
   if (!payload.primary_goal) return { kind: 'error', field: 'goal', message: 'Describe the goal before starting.' };
   const signature = JSON.stringify(payload);

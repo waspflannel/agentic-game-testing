@@ -116,34 +116,6 @@ The live camera is for the human operator. Routine model decisions use the filte
 
 **Stop** attempts normal save/exit and confirms process teardown. Failed teardown retains its desktop/account reservation until reconciliation succeeds. Existing diagnostics, evidence and operational recovery remain available; removing advanced setup does not remove these safeguards.
 
-## Improvement loop (fixes)
-
-Each instance has a **Fixes** setting: **Off**, **Manual** or **Auto**. When an `unsupported_action` issue is hit, the instance moves to **Fixing** and ASHAD asks the fixer (`jr ship`, in a separate git worktree) for one PR that changes only the agent layer. ASHAD gates the exact PR head itself (path allowlist and `scripts/test.sh`). **Manual** waits for you to merge on GitHub and click **Apply fix**; it never merges. **Auto** merges with `gh pr merge --merge --match-head-commit <gated sha>`. After the merge ASHAD loads the save from right before the failure into a new instance and checks the fix. A failed check is reverted through a gated revert PR and retried within the caps; regressions revert and pause. **Cancel fix** always works.
-
-Requirements:
-- Linux, started with `npm --prefix desktop start` from a checkout on a clean `main`.
-- `git`, `gh` signed in with write access to waspflannel/agentic-game-testing, and `jr` on PATH.
-- Claude Code at `~/.local/bin/claude` and your Claude subscription token saved in Settings.
-- `./scripts/setup.sh` run in the checkout.
-
-The Fixes chip shows the missing piece when a requirement is not met.
-
-Subscription only: the fixer environment is an allowlist, and API-key variables never reach it. Turn off paid extra usage in your Claude account. A Claude usage limit stops the loop with no retry.
-
-Caps: 3 attempts per issue, 8 attempts and 5 merged fixes per loop, 3 consecutive failures; `jr` 60 minutes, gate 20 minutes. A daily fixer-minutes budget (Settings, default 240) also applies. A hit cap or failure shows **Needs you**.
-
-After a fix merges, what you must refresh depends on what changed:
-
-| Changed by a fix | Needed |
-|---|---|
-| Controller Python, `/mcp`, prompts and capabilities | Controller restart (ASHAD does this) |
-| Runtime copy | `git -C <checkout> pull --ff-only origin main`, then `npm --prefix desktop run prepare:runtime` |
-| Electron, `ashad/static`, worker image, game | Never changed by a fix |
-
-Packaged build: `git pull --ff-only origin main`, `npm --prefix desktop run build:linux`, then start `./desktop/output/linux-unpacked/ashad`. The loop continues on the next start.
-
-Branch protection on `main`: require pull requests (0 approvals, or your account on the bypass list), block force pushes and deletion, do not require linear history, and allow merge commits.
-
 ## Scope and retained data
 
 The supported workflow is getting game controls and fresh, one-bot instances. Old scenarios, runs, saves, usage and evidence remain stored and readable for operational compatibility. Deleting an instance from the sidebar, or a project from setup, removes its records and run files from this computer; usage totals are kept. Retired feature endpoints are unavailable; preserving a record does not make its old editing or launch workflow available.

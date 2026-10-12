@@ -260,67 +260,12 @@ test('Start sends the chosen model and a changed model is a changed payload', as
   assert.notEqual(first.body.request_id, second.body.request_id);
 });
 
-const fixMenu = html => html.slice(html.indexOf('data-key="c-fix"'), html.indexOf('composer-bar-right'));
-const fixOptions = html => Object.fromEntries((fixMenu(html).match(/<button type="button" role="option"[\s\S]*?<\/button>/g) || []).map(o => [o.match(/data-value="([^"]*)"/)[1], o]));
-
-test('fix menu shows why Manual and Auto are disabled when the fixer is not ready', async () => {
-  const { composerRegions, composerModel, newDraft } = await load();
-  const fixer = { ready: false, reasons: ['Put jr on PATH.', 'Sign in with gh auth login.'] };
-  const bar = draft => composerRegions(composerModel(data(), 'p', draft, { key: 'p|b|a|gpt-6-astra', result: ready }, fixer), draft).bar;
-  const draft = { ...newDraft(), configurationId: 'a' };
-  const html = bar(draft);
-  assert.doesNotMatch(html, /data-field="fix" data-key/);
-  assert.ok(html.indexOf('data-key="c-transport"') < html.indexOf('data-key="c-fix"'));
-  assert.match(html, /<span class="chip-text">Fixes off<\/span>/);
-  assert.match(html, /data-key="c-fix" aria-describedby="c-fix-note"/);
-  const rows = fixOptions(html);
-  assert.deepEqual(Object.keys(rows), ['off', 'manual', 'auto']);
-  assert.doesNotMatch(rows.off, /aria-disabled/);
-  for (const id of ['manual', 'auto']) {
-    assert.match(rows[id], /aria-disabled="true"/);
-    assert.match(rows[id], /<span class="model-option-note">Put jr on PATH\.<\/span>/);
-  }
-  // All reasons are visible text in the menu footer that the trigger points at, never sr-only.
-  const footer = html.match(/<div class="menu-footer" id="c-fix-note">([\s\S]*?)<\/div>/)[1];
-  assert.match(footer, /<p>Put jr on PATH\.<\/p><p>Sign in with gh auth login\.<\/p>/);
-  assert.doesNotMatch(html, /sr-only" id=/);
-  assert.match(rows.off, /aria-selected="true"[\s\S]*#i-check/);
-  assert.match(bar({ ...draft, fix: 'manual' }), /<span class="chip-text">Fixes: manual<\/span>/);
-  // A blocked Manual or Auto choice keeps its reason visible with the menu closed; Off needs no note.
-  const status = d => composerRegions(composerModel(data(), 'p', d, { key: 'p|b|a|gpt-6-astra', result: ready }, fixer), d).status;
-  assert.match(status({ ...draft, fix: 'manual' }), /<p class="note">Put jr on PATH\.<\/p>/);
-  assert.doesNotMatch(status(draft), /Put jr on PATH/);
-  const waiting = composerRegions(composerModel(data(), 'p', draft, null), draft).bar;
-  assert.doesNotMatch(waiting, /menu-footer/);  // a single reason shows on Manual and Auto only, not repeated in a footer
-  assert.match(fixOptions(waiting).auto, /aria-disabled="true"[\s\S]*Checking the fixer…/);
-});
-
-test('fix menu enables Manual and Auto when the fixer is ready, and Auto is selectable', async () => {
+test('composer bar has no Fixes chip and startInstance sends no fix_mode', async () => {
   const { composerRegions, composerModel, newDraft, startInstance } = await load();
   const draft = { ...newDraft(), configurationId: 'a' };
-  const bar = d => composerRegions(composerModel(data(), 'p', d, null, { ready: true, reasons: [] }), d).bar;
-  const rows = fixOptions(bar(draft));
-  assert.doesNotMatch(fixMenu(bar(draft)), /menu-footer|aria-disabled="true"/);
-  assert.match(rows.manual, /You merge each fix PR/);
-  assert.match(rows.auto, /ASHAD merges, checks and reverts/);
-  for (const id of ['off', 'manual', 'auto']) assert.match(rows[id], /data-action="pick-fix" data-field="fix"/);
-  const auto = { ...draft, fix: 'auto' };
-  const autoRows = fixOptions(bar(auto));
-  assert.match(autoRows.auto, /aria-selected="true"[\s\S]*#i-check/);
-  assert.doesNotMatch(autoRows.off, /#i-check/);
-  assert.match(bar(auto), /<span class="chip-text">Fixes: auto<\/span>/);
-  const f = fakeApi({ '/api/instances': { id: 'r1' } });
-  await startInstance({ ...(await draftWith('Craft')), fix: 'auto' }, 'p', f.api);
-  assert.equal(f.posts()[0].body.fix_mode, 'auto');
-});
-
-test('startInstance sends fix_mode', async () => {
-  const { startInstance } = await load();
+  const bar = composerRegions(composerModel(data(), 'p', draft, null), draft).bar;
+  assert.doesNotMatch(bar, /c-fix|Fixes/);
   const f = fakeApi({ '/api/instances': { id: 'r1' } });
   await startInstance(await draftWith('Craft'), 'p', f.api);
-  assert.equal(f.posts()[0].body.fix_mode, 'off');
-  const draft = await draftWith('Craft');
-  draft.fix = 'auto';
-  await startInstance(draft, 'p', f.api);
-  assert.equal(f.posts()[1].body.fix_mode, 'auto');
+  assert.equal('fix_mode' in f.posts()[0].body, false);
 });

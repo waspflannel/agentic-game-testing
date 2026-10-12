@@ -226,17 +226,15 @@ async def test_legacy_run_with_only_agent_profile_instructions_still_reaches_con
     assert context["game_controls"] == "legacy instructions"
 
 
-@pytest.mark.asyncio
-async def test_fix_mode_defaults_off_and_is_validated(environment, profile):
-    store, coordinator, _, _ = environment
-    instances = Instances(coordinator)
+def test_instance_request_rejects_fix_mode(profile):
     with pytest.raises(ValueError):
-        InstanceRequest(configuration_id=profile["id"], primary_goal="Fish", request_id="bad-mode", fix_mode="sometimes")
-    request = InstanceRequest(configuration_id=profile["id"], primary_goal="Fish", request_id="mode-off")
-    assert request.fix_mode == "off"
-    run = await instances.start(request)
-    assert store.list("loops") == [] and not run.get("loop_id")
+        InstanceRequest(configuration_id=profile["id"], primary_goal="Fish", request_id="r1", fix_mode="off")
+
+
+@pytest.mark.asyncio
+async def test_start_has_no_loop(environment, profile):
+    store, coordinator, _, _ = environment
+    run = await Instances(coordinator).start(InstanceRequest(configuration_id=profile["id"], primary_goal="Fish", request_id="r2"))
+    assert "loop_id" not in run
+    assert "loop_id" not in store.require("scenarios", f"{run['scenario_id']}:{run['scenario_revision']}")
     await coordinator.finish(run["id"], "user_stopped")
-    with pytest.raises(ValueError, match="^Fixes are unavailable: "):
-        await instances.start(request.model_copy(update={"request_id": "mode-auto", "fix_mode": "auto"}))
-    assert len(store.list("runs")) == 1

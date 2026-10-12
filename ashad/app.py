@@ -25,6 +25,7 @@ from . import repair_tasks
 from .repository import Repository, sha256_file
 from .reports import generate_report
 from .game_controls import BUSY, MODEL_NOT_ALLOWED, SIGN_IN_WAIT, GameControls, migrate_configuration_names, migrate_tuned_configurations
+from .migrations import retire_fixer
 from .projects import Projects
 from .workspace_environment import inspect_fresh_environment, prepare_environment, validate_build
 from .instances import Instances, InstanceRequest, SaveLoadRequest, default_model
@@ -37,7 +38,7 @@ PROJECT = Path(__file__).resolve().parents[1]
 mimetypes.add_type("text/javascript", ".js")
 # DNS rebinding defense: a browser only sends one of these Host values to this process.
 LOOPBACK_HOST = re.compile(r"(?:127\.0\.0\.1|localhost|\[::1\])(?::\d{1,5})?", re.IGNORECASE)
-DEFAULT_SETTINGS = {"id": "main", "concurrent_sessions": 1, "storage_reserve_bytes": 1024**3, "duration_seconds": None, "spend_usd": None, "fixer_daily_minutes": 240, "pricing": SUBSCRIPTION_PRICING}
+DEFAULT_SETTINGS = {"id": "main", "concurrent_sessions": 1, "storage_reserve_bytes": 1024**3, "duration_seconds": None, "spend_usd": None, "pricing": SUBSCRIPTION_PRICING}
 
 
 async def settled_operation(operation):
@@ -76,7 +77,7 @@ def build_record(path, name=None, build_id=None):
     return manifest
 
 
-def create_app(data_root, credentials=None, start_services=True, ai_backend=None, claude_backend=None, controller_lock=None, checkout_root=None):
+def create_app(data_root, credentials=None, start_services=True, ai_backend=None, claude_backend=None, controller_lock=None):
     store = Store(data_root)
     credentials = credentials or Credentials()
     if not store.get("settings", "main"):
@@ -94,9 +95,9 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
     ai = OpenAI(store, credentials, backend=ai_backend, claude_backend=claude_backend)
     migrate_configuration_names(store)
     migrate_tuned_configurations(store)
+    retire_fixer(store)
     controls = GameControls(store, ai)
     coordinator = Coordinator(store, credentials, ai)
-    coordinator.fixer.checkout_root = Path(checkout_root) if checkout_root else None
     instances = Instances(coordinator)
     from .game_mcp import GameMCP
     game_mcp = GameMCP(coordinator)
@@ -456,8 +457,6 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             page["recent_100_older_count"] = store.count_events(run_id, before=recent[0]["seq"]) if recent else 0
         run["events_page"] = page
         run["issues"], run["issues_truncated"] = await asyncio.to_thread(repair_tasks.run_issues, store, run_id)
-        loop = store.get("loops", run["loop_id"]) if run.get("loop_id") else None
-        run["loop"] = coordinator.fixer.summary(loop) if loop else None
         if run["state"] in {"Investigating", "Paused"} and not run.get("pause"):
             latest = store.latest_event(run_id, "investigation_started") if run["state"] == "Investigating" else None
             if latest and run["state"] == "Investigating":
@@ -575,18 +574,6 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
     async def load_save(save_id: str, body: SaveLoadRequest):
         return await instances.load_save(save_id, body)
 
-    @app.get("/api/fixer/status")
-    async def fixer_status():
-        return await coordinator.fixer.status_payload()
-
-    @app.post("/api/loops/{loop_id}/command")
-    async def loop_command(loop_id: str, body: dict):
-        if not isinstance(body.get("command"), str):
-            raise ValueError("Loop command must be a string")
-        if not isinstance(body.get("command_id"), str) or not re.fullmatch(r"[a-zA-Z0-9_-]{1,100}", body["command_id"]):
-            raise ValueError("Loop command needs a command_id of 1 to 100 letters, digits, - or _")
-        return await coordinator.fixer.command(loop_id, body["command"], body["command_id"])
-
     @app.post("/api/runs/{run_id}/players/{player_id}/takeover")
     async def takeover(run_id: str, player_id: str):
         run = store.require("runs", run_id)
@@ -629,11 +616,9 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
                 raise ValueError(f"{key} must be a finite positive number or unset")
         if "storage_reserve_bytes" in body and (type(body["storage_reserve_bytes"]) is not int or body["storage_reserve_bytes"] < 0):
             raise ValueError("Storage reserve must be a nonnegative byte count")
-        if "fixer_daily_minutes" in body and (type(body["fixer_daily_minutes"]) is not int or not 1 <= body["fixer_daily_minutes"] <= 1440):
-            raise ValueError("Fixer time per day must be a whole number of minutes from 1 to 1440")
         if "reasoning_effort" in body:
             raise ValueError("Gameplay selections use the configured Codex effort. Refresh the dashboard.")
-        allowed = {"concurrent_sessions", "storage_reserve_bytes", "duration_seconds", "spend_usd", "fixer_daily_minutes"}
+        allowed = {"concurrent_sessions", "storage_reserve_bytes", "duration_seconds", "spend_usd"}
         current.update({k: v for k, v in body.items() if k in allowed})
         return store.put("settings", current)
 

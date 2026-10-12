@@ -198,20 +198,8 @@ test('Claude token clicks reach the token action and Enter in the form saves ins
   assert.match(gate, /aria-disabled'\) === 'true'\) return;/, 'Enter honours the disabled Save button');
 });
 
-test('limitsPayload validates fixer_daily_minutes', async () => {
-  const { limitsPayload } = await settings();
-  const base = { duration: '', spend: '', reserve: '1' };
-  for (const bad of ['0', '1441', '2.5', '', 'abc', '-3']) {
-    assert.match(limitsPayload({ ...base, fixer: bad }).errors.fixer, /whole number of minutes from 1 to 1440/, bad);
-  }
-  const ok = limitsPayload({ ...base, fixer: '30' });
-  assert.equal(ok.errors.fixer, undefined);
-  assert.equal(ok.body.fixer_daily_minutes, 30);
-  assert.equal(limitsPayload({ ...base, fixer: '1440' }).errors.fixer, undefined);
-});
-
-test('limits form shows the fixer field with its saved value or 240', async () => {
-  const { limitsSkeleton } = await settings();
-  assert.match(limitsSkeleton({ settings: { fixer_daily_minutes: 90 } }), /id="l-fixer"[^>]*value="90"/);
-  assert.match(limitsSkeleton({}), /id="l-fixer"[^>]*value="240"/);
+test('limits form and payload have no fixer field', async () => {
+  const { limitsSkeleton, limitsPayload } = await settings();
+  assert.doesNotMatch(limitsSkeleton({}), /l-fixer|Fixer/);
+  assert.equal('fixer_daily_minutes' in limitsPayload({ duration: '', spend: '', reserve: '1' }).body, false);
 });

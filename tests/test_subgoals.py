@@ -488,11 +488,9 @@ async def test_second_attempt_sees_the_rejection(tmp_path):
     store, coordinator, service = runtime(tmp_path)
     coordinator.player_turn = AsyncMock(side_effect=ProviderError("decision_needs_instructions", "Need a prerequisite"))
     await service.turn("run", "p")
-    calls = []
     async def respond(context):
-        calls.append(context)
         response = decision(store.require("runs", "run")["subgoal_plan"])
-        if len(calls) == 1:
+        if len(coordinator.planning_contexts) == 1:
             response["evidence"][0]["quote"] = "invented recipe"
         return response
     coordinator.plan_response = respond

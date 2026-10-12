@@ -310,7 +310,7 @@ def test_recalculation_endpoint_validates_body_and_exposes_external_ownership(tm
         coordinator.recalculate_goals.assert_awaited_once_with("r", "same-id")
 
 
-async def invented_quote_planner(coordinator, every_call):
+def invent_quotes(coordinator, every_call):
     valid = coordinator.ai.plan_subgoals.side_effect
     seen = 0
 
@@ -328,7 +328,7 @@ async def invented_quote_planner(coordinator, every_call):
 @pytest.mark.asyncio
 async def test_recalculation_retries_once_after_a_rejected_proposal(environment, profile):
     store, coordinator, run, calls = await recovery_instance(environment, profile)
-    await invented_quote_planner(coordinator, False)
+    invent_quotes(coordinator, every_call=False)
     revised = await coordinator.recalculate_goals(run["id"], "recalculate-retry")
     assert revised["goal_recalculation"]["status"] == "completed"
     assert coordinator.ai.plan_subgoals.await_count == 2
@@ -343,7 +343,7 @@ async def test_recalculation_retries_once_after_a_rejected_proposal(environment,
 @pytest.mark.asyncio
 async def test_recalculation_fails_in_plain_words_after_two_rejections(environment, profile):
     store, coordinator, run, calls = await recovery_instance(environment, profile)
-    await invented_quote_planner(coordinator, True)
+    invent_quotes(coordinator, every_call=True)
     with pytest.raises(ValueError, match="could not verify"):
         await coordinator.recalculate_goals(run["id"], "recalculate-reject")
     latest = store.require("runs", run["id"])

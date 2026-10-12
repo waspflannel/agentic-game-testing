@@ -167,7 +167,10 @@ const primaryHTML = (plan, root) => `<p class="section-title">Primary goal</p><p
 function workingNowHTML(plan, nodes, rootId) {
   const active = nodes.get(plan.active_goal_id);
   const open = '<section class="goal-now" aria-label="Working on now"><p class="goal-now-title">Working on now</p>';
-  if (!active || active.id === rootId) return `${open}<p class="goal-now-objective">Choosing the first concrete goal under the primary goal.</p></section>`;
+  // The root never completes, so it is active both before the first goal and after every child completes; a blocked root waits on review.
+  if (!active || active.id === rootId) {
+    return `${open}<p class="goal-now-objective">${plan.status === 'blocked' ? 'Waiting for your review.' : 'Choosing the next concrete goal under the primary goal.'}</p></section>`;
+  }
   const ancestors = [];
   for (let g = nodes.get(active.parent_id); g && ancestors.length < 8; g = nodes.get(g.parent_id)) ancestors.unshift(g.objective);
   return `${open}<p class="goal-now-objective">${esc(active.objective)}</p>`

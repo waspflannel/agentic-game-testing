@@ -113,7 +113,8 @@ test('the active goal is marked Now with measured progress', async () => {
   const unknown = applePlan();
   unknown.goals[2].completion.kind = 'unknown';
   assert.doesNotMatch(goals(unknown), /so far/);
-  assert.match(goals(applePlan({ active_goal_id: 'root' })), /Choosing the first concrete goal/);
+  assert.match(goals(applePlan({ active_goal_id: 'root' })), /Choosing the next concrete goal/);
+  assert.match(goals(applePlan({ active_goal_id: 'root', status: 'blocked', reason: 'stuck' })), /goal-now-objective">Waiting for your review\./);
 });
 
 test('planning pauses show a review note', async () => {

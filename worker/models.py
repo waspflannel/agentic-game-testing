@@ -108,19 +108,6 @@ class FixtureImport(BoundCommand):
     identity_mapping: dict[str, str] = Field(default_factory=dict)
 
 
-class SaveCapture(BoundCommand):
-    save_id: str
-
-    _id = field_validator("save_id")(safe_id)
-
-
-class SaveRestore(BoundCommand):
-    archive_base64: str
-    sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    identity: str
-    transport: Literal["enet", "steam"]
-
-
 class SteamVerify(BaseModel):
     app_id: int
     steam_id: str

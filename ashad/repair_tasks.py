@@ -115,8 +115,7 @@ def record_issue(store, issue_type, basis, example):
             key = "issue_" + signature[:16]
             issue = store.get("issues", key)
             seen = {"at": example["at"], "run_id": example["run_id"], "example_id": example["example_id"],
-                    "build_id": example["build"]["id"], "source_revision": example["build"]["source_revision"],
-                    "save_before": (example.get("saves") or {}).get("before")}
+                    "build_id": example["build"]["id"], "source_revision": example["build"]["source_revision"]}
             if issue is None:
                 with store.lock:
                     total = store.db.execute("SELECT COUNT(*) FROM records WHERE kind='issues'").fetchone()[0]
@@ -194,7 +193,7 @@ def run_issues(store, run_id):
         payload = event["payload"]
         groups.setdefault(payload["issue_id"], (event["kind"], []))[1].append({
             "at": event["timestamp"], "example_id": payload.get("example_id"), "player_id": payload.get("player_id"),
-            "source": payload.get("source"), "kept": payload.get("kept"), "save_before": payload.get("save_before")})
+            "source": payload.get("source"), "kept": payload.get("kept")})
     # Events are newest first, so dict order already puts the issue with the latest hit first.
     issues = []
     for issue_id, (kind, hits) in groups.items():

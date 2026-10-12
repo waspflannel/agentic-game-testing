@@ -92,8 +92,6 @@ Configurations from earlier versions are converted once on upgrade to controls f
 
 Getting game controls does not launch a game. A new instance always uses fresh world and character setup; multiplayer planning, seeds and advanced scenario editing are deferred. Existing desktops and Steam profiles are retained between runs.
 
-**Saves:** ⋯ → Save now saves a running instance. ASHAD also saves automatically before risky actions and when it records an issue example. Load (Actions tab → Saves) starts a new linked instance from that save once no other instance is running. Saves are deleted with their instance. The game should answer the bridge `save_game` request (`{epoch, save_id}` → `{"status": "saved"}`); otherwise a save holds the last save tree on disk and is labelled so.
-
 The primary goal is free text. New instances maintain an automatic **goal hierarchy** and a **currently chasing** goal. The planner works backward from the desired outcome through missing prerequisites, then the existing game-action loop pursues one achievable goal at a time. Completing a child does not automatically complete its parent.
 
 Plans belong to the instance, not the reusable agent. They survive refreshes and controller recovery; resume/takeover handback rechecks fresh observations before acting. The live instance sidebar shows the hierarchy, current branch, completion conditions, blocked reasons and recorded evidence. Setup remains agent + primary goal + ENet/Steam.
@@ -118,7 +116,7 @@ The live camera is for the human operator. Routine model decisions use the filte
 
 ## Scope and retained data
 
-The supported workflow is getting game controls and fresh, one-bot instances. Old scenarios, runs, saves, usage and evidence remain stored and readable for operational compatibility. Deleting an instance from the sidebar, or a project from setup, removes its records and run files from this computer; usage totals are kept. Retired feature endpoints are unavailable; preserving a record does not make its old editing or launch workflow available.
+The supported workflow is getting game controls and fresh, one-bot instances. Old scenarios, runs, usage and evidence (including old save archives under each instance folder) remain stored and readable for operational compatibility. Deleting an instance from the sidebar, or a project from setup, removes its records and run files from this computer; usage totals are kept. Retired feature endpoints are unavailable; preserving a record does not make its old editing or launch workflow available.
 
 [Future work](docs/future-work.md) records deferred features and the prerequisites for restoring them.
 

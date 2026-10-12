@@ -33,12 +33,14 @@ The store rewrites a file whenever its issue changes, and rewrites a deleted fil
 | `status_history` | `[{at, from, to}]`, the last 50 changes; `[]` until the first change (older entries also carry `loop_id`, `attempt_id`) |
 | `fix` | `null` on new records; older records may keep the removed fixer's `{loop_id, attempt_id, pr_url, merge_sha, verified, reverted}` |
 | `untrusted_text` | fixed warning string |
-| `first_seen`, `last_seen` | `{at, run_id, example_id, build_id, source_revision, save_before}` |
+| `first_seen`, `last_seen` | `{at, run_id, example_id, build_id, source_revision}` |
 | `occurrences` | every hit |
 | `runs`, `builds` | distinct ids, at most 50 / 20 |
 | `examples_kept`, `examples_dropped` | integers |
 | `revision` | increments on each change |
 | `examples[]` | see below |
+
+Records written before save/load was removed had `save_before`; startup removes it.
 
 Basis keys per type:
 
@@ -71,7 +73,6 @@ Every example has these common fields:
 | `screenshot` | `{observation_id, pin_id, status: pinned or unavailable, frames, retained_path_prefix}` |
 | `evidence` | `{run_dir, ledger, report, event_ids}` |
 | `truncated` | names of trimmed sections |
-| `saves` | `{before, at_issue}` save ids, each possibly `null`; present only on kept examples. Counted hits are not stored, but their `saves.before` reaches `last_seen.save_before` and the ledger event. |
 
 On top of the common fields, each type adds its own sections:
 
@@ -170,15 +171,15 @@ Each is written to the run ledger after the record is stored, never before, so t
 
 | Event | Payload |
 |---|---|
-| `unsupported_action_recorded`, `crash_recorded`, `game_bug_recorded` | `{player_id, issue_id, example_id, source, kept, outcome, save_before}` (`save_before` is a save id or null); `outcome` is `kept` or `counted`, and nothing is written for a failed record |
+| `unsupported_action_recorded`, `crash_recorded`, `game_bug_recorded` | `{player_id, issue_id, example_id, source, kept, outcome}`; `outcome` is `kept` or `counted`, and nothing is written for a failed record |
 | `issue_cap_reached` | `{player_id, issue_type, signature}` |
 | `game_bug_report_rejected` | `{player_id, reason}` |
 
 ## Per-instance history
 
-An instance's issues are its `<type>_recorded` ledger events grouped by `issue_id`. The newest 500 events are read and 20 hits are shown per issue. `save_before` is the newest save of that run before the hit. `GET /api/runs/{run_id}` returns them as `issues` and `issues_truncated`.
+An instance's issues are its `<type>_recorded` ledger events grouped by `issue_id`. The newest 500 events are read and 20 hits are shown per issue. `GET /api/runs/{run_id}` returns them as `issues` and `issues_truncated`.
 
-Deleting the instance removes its history, not the issue files. Counted hits' saves are unpinned and can be pruned by save retention, and the page then says "Save no longer kept".
+Deleting the instance removes its history, not the issue files.
 
 ## Run behavior
 

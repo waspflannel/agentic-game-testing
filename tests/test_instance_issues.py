@@ -1,62 +1,107 @@
-"""Per-instance issue history: save_before links, the run detail issues list, caps and fallbacks. Fakes and temporary data only."""
+"""Per-instance issue history: the run detail issues list, caps and fallbacks. Fakes and temporary data only."""
 import asyncio
+import copy
+import json
 from pathlib import Path
+from types import SimpleNamespace
 
+import httpx
 import pytest
 
 from ashad import repair_tasks
+from ashad.app import create_app
 from ashad.repair_tasks import issue_directory
 from ashad.store import Store
-from test_controller import environment  # noqa: F401
-from test_saves import PLAYER, act, api, call, events, issue_files, no_http_inference, running, saves_of  # noqa: F401
+from ashad.worker_client import WorkerError
+from test_acceptance_edges import game_context_worker, ready_run
+from test_controller import MemoryCredentials, environment  # noqa: F401
 from test_unsupported_actions import basis, example
 
+PLAYER = "player-1"
+CHEST = {"id": "chest-1", "version": 1, "kind": "chest", "label": "Chest", "actions": ["interact", "move"]}
 
-def spy_latest(env, monkeypatch):
-    read = []
-    real = env.coord.saves.latest
 
-    def spy(run_id):
-        found = real(run_id)
-        read.append(found and found["id"])
-        return found
+@pytest.fixture(autouse=True)
+def no_http_inference(monkeypatch):
+    async def unexpected(*args, **kwargs):
+        raise AssertionError("Provider tests must not make HTTP requests")
+    monkeypatch.setattr(httpx.AsyncClient, "request", unexpected)
 
-    monkeypatch.setattr(env.coord.saves, "latest", spy)
-    return read
+
+async def running(environment, monkeypatch, profile=None, reject_verbs=()):
+    """A ready single-player run on worker-1 with a fake game observation."""
+    store, coord, plan, desktops = environment
+    plan = copy.deepcopy(plan)
+    if profile:
+        plan["configuration_id"] = profile["id"]
+    run = await ready_run(environment, plan)
+    desktop = desktops["worker-1"]
+    observation = game_context_worker(monkeypatch, desktop, run)
+    observation["entities"] = [copy.deepcopy(CHEST)]
+    inner = desktop.request
+
+    async def request(method, path, *, data=None, **kwargs):
+        if path == "/game" and data["operation"] == "perform_action" and data["arguments"]["verb"] in reject_verbs:
+            raise WorkerError("bad target", 422, ambiguous=False, code="invalid_target")
+        return await inner(method, path, data=data, **kwargs)
+
+    monkeypatch.setattr(desktop, "request", request)
+    return SimpleNamespace(store=store, coord=coord, desktop=desktop, run=run, rid=run["id"], observation=observation)
+
+
+async def act(env, verb="interact", target="chest-1"):
+    generation = env.store.require("runs", env.rid)["players"][PLAYER]["generation"]
+    args = {"verb": verb, "target_id": target, "target_version": 1, "parameters": {}}
+    return await env.coord.structured.dispatch(env.rid, PLAYER, "perform_action", args, env.observation, generation)
+
+
+def events(env, kind, run_id=None):
+    return [e for e in env.store.events(run_id or env.rid, limit=2000) if e["kind"] == kind]
+
+
+def issue_files(store):
+    return [json.loads(p.read_text(encoding="utf-8")) for p in sorted(issue_directory(store).glob("*.json"))]
+
+
+@pytest.fixture
+def api(environment):
+    store, coord, _, _ = environment
+    app = create_app(store.root, MemoryCredentials(None), start_services=False)
+    app.state.coordinator.client_factory = coord.client_factory
+    yield app
+    app.state.store.close()
+
+
+async def call(app, method, path, **body):
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1") as client:
+        request = client.build_request(method, path, json=body or None, headers={"X-ASHAD-Request": "1"})
+        return await client.send(request)
 
 
 @pytest.mark.asyncio
-async def test_kept_and_counted_hits_record_save_before(environment, monkeypatch):
+async def test_action_and_issue_take_no_save(environment, monkeypatch):
     monkeypatch.setattr(repair_tasks, "MAX_EXAMPLES", 1)
     env = await running(environment, monkeypatch, reject_verbs={"interact"})
-    read = spy_latest(env, monkeypatch)
     await act(env)
     await act(env)
-    assert len(read) == 2 and None not in read
-    recorded = events(env, "unsupported_action_recorded")
-    assert [e["payload"]["save_before"] for e in recorded] == read
-    assert [e["payload"]["outcome"] for e in recorded] == ["kept", "counted"]
-    assert issue_files(env.store)[0]["examples"][0]["saves"]["before"] == read[0]
-
-
-@pytest.mark.asyncio
-async def test_issue_file_seen_carries_save_before(environment, monkeypatch):
-    monkeypatch.setattr(repair_tasks, "MAX_EXAMPLES", 1)
-    env = await running(environment, monkeypatch, reject_verbs={"interact"})
-    read = spy_latest(env, monkeypatch)
-    await act(env)
-    await act(env)
+    assert not any(path.startswith("/saves/") for path, _ in env.desktop.calls)
+    assert any(path == "/pin" for path, _ in env.desktop.calls)
     [record] = issue_files(env.store)
-    assert record["occurrences"] == 2
-    assert record["first_seen"]["save_before"] == read[0]
-    assert record["last_seen"]["save_before"] == read[1]
+    assert "saves" not in record["examples"][0]
+    assert "save_before" not in record["first_seen"] and "save_before" not in record["last_seen"]
+    recorded = events(env, "unsupported_action_recorded")
+    assert all("save_before" not in e["payload"] for e in recorded)
+    assert [e["payload"]["outcome"] for e in recorded] == ["kept", "counted"]
 
 
-def test_hit_without_saves_records_null(tmp_path):
-    store = Store(tmp_path / "data")
-    repair_tasks.record_issue(store, "unsupported_action", basis(), example())
-    key = "issue_" + repair_tasks.issue_signature("unsupported_action", basis())[:16]
-    assert store.get("issues", key)["last_seen"]["save_before"] is None
+@pytest.mark.asyncio
+async def test_decision_context_ignores_old_restored_actions(environment, monkeypatch):
+    env = await running(environment, monkeypatch)
+    run = env.store.require("runs", env.rid)
+    run["players"][PLAYER]["restored_actions"] = [{"kind": "action_result", "payload": {"player_id": PLAYER, "marker": "old"}}]
+    env.store.put("runs", run)
+    context = env.coord.structured.decision_context(run, run["plan"]["players"][0], env.observation)
+    assert "old" not in json.dumps(context["recent_own_actions"])
 
 
 @pytest.mark.asyncio
@@ -87,13 +132,14 @@ def test_run_issues_groups_this_runs_hits_only(tmp_path):
     store = Store(tmp_path / "data")
     repair_tasks.record_issue(store, "unsupported_action", basis(), example())
     key = repair_tasks.issue_id("unsupported_action", basis())
+    # Ledger events written before save/load was removed still carry save_before; hits no longer expose it.
     hit(store, "run1", "unsupported_action_recorded", key, save_before="s1")
-    hit(store, "run1", "unsupported_action_recorded", key, save_before="s2")
+    hit(store, "run1", "unsupported_action_recorded", key, save_before=None)
     hit(store, "run2", "crash_recorded", "issue_crash")
     issues, truncated = repair_tasks.run_issues(store, "run1")
     [issue] = issues
     assert issue["issue_id"] == key and issue["hit_count"] == 2
-    assert [h["save_before"] for h in issue["hits"]] == ["s2", "s1"]
+    assert len(issue["hits"]) == 2 and all("save_before" not in h for h in issue["hits"])
     assert issue["status"] == "open" and issue["occurrences_total"] == 1
     assert issue["file"] == str(issue_directory(store) / repair_tasks.issue_filename(store.get("issues", key)))
     assert truncated is False
@@ -125,13 +171,13 @@ def test_run_issues_falls_back_for_old_events_and_missing_records(tmp_path):
     store.event("run1", "game_bug_recorded", {"player_id": "player-1", "issue_id": "issue_gone", "example_id": "e",
                                               "source": "agent_signal", "kept": True, "outcome": "kept"})
     [issue], _ = repair_tasks.run_issues(store, "run1")
-    assert issue["hits"][0]["save_before"] is None
+    assert "save_before" not in issue["hits"][0]
     assert issue["title"] == "issue_gone" and issue["status"] == "unknown"
     assert issue["occurrences_total"] is None and issue["file"] is None and issue["type"] == "game_bug"
 
 
 @pytest.mark.asyncio
-async def test_run_detail_lists_issues_with_save_links(environment, monkeypatch, api):
+async def test_run_detail_lists_issues(environment, monkeypatch, api):
     monkeypatch.setattr(repair_tasks, "MAX_EXAMPLES", 1)
     env = await running(environment, monkeypatch, reject_verbs={"interact"})
     await act(env)
@@ -142,10 +188,9 @@ async def test_run_detail_lists_issues_with_save_links(environment, monkeypatch,
     [issue] = body["issues"]
     assert issue["type"] == "unsupported_action" and issue["hit_count"] == 2
     assert issue["occurrences_total"] == 2 and issue["status"] == "open" and Path(issue["file"]).exists()
-    recorded = events(env, "unsupported_action_recorded")
-    save_ids = {s["id"] for s in body["saves"]}
-    for hit_row, event in zip(reversed(issue["hits"]), recorded):
-        assert hit_row["save_before"] == event["payload"]["save_before"] and hit_row["save_before"] in save_ids
+    assert [h["kept"] for h in issue["hits"]] == [False, True]
+    assert all("save_before" not in h for h in issue["hits"])
+    assert "saves" not in body
     assert body["issues_truncated"] is False
 
 

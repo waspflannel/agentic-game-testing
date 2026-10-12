@@ -40,10 +40,10 @@ export function instanceState(run, owner) {
   if (run?.goal_recalculation?.status === 'planning' && isActiveRun(run)) return make('replanning', 'pending', 'Replanning', [], true, []);
   switch (run?.state) {
     case 'Queued': case 'Starting': return make('starting', 'pending', 'Starting', [], true, ['flag']);
-    case 'Running': return make('running', 'live', 'Running', ['pause', ...(launched ? ['takeover'] : [])], true, [...(launched ? ['save'] : []), ...recalc, 'flag']);
-    case 'Paused': return make('paused', 'attention', 'Paused', ['resume', ...(launched ? ['takeover'] : [])], true, [...(launched ? ['save'] : []), ...recalc, 'flag']);
+    case 'Running': return make('running', 'live', 'Running', ['pause', ...(launched ? ['takeover'] : [])], true, [...recalc, 'flag']);
+    case 'Paused': return make('paused', 'attention', 'Paused', ['resume', ...(launched ? ['takeover'] : [])], true, [...recalc, 'flag']);
     // Extend lives here, not under Running: the backend only extends an open investigation.
-    case 'Investigating': return make('investigating', 'attention', 'Needs review', ['resume', ...(launched ? ['takeover'] : [])], true, [...(launched ? ['save'] : []), 'extend', ...recalc, 'flag'], { banner: true });
+    case 'Investigating': return make('investigating', 'attention', 'Needs review', ['resume', ...(launched ? ['takeover'] : [])], true, ['extend', ...recalc, 'flag'], { banner: true });
     case 'Stopping': return make('stopping', 'pending', 'Stopping', [], false, [], { note: 'Waiting for teardown confirmation' });
     case 'Ended': return make('ended', 'muted', `Ended · ${humanize(run.ending_reason) || 'reason not recorded'}`, ['report', 'evidence'], false, ['flag']);
     default: return make('unknown', 'muted', 'Unknown', [], Boolean(owner), []);
@@ -146,7 +146,6 @@ export const threadSkeleton = () => `<div class="thread">`
   + panel('goals', `<div class="insp-body" data-region="goals"></div>`)
   + panel('world', `<div class="insp-body" data-region="world"></div>`)
   + panel('actions', `<details class="insp-section" open><summary class="insp-head">${icon('chevron-right', 'icon chevron')}<span data-region="issues-head">Issues</span></summary><div class="insp-body" data-region="issues"></div></details>`
-    + `<details class="insp-section" open><summary class="insp-head">${icon('chevron-right', 'icon chevron')}Saves</summary><div class="insp-body" data-region="saves"></div></details>`
     + `<details class="insp-section"><summary class="insp-head">${icon('chevron-right', 'icon chevron')}Model usage</summary><div class="insp-body" data-region="usage"></div></details>`
     + `<section class="activity" aria-labelledby="activity-heading"><div class="activity-head"><h2 id="activity-heading" class="section-title">Activity</h2><div class="tl-tools" data-region="tl-tools"></div></div>`
     + `<div class="tl-top" data-region="tl-top"></div><div class="tl-pill-wrap" data-region="tl-pill"></div><ol class="timeline" data-timeline></ol><div class="tl-foot" data-region="tl-foot"></div></section>`)
@@ -159,7 +158,6 @@ export const tabsHTML = active => `<div class="thread-tabs" role="tablist" aria-
   + `</div>`;
 
 const ACTIONS = {
-  save: { label: 'Save now', icon: 'arrow-down' },
   pause: { label: 'Pause', icon: 'pause', cls: 'btn-secondary' },
   takeover: { label: 'Take over', icon: 'hand', cls: 'btn-secondary' },
   reconcile: { label: 'Reconcile teardown', icon: 'refresh', cls: 'btn-primary' },
@@ -172,62 +170,23 @@ const ACTIONS = {
 };
 
 const ISSUE_TYPES = { unsupported_action: 'Unsupported action', crash: 'Crash', game_bug: 'Game bug' };
-const SAVE_STATE = { confirmed: 'Game saved', on_disk: 'Last game save on disk', none: 'No game save' };
-
-export function saveTrigger(save) {
-  const d = save.trigger_detail || {};
-  if (save.trigger === 'manual') return d.label ? `Manual: ${d.label}` : 'Manual';
-  if (save.trigger === 'risky_action') return d.why === 'after_failure' ? 'After a failed action' : `Before first ${d.verb} on ${humanize(d.target_kind).toLowerCase()}`;
-  if (save.trigger === 'issue') return `Issue: ${humanize(d.issue_type)}`;
-  return humanize(save.trigger);
-}
-
-// Every state is spelled out; a disabled Load carries its reason as a hint above the list.
-export function saveToast(save) {
-  const status = save?.game?.status;
-  if (status === 'confirmed') return 'Saved.';
-  if (status === 'on_disk') return 'Saved. The game did not confirm a fresh save, so the last game save on disk was kept.';
-  return 'Saved the bot state. No game save was found.';
-}
-
-export function savesHTML(saves, { slotFree, pending }) {
-  if (!saves.length) return `<p class="hint">No saves yet. ASHAD saves before risky actions and when it records an issue. Use Save now for your own.</p>`;
-  const rows = saves.map(save => {
-    const busy = pending.has('load-save:' + save.id);
-    return `<li class="save-row"><time data-ts="${esc(save.created_at)}"></time><span class="save-trigger">${esc(saveTrigger(save))}</span>`
-      + `<span class="save-state">${esc(SAVE_STATE[save.game?.status] || '')}</span>`
-      + `<button type="button" class="btn btn-secondary save-load" data-action="load-save" data-id="${esc(save.id)}" data-key="save-${esc(save.id)}"${!slotFree ? ' aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${icon(busy ? 'loader' : 'play', busy ? 'icon spin' : 'icon')}Load</button></li>`;
-  }).join('');
-  return (slotFree ? '' : `<p class="hint">Stop the running instance before loading a save.</p>`) + `<ol class="save-list">${rows}</ol>`;
-}
 
 export const issuesHead = issues => (issues.length ? `Issues · ${issues.length}` : 'Issues');
 
-function hitSave(issueId, hit, saves, slotFree, pending) {
-  if (!hit.save_before) return `<span class="issue-save">No save before this hit</span>`;
-  const save = saves.find(s => s.id === hit.save_before);
-  if (!save) return `<span class="issue-save">Save no longer kept</span>`;
-  const busy = pending.has('load-save:' + save.id);
-  return `<span class="issue-save">Save before · <time data-ts="${esc(save.created_at)}"></time></span>`
-    + `<button type="button" class="btn btn-secondary save-load" data-action="load-save" data-id="${esc(save.id)}" data-key="issue-hit-${esc(issueId)}-${esc(hit.at)}"${!slotFree ? ' aria-disabled="true"' : ''}${busy ? ' aria-busy="true"' : ''}>${icon(busy ? 'loader' : 'play', busy ? 'icon spin' : 'icon')}Load</button>`;
-}
-
-export function issuesHTML(issues, { saves, slotFree, pending, truncated, issueOpen = new Set() }) {
+export function issuesHTML(issues, { truncated, issueOpen = new Set() }) {
   if (!issues.length) return `<p class="hint">No issues recorded in this instance. ASHAD logs unsupported actions, crashes and game bugs here as they happen.</p>`;
   const rows = issues.map(issue => {
     const counts = [`${issue.hit_count} ${issue.hit_count === 1 ? 'time' : 'times'} in this instance`]
       .concat(issue.occurrences_total != null && issue.occurrences_total !== issue.hit_count ? [`${issue.occurrences_total} in all instances`] : []);
     const hits = issue.hits.map(hit => `<li class="issue-hit"><time data-ts="${esc(hit.at)}"></time><span>${esc(humanize(hit.source))}</span>`
-      + `<span>${hit.kept ? 'Example kept' : 'Counted only'}</span>${hitSave(issue.issue_id, hit, saves, slotFree, pending)}</li>`).join('');
+      + `<span>${hit.kept ? 'Example kept' : 'Counted only'}</span></li>`).join('');
     const more = issue.hit_count > issue.hits.length ? `<p class="hint">Showing the newest ${issue.hits.length} of ${issue.hit_count} hits</p>` : '';
     return `<li class="issue-row"><p class="issue-title"><span class="issue-type">${esc(ISSUE_TYPES[issue.type] || humanize(issue.type))}</span> <strong>${esc(issue.title)}</strong></p>`
       + `<p class="issue-meta">${esc(counts.join(' · '))} · last <time data-ts="${esc(issue.last_at)}"></time> · ${esc(humanize(issue.status))}</p>`
       + (issue.file ? `<p class="issue-file"><span>File</span> <code>${esc(issue.file)}</code></p>` : '')
       + `<details class="issue-hits"${issueOpen.has(issue.issue_id) ? ' open' : ''} data-issue="${esc(issue.issue_id)}"><summary data-key="issue-${esc(issue.issue_id)}">Hits</summary><ol>${hits}</ol>${more}</details></li>`;
   }).join('');
-  const loadable = issues.some(issue => issue.hits.some(hit => saves.some(s => s.id === hit.save_before)));
-  return (slotFree || !loadable ? '' : `<p class="hint">Stop the running instance before loading a save.</p>`)
-    + `<ol class="issue-list">${rows}</ol>`
+  return `<ol class="issue-list">${rows}</ol>`
     + (truncated ? `<p class="hint">Only the newest 500 issue events were read.</p>` : '');
 }
 
@@ -263,10 +222,8 @@ export function threadRegions(run, ctx) {
       + ids.map(id => `<option value="${esc(id)}"${id === player ? ' selected' : ''}>${esc((run.plan?.players || []).find(p => p.id === id)?.name || id)}</option>`).join('') + `</select></label>`
     : '';
 
-  const slotFree = !(data?.instance_slot?.owners || []).length;
-  const saves = savesHTML(run.saves || [], { slotFree, pending });
-  return { head, banner, players, saves,
-    issues: issuesHTML(run.issues || [], { saves: run.saves || [], slotFree, pending, truncated: run.issues_truncated, issueOpen }),
+  return { head, banner, players,
+    issues: issuesHTML(run.issues || [], { truncated: run.issues_truncated, issueOpen }),
     'issues-head': issuesHead(run.issues || []),
     overlay: overlayHTML(run, status, cameraStatus), controls: controlsHTML(status, pending, error), tabs: tabsHTML(tab), instruction: instructionHTML(ui, pending) };
 }

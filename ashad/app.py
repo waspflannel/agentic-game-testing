@@ -20,16 +20,15 @@ from .claude_backend import ClaudeError
 from .codex_backend import CodexError
 from .coordinator import Coordinator, InstanceConflict
 from .credentials import Credentials
-from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, provider_of, AI_API, ACTIVE_STATES, RecalculateGoalsRequest, ManualSaveRequest
+from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, provider_of, AI_API, ACTIVE_STATES, RecalculateGoalsRequest
 from . import repair_tasks
 from .repository import Repository, sha256_file
 from .reports import generate_report
 from .game_controls import BUSY, MODEL_NOT_ALLOWED, SIGN_IN_WAIT, GameControls, migrate_configuration_names, migrate_tuned_configurations
-from .migrations import retire_fixer
+from .migrations import retire_fixer, retire_saves
 from .projects import Projects
 from .workspace_environment import inspect_fresh_environment, prepare_environment, validate_build
-from .instances import Instances, InstanceRequest, SaveLoadRequest, default_model
-from .saves import summary as save_summary
+from .instances import Instances, InstanceRequest, default_model
 from .store import Store, uid
 
 PROJECT = Path(__file__).resolve().parents[1]
@@ -96,6 +95,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
     migrate_configuration_names(store)
     migrate_tuned_configurations(store)
     retire_fixer(store)
+    retire_saves(store)
     controls = GameControls(store, ai)
     coordinator = Coordinator(store, credentials, ai)
     instances = Instances(coordinator)
@@ -466,7 +466,6 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
                 run["pause"] = coordinator.pause_details("manual_pause", "Bot inputs are paused. Review the run before continuing.", list(run["players"]))
         for kind in ("incidents", "usage"):
             run[kind] = await asyncio.to_thread(store.records_for_run, kind, run_id)
-        run["saves"] = [save_summary(s) for s in await asyncio.to_thread(coordinator.saves.records, run_id)]
         return run
 
     @app.get("/api/runs/{run_id}/events")
@@ -552,27 +551,6 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
     async def recalculate_goals(run_id: str, body: RecalculateGoalsRequest):
         run = await coordinator.recalculate_goals(run_id, body.command_id)
         return {**run, "external_control": coordinator.external_control(run_id)}
-
-    @app.post("/api/runs/{run_id}/saves")
-    async def save_run_now(run_id: str, body: ManualSaveRequest):
-        async with coordinator.run_lock(run_id):
-            scope = "save:" + run_id
-            cached = store.command(scope, body.command_id)
-            if cached:
-                return save_summary(store.require("saves", cached["save_id"]))
-            run = store.require("runs", run_id)
-            host = next(p for p in run["plan"]["players"] if p["role"] == "host")
-            if run["state"] not in {"Running", "Paused", "Investigating"} or not run["players"][host["id"]].get("launched"):
-                raise ValueError("Saves need a running game. Start or resume the instance first.")
-            record = await coordinator.saves.capture(run_id, host["id"], "manual", {"label": body.label})
-            if record is None:
-                raise ValueError("The save failed; see the instance activity for the reason.")
-            store.command(scope, body.command_id, {"save_id": record["id"]})
-            return save_summary(record)
-
-    @app.post("/api/saves/{save_id}/load")
-    async def load_save(save_id: str, body: SaveLoadRequest):
-        return await instances.load_save(save_id, body)
 
     @app.post("/api/runs/{run_id}/players/{player_id}/takeover")
     async def takeover(run_id: str, player_id: str):

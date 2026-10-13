@@ -1,4 +1,4 @@
-# Normalize text to LF in the index and working tree (shell scripts, locks and tests are line-ending sensitive).
+# Normalize text to LF in the index and working tree (shell scripts and locks are line-ending sensitive).
 * text=auto eol=lf
 
 # Never convert binary content.

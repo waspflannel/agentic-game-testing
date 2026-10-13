@@ -582,34 +582,47 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .seg-btn { height: 24px; padding: 0 10px; border: 0; border-radius: 4px; background: transparent; color: var(--text-2); font-size: var(--fs-meta); cursor: pointer; }
 .seg-btn[aria-pressed="true"] { background: var(--surface-3); color: var(--text); }
 .goal-primary { font-size: var(--fs-title); font-weight: 600; overflow-wrap: anywhere; }
-.goal-now { display: grid; gap: 4px; padding: 8px 12px; border-left: 2px solid var(--live); }
-.goal-now p, .plan-history p { margin: 0; }
-.goal-now-title { font-size: var(--fs-meta); color: var(--text-2); }
-.goal-now-objective { font-weight: 600; overflow-wrap: anywhere; }
-.goal-path { color: var(--text-3); overflow-wrap: anywhere; }
+.plan-history p { margin: 0; }
 .goal-review { color: var(--text); }
-.goal-now, .goal-review { margin-bottom: 8px; }
+.goal-review { margin-bottom: 8px; }
 .plan-history ol { list-style: none; margin: 0; padding: 0; display: grid; }
 .plan-history li { display: grid; grid-template-columns: max-content minmax(0, 1fr) max-content; gap: 4px 12px; align-items: baseline; padding: 4px 0; border-top: 1px solid var(--border); font-size: var(--fs-meta); }
 .plan-history li span { overflow-wrap: anywhere; }
 .plan-history time { color: var(--text-3); font-variant-numeric: tabular-nums; }
 @media (max-width: 480px) { .plan-history li { grid-template-columns: max-content minmax(0, 1fr); } .plan-history .chip { grid-column: 2; justify-self: start; } }
-.goal-tree { list-style: none; margin: 0; padding: 0 0 0 14px; display: grid; gap: 2px; }
-.goal-root { padding-left: 0; }
-.goal-row { display: flex; gap: 8px; padding: 4px 6px; border-radius: var(--r-row); cursor: pointer; list-style: none; }
-.goal-row::-webkit-details-marker { display: none; }
-.goal-row:hover { background: var(--surface-2); }
 .goal-icon { width: 14px; height: 14px; margin-top: 2px; flex: none; color: var(--text-3); }
-.goal-live .goal-icon { color: var(--live); }
-.goal-accent .goal-icon { color: var(--accent); }
-.goal-attention .goal-icon, .goal-attention > details > summary .goal-status { color: var(--attention); }
 .goal-text { display: grid; min-width: 0; }
 .goal-title { color: var(--text); overflow-wrap: anywhere; }
 .goal-status { font-size: 11px; color: var(--text-2); }
-.goal-cond { color: var(--text-3); }
-.goal-reason { color: var(--attention); }
-.goal-body { display: grid; gap: 6px; padding: 2px 6px 8px 28px; }
 .goal-links { display: flex; flex-wrap: wrap; gap: 6px; }
+[data-region="goals"] { container-type: inline-size; }
+.goal-graph-layout { display: grid; grid-template-columns: minmax(0, 1fr); gap: 12px; align-items: start; }
+.goal-graph, .goal-graph ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.goal-graph ul { margin-left: 11px; padding: 4px 0 0 16px; border-left: 1px solid var(--border); }
+.goal-branch { position: relative; display: grid; gap: 4px; min-width: 0; }
+.goal-graph ul > .goal-branch::before { content: ""; position: absolute; left: -16px; top: 14px; width: 12px; border-top: 1px solid var(--border); }
+.goal-node { display: flex; align-items: flex-start; gap: 8px; justify-self: start; max-width: 100%; padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--r-row); background: var(--surface); color: var(--text); font: inherit; text-align: left; cursor: pointer; }
+.goal-node:hover { background: var(--surface-3); }
+.goal-node[aria-pressed="true"] { background: var(--surface-2); border-color: var(--text-2); }
+.goal-node.goal-node-danger { border-color: var(--danger); }
+.goal-node.goal-node-current { border-left: 2px solid var(--live); }
+.goal-node .dot { margin-top: 5px; }
+.goal-node-reason { color: var(--text-3); overflow-wrap: anywhere; }
+.goal-node-current .goal-icon, .goal-node-done .goal-icon { color: var(--live); }
+.goal-node-done .goal-title { color: var(--text-2); }
+.goal-node-muted .goal-title { color: var(--text-3); }
+.goal-node-operator .goal-icon { color: var(--text-2); }
+.goal-node-danger .goal-icon, .goal-node-danger .goal-status, .goal-node-danger .goal-node-reason, .goal-detail .goal-node-reason { color: var(--danger); }
+.goal-detail { display: grid; gap: 6px; align-content: start; min-width: 0; padding-top: 12px; border-top: 1px solid var(--border); }
+.goal-detail p { margin: 0; overflow-wrap: anywhere; }
+.goal-detail-title { font-weight: 600; }
+@container (min-width: 720px) {
+  .goal-graph-layout { grid-template-columns: minmax(0, 1fr) minmax(240px, 320px); }
+  .goal-detail { padding: 0 0 0 12px; border-top: 0; border-left: 1px solid var(--border); }
+}
+@keyframes goal-enter { from { opacity: 0; transform: translateX(-4px); } }
+.goal-node-new { animation: goal-enter 200ms ease-out; }
+@media (prefers-reduced-motion: reduce) { .goal-node-new { animation: none; } }
 
 .copy-row { display: flex; gap: 8px; }
 .dialog.dialog-wide { width: min(760px, calc(100vw - 32px)); }

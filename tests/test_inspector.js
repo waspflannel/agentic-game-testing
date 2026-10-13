@@ -257,7 +257,7 @@ test('a changed primary goal or rebuilt plan clears the goal selection and seen 
   const same = {};
   resetGoalState(same, farmPlan());
   Object.assign(same, thread());
-  resetGoalState(same, farmPlan({ revision: 4 }));
+  resetGoalState(same, farmPlan({ revision: 8 }));
   assert.equal(same.goalSelected, 'g2', 'the same plan keeps its selection');
   assert.deepEqual([...same.goalSeen], ['g2']);
   const changed = {};

@@ -23,7 +23,7 @@ const state = {
   route: parseRoute(location.hash),
   failures: 0,
   polling: false,
-  ui: { expanded: new Map(), showAll: new Set(), lastProject: null, goalOpen: new Set(), issueOpen: new Set() },
+  ui: { expanded: new Map(), showAll: new Set(), lastProject: null, issueOpen: new Set() },
   drafts: new Map(),   // projectId -> composer draft
   readiness: null,     // { key, loading, result, error } for the open composer; probed on view open only
   isCurrent: () => true,
@@ -31,7 +31,7 @@ const state = {
   runMissing: false,
   commands: new Map(),       // `${runId}:${action}` -> { id, pending, error }
   camera: null,
-  thread: {},                // per-open-thread UI: player, instruction draft, last status key, timeline, selected tab and per-tab scroll, world view
+  thread: {},                // per-open-thread UI: player, instruction draft, last status key, timeline, selected tab and per-tab scroll, world view, selected goal node and last rendered goal nodes
   setups: new Map(),         // project ID ('' before step 1) -> setup state; long operations survive leaving the page
   settingsDirty: false,
   account: { checking: false, busy: false, error: '', login: null },  // login: { auth_url, login_id } only while sign-in is pending
@@ -890,8 +890,11 @@ function renderPanels(view, run) {
   t.lastObs = latestObservation(events, t.lastObs);
   const selectedSeq = t.tl.selected ? Number(t.tl.selected.replace('m', '')) : null;
   const selectedEvent = events.find(e => e.seq === selectedSeq) || null;
-  patchRegions(view, panelRegions(run, { latest: t.lastObs, selectedEvent, events, view: t.worldView, now: Date.now() / 1000, goalOpen: state.ui.goalOpen }));
-  updateTimes(view.querySelector('[data-region="goals"]'));
+  patchRegions(view, panelRegions(run, { latest: t.lastObs, selectedEvent, events, view: t.worldView, now: Date.now() / 1000, selectedGoal: t.goalSelected, seenNodes: t.goalSeen }));
+  const goals = view.querySelector('[data-region="goals"]');
+  updateTimes(goals);
+  // The previous render's node ids decide which nodes animate in; the first render of a thread animates none.
+  t.goalSeen = new Set([...(goals?.querySelectorAll('[data-node]') || [])].map(n => n.dataset.node));
 }
 
 // ── Activity timeline (C5) ──────────────────────────────────────────────────
@@ -1176,7 +1179,7 @@ async function onRoute() {
   if (composerProject(route, state.data)) state.readiness = null;  // Readiness probes on view open, never on the poll.
   if (route.name === 'composer' && route.query.configuration) draftFor(route.id).configurationId = route.query.configuration;
   if (route.name === 'instance' && state.thread.runId !== route.id) {
-    state.thread = { runId: route.id, player: null, instructionOpen: false, instructionText: '', statusKey: null, tl: createTimeline(), worldView: 'latest', lastObs: null, tab: null, scroll: {} };
+    state.thread = { runId: route.id, player: null, instructionOpen: false, instructionText: '', statusKey: null, tl: createTimeline(), worldView: 'latest', lastObs: null, tab: null, scroll: {}, goalSelected: null, goalSeen: null };
     state.runSlot.set(null);  // Also drops a late GET for the previous thread.
     state.runMissing = false;
   }
@@ -1308,6 +1311,9 @@ document.addEventListener('click', async event => {
     renderView();
   } else if (action === 'insp-view') {
     state.thread.worldView = target.dataset.view;
+    renderView();
+  } else if (action === 'goal-select') {
+    state.thread.goalSelected = target.dataset.node;
     renderView();
   } else if (action === 'tl-filter') {
     state.thread.tl.filter = target.dataset.filter;
@@ -1466,7 +1472,6 @@ wideSidebar.addEventListener('change', () => { sidebarDrawer.close(); syncNavTog
 document.addEventListener('toggle', event => {
   const el = event.target;
   if (el.matches?.('.tl-card > details')) fillBody(el.parentElement);
-  else if (el.dataset?.goal) el.open ? state.ui.goalOpen.add(el.dataset.goal) : state.ui.goalOpen.delete(el.dataset.goal);
   else if (el.dataset?.issue) el.open ? state.ui.issueOpen.add(el.dataset.issue) : state.ui.issueOpen.delete(el.dataset.issue);
 }, true);
 $('#view').addEventListener('scroll', () => {

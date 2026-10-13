@@ -534,6 +534,7 @@ class Coordinator:
             await asyncio.sleep(1)
 
     async def tick(self, run):
+        tick_started = time.perf_counter()
         now = time.time()
         if run["state"] == "Stopping":
             # A control command may have cancelled a tick-owned finish after it persisted Stopping.
@@ -588,7 +589,7 @@ class Coordinator:
                     ps = run["players"][player["id"]]
                     key = (run["id"], player["id"])
                     if ps["launched"] and (key not in self.tasks or self.tasks[key].done()):
-                        self.tasks[key] = asyncio.create_task(self.player_turn(run["id"], player["id"]))
+                        self.tasks[key] = asyncio.create_task(self.player_turn(run["id"], player["id"], tick_seconds=time.perf_counter() - tick_started))
 
     async def _monitor_player(self, run, player, ps, now):
         """Heartbeat, status, build pin, telemetry and readiness for one launched player; failures carry the step they hit."""
@@ -851,9 +852,9 @@ class Coordinator:
                 break
         self.save_run(run)
 
-    async def player_turn(self, run_id, player_id):
+    async def player_turn(self, run_id, player_id, tick_seconds=None):
         try:
-            return await self.structured.turn(run_id, player_id)
+            return await self.structured.turn(run_id, player_id, tick_seconds=tick_seconds)
         except asyncio.CancelledError:
             self.store.event(run_id, "agent_task_cancelled", {"player_id": player_id, "reason": "Run control or controller shutdown cancelled the agent task."})
             raise

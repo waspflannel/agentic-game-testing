@@ -1,6 +1,7 @@
 """Shared structured-play handlers for Decisions, dashboard inspection and MCP."""
 from __future__ import annotations
 
+import contextlib
 import copy
 import hashlib
 import json
@@ -43,6 +44,21 @@ def prompt_observation(observation, max_chars=28000):
     return result
 
 
+@contextlib.contextmanager
+def timed(timing, step):
+    """Add the block's wall time and one call to a turn-timing step."""
+    started = time.perf_counter()
+    try:
+        yield
+    finally:
+        timing["seconds"][step] = timing["seconds"].get(step, 0.0) + time.perf_counter() - started
+        timing["calls"][step] = timing["calls"].get(step, 0) + 1
+
+
+def json_bytes(value):
+    return len(json.dumps(value, ensure_ascii=False, default=str).encode())
+
+
 def wait_signature(observation):
     state = observation.get("state", {})
     player = state.get("player", {})
@@ -75,6 +91,7 @@ class StructuredPlayers:
         self.control_owners = {}
         self.loop_counts = {}
         self.bug_reports = {}
+        self.turn_ended_at = {}
         self.crashes_recorded = set()
 
     def _forget_turn(self, key):
@@ -467,7 +484,7 @@ class StructuredPlayers:
             LOG.exception("Could not record false completion for %s/%s", run_id, player_id)
 
     def forget_run(self, run_id):
-        for counters in (self.loop_counts, self.bug_reports):
+        for counters in (self.loop_counts, self.bug_reports, self.turn_ended_at):
             for key in [k for k in counters if k[0] == run_id]:
                 del counters[key]
         self.crashes_recorded -= {e for e in self.crashes_recorded if e[0] == run_id}
@@ -516,15 +533,16 @@ class StructuredPlayers:
                            goal_path=[{"id": g["id"], "objective": g["objective"], "completion": g["completion"]} for g in subgoals.goal_path(plan)])
         return context
 
-    async def advance_plan(self, run_id, player_id, observation, generation, current):
+    async def advance_plan(self, run_id, player_id, observation, generation, current, timing):
         """Verify on observations; infer only on expansion, changed knowledge, or failed progress."""
         run, _ = self.binding(run_id, player_id)
         plan = run.get("subgoal_plan")
         if not plan or plan["player_id"] != player_id:
             return True  # Historical multi-player/scenario runs retain their existing contract.
         previous_active = plan.get("active_goal_id")
-        completed = subgoals.reconcile(plan, observation, generation)
-        needs_plan = subgoals.needs_planning(plan)
+        with timed(timing, "plan_reconcile"):
+            completed = subgoals.reconcile(plan, observation, generation)
+            needs_plan = subgoals.needs_planning(plan)
         self.store.put("runs", run)
         if completed:
             self.store.event(run_id, "subgoals_verified", {"player_id": player_id, "goal_ids": completed,
@@ -546,11 +564,13 @@ class StructuredPlayers:
         self.status(run_id, player_id, "planning", "Finding the next achievable prerequisite for: " + context["current_goal"]["objective"], generation)
         for attempt in range(2):
             self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": revision, "context": context})
-            proposal = await self.coordinator.ai.plan_subgoals(context, run_id)
+            with timed(timing, "plan_model"):
+                proposal = await self.coordinator.ai.plan_subgoals(context, run_id)
             if not current():
                 self.store.event(run_id, "subgoal_planning_cancelled", {"player_id": player_id, "reason": "Run control changed during planning"})
                 return False
-            fresh = await self.observe(run_id, player_id)
+            with timed(timing, "plan_observe"):
+                fresh = await self.observe(run_id, player_id)
             if not current():
                 return False
             live, _ = self.binding(run_id, player_id)
@@ -560,15 +580,18 @@ class StructuredPlayers:
                 self.store.event(run_id, "subgoal_planning_cancelled", {"player_id": player_id, "reason": "Plan, game binding, or visible controls changed during planning"})
                 return False
             try:
-                revised = subgoals.apply_decision(latest_plan, proposal, context)
-                verified = subgoals.reconcile(revised, fresh, generation)
+                with timed(timing, "plan_validate"):
+                    revised = subgoals.apply_decision(latest_plan, proposal, context)
+                    verified = subgoals.reconcile(revised, fresh, generation)
                 break
             except ValueError as exc:
+                timing["counts"]["plan_rejected"] = timing["counts"].get("plan_rejected", 0) + 1
                 reason = subgoals.rejection_message(exc)
                 focus = subgoals.active_goal(latest_plan)
                 self.store.event(run_id, "subgoal_plan_rejected", {"player_id": player_id, "reason": reason, "attempt": attempt + 1,
                                  "goal_id": focus["id"], "objective": focus["objective"], "revision": revision, "proposal": proposal})
-                await self.report_planner_rejection(run_id, player_id, "turn_planning", latest_plan, proposal, reason, attempt + 1, fresh)
+                with timed(timing, "plan_rejection_report"):
+                    await self.report_planner_rejection(run_id, player_id, "turn_planning", latest_plan, proposal, reason, attempt + 1, fresh)
                 if attempt:
                     message = f"The planner proposed a plan for “{focus['objective']}” that ASHAD could not verify: {reason}"
                     self.status(run_id, player_id, "error", message, generation, last_error=message, error_at=time.time())
@@ -630,7 +653,7 @@ class StructuredPlayers:
             self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
         return False
 
-    async def turn(self, run_id, player_id):
+    async def turn(self, run_id, player_id, tick_seconds=None):
         key = (run_id, player_id)
         run, ps = self.binding(run_id, player_id)
         generation = ps["generation"]
@@ -640,6 +663,7 @@ class StructuredPlayers:
             self.pending.pop(key, None)
             self._forget_turn(key)
             self.loop_counts.pop(key, None)
+            self.turn_ended_at.pop(key, None)
             self.bug_reports.pop(key, None)
             self.generations[key] = generation
         def current():
@@ -649,32 +673,53 @@ class StructuredPlayers:
             if self.control_owners.get(key, "agent") != "agent":
                 self.status(run_id, player_id, "external_control", "An external MCP session controls this player; autonomous decisions are suspended.", generation)
             return
+        started = time.perf_counter()
+        store_before = (self.store.write_seconds, self.store.write_bytes, self.store.writes)
+        ended = self.turn_ended_at.get(key)
+        timing = {"outcome": "interrupted", "started_at": time.time(), "gap_seconds": None if ended is None else started - ended,
+                  "tick_seconds": tick_seconds, "capture_seconds": ((ps.get("worker_status") or {}).get("capture") or {}).get("last_seconds"),
+                  "context_truncated": None, "seconds": {}, "calls": {}, "counts": {}, "bytes": {}}
         try:
             previous_status = ps.get("agent_status") or {}
             # Polling a known wait must not replace its useful status with a flash of "observing".
             if key not in self.pending and key not in self.waits and key not in self.last_decisions:
                 self.status(run_id, player_id, "observing", "Reading fresh game state.", generation)
-            observation = await self.observe(run_id, player_id)
-            if key in self.pending and await self._reconcile_pending(run_id, player_id, ps, generation):
+            with timed(timing, "observe"):
+                observation = await self.observe(run_id, player_id)
+            timing["bytes"]["observation"] = json_bytes(observation)
+            if key in self.pending:
+                with timed(timing, "reconcile_pending"):
+                    turn_ends = await self._reconcile_pending(run_id, player_id, ps, generation)
+                if turn_ends:
+                    timing["outcome"] = "pending_action"
+                    return
+            if not current():
+                timing["outcome"] = "cancelled"
                 return
-            if not current() or not await self.advance_plan(run_id, player_id, observation, generation, current):
+            if not await self.advance_plan(run_id, player_id, observation, generation, current, timing):
+                timing["outcome"] = "planning"
                 return
             signature = meaningful_signature(observation)
             wait = self.waits.get(key)
             if wait and wait[2] == generation and time.time() < wait[0] and wait_signature(observation) == wait[1]:
                 self.status(run_id, player_id, "waiting", previous_status.get("detail") or ps.get("activity") or "Waiting for game state to change.", generation, wait_until=wait[0])
+                timing["outcome"] = "waiting"
                 return
             self.waits.pop(key, None)
             last = self.last_decisions.get(key)
             if not wait and last and last[2] == generation and last[0] == signature and time.time() - last[1] < 30:
                 self.status(run_id, player_id, "waiting", "Game state is unchanged; the next decision will retry within 30 seconds.", generation, wait_until=last[1] + 30)
+                timing["outcome"] = "unchanged"
                 return
             run, ps = self.binding(run_id, player_id)
             player = next(p for p in run["plan"]["players"] if p["id"] == player_id)
-            context = self.decision_context(run, player, observation)
-            context["bug_already_reported"] = self.bug_reports.get(key) == signature
-            self.store.event(run_id, "structured_decision_context", {"player_id": player_id, "context": context,
-                "full_observation": observation, "source_revision": run["build"].get("source_revision")})
+            with timed(timing, "decision_context"):
+                context = self.decision_context(run, player, observation)
+                context["bug_already_reported"] = self.bug_reports.get(key) == signature
+                self.store.event(run_id, "structured_decision_context", {"player_id": player_id, "context": context,
+                    "full_observation": observation, "source_revision": run["build"].get("source_revision")})
+            timing["bytes"].update(prompt_observation=json_bytes(context["observation"]), decision_context=json_bytes(context))
+            timing["context_truncated"] = bool(context["observation"].get("context_truncated"))
             self.last_decisions[key] = (signature, time.time(), generation)
             label = PROVIDERS[provider_of(run.get("model") or run["plan"].get("model", MODEL))]["label"]
             self.status(run_id, player_id, "thinking", f"Waiting for {label} to choose the next action.", generation)
@@ -684,13 +729,16 @@ class StructuredPlayers:
                 if not current():
                     return {"status": "cancelled"}
                 self.status(run_id, player_id, "tool", f"Using {name}.", generation)
-                result = await self.dispatch(run_id, player_id, name, args, observation, generation)
+                with timed(timing, "tool:" + name):
+                    result = await self.dispatch(run_id, player_id, name, args, observation, generation)
                 if name == "observe" and result.get("observation_id"):
                     observation = result
                     result = prompt_observation(result)
                 self.store.event(run_id, "structured_tool_result", {"player_id": player_id, "tool": name, "result": result})
                 return result
-            result = await self.coordinator.ai.player_turn(context, dispatch, current, run_id)
+            with timed(timing, "decide"):
+                result = await self.coordinator.ai.player_turn(context, dispatch, current, run_id)
+            timing["outcome"] = "decided"
             self.store.event(run_id, "agent_turn_completed", {"player_id": player_id, "duration_seconds": round(time.time() - decision_started_at, 3), "result": result})
             if current():
                 latest = self.store.require("runs", run_id)
@@ -701,11 +749,13 @@ class StructuredPlayers:
                 phase = status.get("phase")
                 if phase in {"thinking", "tool"}:
                     self.status(run_id, player_id, "ready", "Decision finished; checking the next observation.", generation, completed_at=time.time())
-                await self._loop_backstop(run_id, player_id, generation, signature, observation, result)
-                if isinstance(result, dict) and result.get("status") == "bug_reported":
-                    self.bug_reports[key] = signature
-                    await self.report_bug(run_id, player_id, result.get("report") or {}, observation)
+                with timed(timing, "issue_reports"):
+                    await self._loop_backstop(run_id, player_id, generation, signature, observation, result)
+                    if isinstance(result, dict) and result.get("status") == "bug_reported":
+                        self.bug_reports[key] = signature
+                        await self.report_bug(run_id, player_id, result.get("report") or {}, observation)
         except ProviderError as exc:
+            timing["outcome"] = "provider_error"
             if current():
                 if exc.status == "decision_needs_instructions":
                     report = exc.report or {}
@@ -725,6 +775,7 @@ class StructuredPlayers:
                 else:
                     await self.coordinator.investigate(run_id, category, exc.message, [player_id])
         except Exception as exc:
+            timing["outcome"] = "error"
             if current():
                 reason = f"{type(exc).__name__}: {exc}"
                 # Only a worker-confirmed unopened bridge gets the bounded startup retry.
@@ -734,3 +785,21 @@ class StructuredPlayers:
                 self.status(run_id, player_id, "error", reason, generation, last_error=reason, error_at=time.time())
                 self.store.event(run_id, "agent_turn_failed", {"player_id": player_id, "category": "structured_interface_failure", "error": reason})
                 await self.coordinator.investigate(run_id, "structured_interface_failure", reason, [player_id])
+        finally:
+            self._record_turn_timing(run_id, player_id, timing, started, store_before)
+
+    def _record_turn_timing(self, run_id, player_id, timing, started, store_before):
+        """One ledger row per turn; numbers only, never observation content. Never raises."""
+        try:
+            store_after = (self.store.write_seconds, self.store.write_bytes, self.store.writes)
+            seconds, written, writes = (after - before for before, after in zip(store_before, store_after))
+            payload = {**timing, "player_id": player_id, "total_seconds": time.perf_counter() - started,
+                       "store": {"seconds": round(seconds, 6), "bytes": written, "writes": writes}}
+            for field in ("total_seconds", "gap_seconds", "tick_seconds"):
+                if payload[field] is not None:
+                    payload[field] = round(payload[field], 6)
+            payload["seconds"] = {step: round(value, 6) for step, value in timing["seconds"].items()}
+            self.store.event(run_id, "agent_turn_timing", payload)
+        except Exception:
+            LOG.exception("Could not record turn timing for %s/%s", run_id, player_id)
+        self.turn_ended_at[(run_id, player_id)] = time.perf_counter()

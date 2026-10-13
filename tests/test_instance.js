@@ -234,15 +234,15 @@ test('header shows a same-provider model menu for a live run and a plain chip fo
   assert.match(meta, /data-field="run-model"/);
   assert.deepEqual([...meta.matchAll(/data-value="([^"]+)"/g)].map(x => x[1]), ['gpt-6-sol', 'gpt-6-astra']);
   assert.match(meta, /aria-selected="true"[^>]*data-value="gpt-6-astra"/);
-  assert.match(meta, /data-value="gpt-6-sol"><span class="model-option-label">GPT-6 Sol<\/span><span class="model-default">Default<\/span>/);
-  assert.equal(meta.match(/model-default/g).length, 1);
+  assert.match(meta, /data-value="gpt-6-sol"><span class="dropdown-option-label">GPT-6 Sol<\/span><span class="dropdown-default">Default<\/span>/);
+  assert.equal(meta.match(/dropdown-default/g).length, 1);
   const pop = live.match(/id="meta-pop"[^>]*>(.*)<\/div>$/s)[1];
-  assert.doesNotMatch(pop, /<select|role="listbox"|model-trigger/);
+  assert.doesNotMatch(pop, /<select|role="listbox"|dropdown-trigger/);
   assert.match(pop, /GPT-6 Astra/);
   const ended = head(run('Ended'));
-  assert.doesNotMatch(ended, /data-field="run-model"|model-trigger/);
+  assert.doesNotMatch(ended, /data-field="run-model"|dropdown-trigger/);
   assert.match(ended, /<span class="chip-text">GPT-6 Astra<\/span>/);
-  assert.doesNotMatch(head(run('Running')), /model-default/);
+  assert.doesNotMatch(head(run('Running')), /dropdown-default/);
 });
 
 test('running menu has no Save now', async () => {
@@ -347,4 +347,16 @@ test('the instruction form labels its submit by mode', async () => {
   assert.equal(form(false), '');
   assert.match(form('handback', new Set(['handback-with'])), /aria-busy="true"/);
   assert.doesNotMatch(form('handback'), /aria-busy/);
+});
+
+test('player switch is a dropdown when there are several players', async () => {
+  const { instanceState, threadRegions } = await load();
+  const regions = r => threadRegions(r, { status: instanceState(r), data: {}, ui: {}, pending: new Set(), cameraStatus: 'offline', player: 'p2', tab: 'bot' });
+  const two = run('Running', { plan: { players: [{ id: 'p1', name: 'Player 1' }, { id: 'p2', name: 'Player 2' }], transport: { mode: 'enet' } }, players: { p1: { id: 'p1' }, p2: { id: 'p2' } } });
+  const rows = regions(two).players.match(/<button [^>]*data-field="player"[^>]*>/g);
+  assert.equal(rows.length, 2);
+  const picked = rows.filter(x => x.includes('aria-selected="true"'));
+  assert.equal(picked.length, 1);
+  assert.match(picked[0], /data-value="p2"/);
+  assert.equal(regions(run('Running')).players, '');
 });

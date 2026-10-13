@@ -1,5 +1,5 @@
 // Project Issues board and issue view. Fetched on view open and Refresh only; the model and markup are pure.
-import { esc, icon, href, since, humanize, runGoal } from '../core.js';
+import { esc, icon, href, dropdownHTML, since, humanize, runGoal } from '../core.js';
 
 export const ISSUE_TYPES = [['unsupported_action', 'Unsupported action', 'Unsupported actions'], ['crash', 'Crash', 'Crashes'], ['game_bug', 'Game bug', 'Game bugs'], ['planner_rejected', 'Planner rejection', 'Planner rejections']];
 export const typeLabel = type => ISSUE_TYPES.find(([t]) => t === type)?.[1] || humanize(type);
@@ -73,9 +73,8 @@ export function issueViewRegions(view, data) {
   let examples;
   if (!r.examples.length) examples = `<p class="hint">No example was kept for this issue.</p>`;
   else {
-    const options = [...r.examples].reverse().map(ex => `<option value="${esc(ex.example_id)}"${ex === selected ? ' selected' : ''}>${esc(new Date(ex.at).toLocaleString())} · ${esc(humanize(ex.source))}</option>`).join('');
     const n = r.examples_dropped;
-    examples = `<label class="chip chip-select">${icon('list-checks')}<span class="sr-only">Example</span><select data-field="issue-example" data-key="issue-example" aria-label="Example">${options}</select></label>`
+    examples = dropdownHTML({ key: 'issue-example', field: 'issue-example', label: 'Example', iconName: 'list-checks', options: [...r.examples].reverse().map(ex => ({ id: ex.example_id, label: `${new Date(ex.at).toLocaleString()} · ${humanize(ex.source)}` })), selected: selected.example_id })
       + (n > 0 ? `<p class="hint">${n} older ${n === 1 ? 'example was' : 'examples were'} not kept.</p>` : '');
   }
   const info = selected ? issueInfoHTML(r, selected, { runIds: new Set((data?.runs || []).map(x => x.id)) }) : '';

@@ -1226,15 +1226,30 @@ function toggleSidebar() {
   syncNavToggle();
 }
 
-// Both model menus route here: the composer updates its draft (renderView re-probes readiness); the header sends a model control unless the run already uses that model.
-function chooseModel(field, model) {
+// Every chip picker routes here. The header model sends a model control; the composer fields update the draft (renderView re-probes readiness).
+function chooseOption(field, value) {
   if (field === 'run-model') {
-    const run = threadRun();
-    if (model === run.model) return;
-    command(`model:${model}`, control(run, 'model', { model }), `Model set to ${modelLabel(state.data, model)}. Applies from the next decision.`);
+    command(`model:${value}`, control(threadRun(), 'model', { model: value }), `Model set to ${modelLabel(state.data, value)}. Applies from the next decision.`);
     return;
   }
-  draftFor(composerProject(state.route, state.data)).model = model;
+  if (field === 'player') { state.thread.player = value; renderView(); return; }
+  if (field === 'ov-build') {
+    overviewFor(state.route.id).buildId = value;  // A chosen build is checked at once; that is the user's request, not a poll.
+    renderView();
+    return;
+  }
+  if (field === 'usage-model' || field === 'usage-purpose') {
+    Object.assign(state.usageUi, { [field.slice(6)]: value, limit: newUsageUi().limit });
+    renderView();
+    return;
+  }
+  if (field === 'issue-example') { if (state.issue) state.issue.exampleId = value; renderView(); return; }
+  const projectId = composerProject(state.route, state.data);
+  if (!projectId) return;
+  if (field === 'project') { location.hash = href('p', value, 'new'); return; }
+  const draft = draftFor(projectId);
+  if (field === 'configuration') draft.configurationId = value;
+  else draft[field] = value;  // model, transport
   renderView();
 }
 
@@ -1280,11 +1295,12 @@ document.addEventListener('click', async event => {
   } else if (action === 'ctl') {
     target.closest('[popover]')?.hidePopover();
     if (target.getAttribute('aria-disabled') !== 'true') onControl(target.dataset.ctl);
-  } else if (action === 'pick-model') {
+  } else if (action === 'pick-option') {
+    if (target.getAttribute('aria-disabled') === 'true') return;
     const menu = target.closest('[popover]');
     menu.hidePopover();
     document.querySelector(`[popovertarget="${menu.id}"]`)?.focus();  // patchHTML then keeps focus on the re-rendered trigger.
-    chooseModel(target.dataset.field, target.dataset.value);
+    if (target.getAttribute('aria-selected') !== 'true') chooseOption(target.dataset.field, target.dataset.value);
   } else if (action === 'thread-tab') {
     setTab(target.dataset.tab);
   } else if (action === 'instruction-cancel') {
@@ -1327,8 +1343,8 @@ document.addEventListener('keydown', event => {
     event.preventDefault();
     event.target.form.requestSubmit();
   }
-  if (event.target.classList?.contains('model-option')) {
-    const options = [...event.target.parentElement.querySelectorAll('.model-option')];
+  if (event.target.classList?.contains('dropdown-option')) {
+    const options = [...event.target.parentElement.querySelectorAll('.dropdown-option')];
     const next = nextOptionIndex(event.key, options.indexOf(event.target), options.length);
     if (next >= 0) { event.preventDefault(); options[next].focus(); }
   }
@@ -1341,9 +1357,10 @@ document.addEventListener('keydown', event => {
   }
 });
 
-// Opening a model menu focuses the selected model; `toggle` does not bubble, so listen in the capture phase.
+// Opening a dropdown focuses the selected row, or the first row when none is selected; `toggle` does not bubble, so listen in the capture phase.
 document.addEventListener('toggle', event => {
-  if (event.newState === 'open' && event.target.classList?.contains('model-menu')) event.target.querySelector('[aria-selected="true"]')?.focus();
+  if (event.newState !== 'open' || !event.target.classList?.contains('dropdown-menu')) return;
+  (event.target.querySelector('[aria-selected="true"]') || event.target.querySelector('[role="option"]'))?.focus();
 }, true);
 
 // Composer fields update the in-memory draft; the textarea itself is never re-rendered.
@@ -1388,18 +1405,6 @@ document.addEventListener('input', event => {
 
 document.addEventListener('change', event => {
   const field = event.target.dataset?.field;
-  if (field === 'player') { state.thread.player = event.target.value; renderView(); return; }
-  if (field === 'ov-build') {
-    overviewFor(state.route.id).buildId = event.target.value;  // A chosen build is checked at once; that is the user's request, not a poll.
-    renderView();
-    return;
-  }
-  if (field === 'usage-model' || field === 'usage-purpose') {
-    Object.assign(state.usageUi, { [field.slice(6)]: event.target.value, limit: newUsageUi().limit });
-    renderView();
-    return;
-  }
-  if (field === 'issue-example') { if (state.issue) state.issue.exampleId = event.target.value; renderView(); return; }
   if (field === 'setup-build') {
     const s = setupFor(state.route);
     Object.assign(s, { buildId: event.target.value, readiness: null });
@@ -1407,13 +1412,6 @@ document.addEventListener('change', event => {
     renderView();
     return;
   }
-  const projectId = composerProject(state.route, state.data);
-  if (!projectId || !['configuration', 'transport', 'project'].includes(field)) return;
-  if (field === 'project') { location.hash = href('p', event.target.value, 'new'); return; }
-  const draft = draftFor(projectId);
-  if (field === 'configuration') draft.configurationId = event.target.value;
-  else draft[field] = event.target.value;
-  renderView();
 });
 
 document.addEventListener('submit', async event => {

@@ -119,19 +119,19 @@ export const providerModels = (data, model) => {
   return options.filter(m => m.provider === provider);
 };
 
-// One model picker: a chip that opens a listbox popover. Rows mark the selected model and the default model.
-export function modelMenuHTML({ key, field, options, selected, defaultModel }) {
+// One chip picker: a chip that opens a listbox popover. Rows mark the selected value, the default (if any) and disabled values.
+export function dropdownHTML({ key, field, label, iconName, options, selected, defaultId, title, describedBy }) {
   const menuId = `${key}-menu`;
-  const label = options.find(o => o.id === selected)?.label || selected;
+  const current = options.find(o => o.id === selected)?.label ?? selected;
   const rows = options.map(o => {
     const isSelected = o.id === selected;
-    return `<button type="button" role="option" aria-selected="${isSelected}" tabindex="-1" class="menu-item model-option" data-action="pick-model" data-field="${field}" data-value="${esc(o.id)}">`
-      + `<span class="model-option-label">${esc(o.label)}</span>${o.id === defaultModel ? '<span class="model-default">Default</span>' : ''}`
-      + `${isSelected ? icon('check', 'icon model-check') : ''}</button>`;
+    return `<button type="button" role="option" aria-selected="${isSelected}" tabindex="-1" class="menu-item dropdown-option" data-action="pick-option" data-field="${field}" data-value="${esc(o.id)}"${o.disabled ? ' aria-disabled="true"' : ''}>`
+      + `<span class="dropdown-option-label">${esc(o.label)}</span>${o.id === defaultId ? '<span class="dropdown-default">Default</span>' : ''}`
+      + `${isSelected ? icon('check', 'icon dropdown-check') : ''}</button>`;
   }).join('');
-  return `<button type="button" class="chip model-trigger" popovertarget="${menuId}" aria-haspopup="listbox" data-key="${key}">`
-    + `${icon('sliders')}<span class="sr-only">Model: </span><span class="chip-text">${esc(label)}</span>${icon('chevron-down', 'icon model-chevron')}</button>`
-    + `<div id="${menuId}" popover class="popover menu model-menu" role="listbox" aria-label="Model">${rows}</div>`;
+  return `<button type="button" class="chip dropdown-trigger" popovertarget="${menuId}" aria-haspopup="listbox" data-key="${key}"${title ? ` title="${esc(title)}"` : ''}${describedBy ? ` aria-describedby="${describedBy}"` : ''}>`
+    + `${iconName ? icon(iconName) : ''}<span class="sr-only">${esc(label)}: </span><span class="chip-text">${esc(current)}</span>${icon('chevron-down', 'icon dropdown-chevron')}</button>`
+    + `<div id="${menuId}" popover class="popover menu dropdown-menu" role="listbox" aria-label="${esc(label)}">${rows}</div>`;
 }
 
 // Listbox focus movement: ArrowUp/ArrowDown clamp at the ends; Home/End jump. Returns -1 for any other key.

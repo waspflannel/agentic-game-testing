@@ -203,3 +203,16 @@ test('limits form and payload have no fixer field', async () => {
   assert.doesNotMatch(limitsSkeleton({}), /l-fixer|Fixer/);
   assert.equal('fixer_daily_minutes' in limitsPayload({ duration: '', spend: '', reserve: '1' }).body, false);
 });
+
+test('usage filters are dropdowns with an All row', async () => {
+  const { usageRegions, newUsageUi } = await usage();
+  const data = { rows: [{ timestamp: NOW, model: 'm1', purpose: 'plan' }, { timestamp: NOW, model: 'm2', purpose: 'plan' }], at: NOW };
+  const controls = ui => usageRegions(data, { ...newUsageUi(), range: 'all', ...ui }, new Map([['m1', 'Model One']]), NOW).controls;
+  const all = controls({});
+  const first = all.match(/<button [^>]*data-field="usage-model"[^>]*>.*?<\/button>/)[0];
+  assert.match(first, /data-value=""/);
+  assert.match(first, /<span class="dropdown-option-label">All models<\/span>/);
+  assert.match(all, /data-key="u-usage-model"[^>]*>.*?<span class="chip-text">All models<\/span>/);
+  assert.doesNotMatch(all, /<select/);
+  assert.match(controls({ model: 'm1' }), /data-key="u-usage-model"[^>]*>.*?<span class="chip-text">Model One<\/span>/);
+});

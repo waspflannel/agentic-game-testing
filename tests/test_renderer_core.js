@@ -108,53 +108,79 @@ test('patchHTML skips identical markup and restores focus and scroll after a rea
 });
 
 const MODEL_OPTS = [{ id: 'gpt-6-sol', label: 'GPT-6 Sol' }, { id: 'gpt-6-astra', label: 'GPT-6 Astra' }];
-const menuArgs = (over = {}) => ({ key: 'c-model', field: 'model', options: MODEL_OPTS, selected: 'gpt-6-astra', defaultModel: 'gpt-6-sol', ...over });
+const menuArgs = (over = {}) => ({ key: 'c-model', field: 'model', label: 'Model', iconName: 'sliders', options: MODEL_OPTS, selected: 'gpt-6-astra', defaultId: 'gpt-6-sol', ...over });
 const optionButtons = html => html.match(/<button type="button" role="option"[\s\S]*?<\/button>/g) || [];
 
-test('modelMenuHTML renders a trigger and a listbox of the given options', async () => {
-  const { modelMenuHTML } = await load();
-  const html = modelMenuHTML(menuArgs());
+test('dropdownHTML renders a trigger and a listbox of the given options', async () => {
+  const { dropdownHTML } = await load();
+  const html = dropdownHTML(menuArgs());
+  assert.match(html, /class="chip dropdown-trigger"/);
   assert.match(html, /popovertarget="c-model-menu"/);
   assert.match(html, /aria-haspopup="listbox"/);
   assert.match(html, /data-key="c-model"/);
+  assert.match(html, /<span class="sr-only">Model: <\/span>/);
   assert.match(html, /<span class="chip-text">GPT-6 Astra<\/span>/);
   assert.match(html, /id="c-model-menu" popover/);
-  assert.match(html, /role="listbox"/);
-  assert.match(html, /aria-label="Model"/);
+  assert.match(html, /role="listbox" aria-label="Model"/);
   assert.deepEqual([...html.matchAll(/data-value="([^"]*)"/g)].map(m => m[1]), ['gpt-6-sol', 'gpt-6-astra']);
   const opts = optionButtons(html);
   assert.equal(opts.length, 2);
-  for (const o of opts) assert.match(o, /data-action="pick-model" data-field="model"/);
+  for (const o of opts) assert.match(o, /data-action="pick-option" data-field="model"/);
   assert.doesNotMatch(html, /<select/);
 });
 
-test('modelMenuHTML marks exactly one selected option with a check and the default with a pill', async () => {
-  const { modelMenuHTML } = await load();
-  const html = modelMenuHTML(menuArgs());
+test('dropdownHTML marks exactly one selected option with a check and the default with a pill', async () => {
+  const { dropdownHTML } = await load();
+  const html = dropdownHTML(menuArgs());
   const opts = optionButtons(html);
   const selected = opts.filter(o => o.includes('aria-selected="true"'));
   assert.equal(selected.length, 1);
   assert.match(selected[0], /data-value="gpt-6-astra"/);
-  assert.equal(html.split('#i-check').length - 1, 1);
-  assert.match(selected[0], /#i-check/);
-  assert.equal(html.split('model-default').length - 1, 1);
-  assert.match(opts.find(o => o.includes('model-default')), /data-value="gpt-6-sol"/);
-  assert.doesNotMatch(modelMenuHTML(menuArgs({ defaultModel: undefined })), /model-default/);
+  assert.equal(html.split('dropdown-check').length - 1, 1);
+  assert.match(selected[0], /dropdown-check/);
+  assert.equal(html.split('dropdown-default').length - 1, 1);
+  assert.match(opts.find(o => o.includes('dropdown-default')), /data-value="gpt-6-sol"/);
+  assert.doesNotMatch(dropdownHTML(menuArgs({ defaultId: undefined })), /dropdown-default/);
 });
 
-test('modelMenuHTML escapes labels and ids', async () => {
-  const { modelMenuHTML } = await load();
-  const html = modelMenuHTML(menuArgs({ options: [{ id: 'a"b', label: '<b>"x"</b>' }], selected: 'a"b', defaultModel: undefined }));
+test('dropdownHTML escapes labels and ids', async () => {
+  const { dropdownHTML } = await load();
+  const html = dropdownHTML(menuArgs({ label: '<i>', options: [{ id: 'a"b', label: '<b>"x"</b>' }], selected: 'a"b', defaultId: undefined }));
   assert.ok(html.includes('&lt;b&gt;&quot;x&quot;&lt;/b&gt;'));
   assert.ok(html.includes('data-value="a&quot;b"'));
+  assert.ok(html.includes('aria-label="&lt;i&gt;"'));
   assert.ok(!html.includes('<b>'));
+  assert.ok(!html.includes('<i>'));
 });
 
-test('modelMenuHTML falls back to the raw id when the selected model is not listed', async () => {
-  const { modelMenuHTML } = await load();
-  const html = modelMenuHTML(menuArgs({ selected: 'opus' }));
+test('dropdownHTML falls back to the raw id when the selected value is not listed', async () => {
+  const { dropdownHTML } = await load();
+  const html = dropdownHTML(menuArgs({ selected: 'opus' }));
   assert.match(html, /<span class="chip-text">opus<\/span>/);
   assert.doesNotMatch(html, /aria-selected="true"/);
+});
+
+test('dropdownHTML marks disabled options and omits optional parts when not given', async () => {
+  const { dropdownHTML } = await load();
+  const args = { key: 'k', field: 'f', label: 'L', options: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B', disabled: true }], selected: 'a' };
+  const html = dropdownHTML(args);
+  assert.equal(html.split('aria-disabled="true"').length - 1, 1);
+  assert.match(optionButtons(html).find(o => o.includes('aria-disabled="true"')), /data-value="b"/);
+  assert.doesNotMatch(html, /dropdown-default/);
+  assert.match(html, /data-key="[^"]*"><span class="sr-only">/);
+  const trigger = html.match(/<button type="button" class="chip dropdown-trigger"[^>]*>/)[0];
+  assert.doesNotMatch(trigger, / title=/);
+  assert.doesNotMatch(trigger, /aria-describedby/);
+  const full = dropdownHTML({ ...args, title: 'T"', describedBy: 'note' });
+  const fullTrigger = full.match(/<button type="button" class="chip dropdown-trigger"[^>]*>/)[0];
+  assert.match(fullTrigger, /title="T&quot;"/);
+  assert.match(fullTrigger, /aria-describedby="note"/);
+});
+
+test('dropdownHTML labels the trigger with an empty-id option', async () => {
+  const { dropdownHTML } = await load();
+  const html = dropdownHTML(menuArgs({ options: [{ id: '', label: 'All models' }, { id: 'x', label: 'X' }], selected: '' }));
+  assert.match(html, /\.?chip-text">All models</);
 });
 
 test('nextOptionIndex clamps arrows and jumps with Home/End', async () => {

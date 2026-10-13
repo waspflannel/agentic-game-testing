@@ -1,5 +1,5 @@
 // Empty workspace and the new-instance composer (spec §8.1, §8.2). Markup and the start flow are pure; app.js owns the DOM.
-import { esc, icon, href, newId, modelMenuHTML, ApiError } from '../core.js';
+import { esc, icon, href, newId, dropdownHTML, ApiError } from '../core.js';
 
 const enc = encodeURIComponent;
 const chipDot = tone => `<span class="dot dot-${tone}" aria-hidden="true"></span>`;
@@ -107,20 +107,15 @@ export function noConfigurationsHTML(project) {
 
 export function composerRegions(m, draft) {
   const name = esc(m.project.name || m.project.id);
-  const projectChip = `<label class="chip chip-select">${icon('folder')}<span class="sr-only">Project</span>`
-    + `<select data-field="project" data-key="c-project" aria-label="Project">${m.projects.map(p => `<option value="${esc(p.id)}"${p.id === m.project.id ? ' selected' : ''}>${esc(p.name || p.id)}</option>`).join('')}</select></label>`;
+  const projectChip = dropdownHTML({ key: 'c-project', field: 'project', label: 'Project', iconName: 'folder', options: m.projects.map(p => ({ id: p.id, label: p.name || p.id })), selected: m.project.id });
   const desktopChip = m.desktop.href
     ? `<a class="chip chip-${m.desktop.tone}" href="${esc(m.desktop.href)}" data-key="c-desktop">${m.desktop.tone === 'attention' ? icon('alert') : chipDot(m.desktop.tone)}<span class="chip-text">${esc(m.desktop.label)}</span></a>`
     : `<span class="chip chip-${m.desktop.tone}">${chipDot(m.desktop.tone)}<span class="chip-text">${esc(m.desktop.label)}</span></span>`;
   const recheck = `<button type="button" class="icon-btn icon-btn-sm" data-action="composer-recheck" data-key="c-recheck" aria-label="Re-check readiness" title="Re-check readiness">${icon('refresh')}</button>`;
 
-  const agentChip = `<label class="chip chip-select" title="${esc(m.agentOptions.find(o => o.id === m.agent.id)?.title || '')}">${icon('bot')}<span class="sr-only">Configuration</span>`
-    + `<select data-field="configuration" data-key="c-agent" aria-label="Project configuration">${m.agentOptions.map(o => `<option value="${esc(o.id)}"${o.id === m.agent.id ? ' selected' : ''}>${esc(o.label)}</option>`).join('')}</select></label>`;
-  const modelChip = modelMenuHTML({ key: 'c-model', field: 'model', options: m.modelOptions, selected: m.model, defaultModel: m.defaultModel });
-  const transportChip = `<label class="chip chip-select"${m.steam.enabled ? '' : ` title="${esc(m.steam.reason)}"`}>${icon('network')}<span class="sr-only">Transport</span>`
-    + `<select data-field="transport" data-key="c-transport" aria-label="Transport" aria-describedby="composer-steam-note">`
-    + `<option value="enet"${draft.transport === 'enet' ? ' selected' : ''}>ENet</option>`
-    + `<option value="steam"${draft.transport === 'steam' ? ' selected' : ''}${m.steam.enabled ? '' : ' disabled'}>Steam${m.steam.enabled ? '' : ' (unavailable)'}</option></select></label>`;
+  const agentChip = dropdownHTML({ key: 'c-agent', field: 'configuration', label: 'Project configuration', iconName: 'bot', options: m.agentOptions, selected: m.agent.id, title: m.agentOptions.find(o => o.id === m.agent.id)?.title });
+  const modelChip = dropdownHTML({ key: 'c-model', field: 'model', label: 'Model', iconName: 'sliders', options: m.modelOptions, selected: m.model, defaultId: m.defaultModel });
+  const transportChip = dropdownHTML({ key: 'c-transport', field: 'transport', label: 'Transport', iconName: 'network', options: [{ id: 'enet', label: 'ENet' }, { id: 'steam', label: m.steam.enabled ? 'Steam' : 'Steam (unavailable)', disabled: !m.steam.enabled }], selected: draft.transport, title: m.steam.enabled ? '' : m.steam.reason, describedBy: 'composer-steam-note' });
   const start = `<button type="submit" class="btn btn-primary btn-round" data-key="c-start" aria-label="Start instance" title="Start instance (Ctrl+Enter)"`
     + `${m.canStart ? '' : ' aria-disabled="true"'}${draft.busy ? ' aria-busy="true"' : ''}>${icon(draft.busy ? 'loader' : 'arrow-up', draft.busy ? 'icon spin' : 'icon')}</button>`;
 

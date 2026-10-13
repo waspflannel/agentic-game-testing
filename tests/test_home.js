@@ -133,7 +133,10 @@ test('Steam never enables from stale account rows or App ID 480', async () => {
     assert.equal(m.steam.enabled, false);
     assert.equal(m.canStart, false);
     assert.match(m.blockers.join(' '), /No ENet fallback/);
-    assert.match(composerRegions(m, draft).bar, /<option value="steam" selected disabled>Steam \(unavailable\)<\/option>/);
+    const bar = composerRegions(m, draft).bar;
+    assert.match(bar, /data-key="c-transport"[^>]*aria-describedby="composer-steam-note"/);
+    assert.match(bar, /data-value="steam" aria-disabled="true"><span class="dropdown-option-label">Steam \(unavailable\)</);
+    assert.match(bar, /data-key="c-transport"[^>]*>.*?<span class="chip-text">Steam \(unavailable\)</);
   }
   const fresh = composerModel(stale, 'p', draft, { key: 'p|b|a|gpt-6-astra', result: { ...ready, steam: { ready: true } } });
   assert.equal(fresh.steam.enabled, true, 'only a fresh probe for this build enables Steam');
@@ -157,8 +160,8 @@ test('long agent and build names stay on one composer row', async () => {
   const d = data({ builds: [{ id: 'b', name: long, project_id: 'p' }], configurations: [{ ...data().configurations[0], name: `${long} agent` }] });
   const draft = { ...newDraft(), configurationId: 'a' };
   const r = composerRegions(composerModel(d, 'p', draft, { key: 'p|b|a|gpt-6-astra', result: ready }), draft);
-  assert.match(r.bar, /<option value="a" selected>Agronauts DEMO - Decisions and corrected input scaling agent<\/option>/, 'the chip shows the name; the model is in the summary');
-  assert.match(r.bar, /<label class="chip chip-select" title="Agronauts DEMO[^"]* agent · build Agronauts DEMO[^"]*">/);
+  assert.match(r.bar, /data-key="c-agent" title="Agronauts DEMO[^"]* agent · build Agronauts DEMO[^"]*">/);
+  assert.match(r.bar, /data-key="c-agent"[^>]*>.*?<span class="chip-text">Agronauts DEMO - Decisions and corrected input scaling agent<\/span>/, 'the chip shows the name; the model is in the summary');
   assert.match(r.bar, /<span class="composer-summary" title="build Agronauts DEMO[^"]*· Fresh world">/);
   assert.doesNotMatch(r.status, /class="note"[^>]*id="composer-steam-note"/, 'with ENet chosen, the Steam reason is not shown as a note');
   assert.match(r.status, /<span class="sr-only" id="composer-steam-note">/, 'but stays available to assistive tech');
@@ -213,12 +216,12 @@ test('composer offers every model and marks the server default model as Default'
   const draft = { ...newDraft(), configurationId: 'a' };
   const bar = composerRegions(composerModel(data(), 'p', draft, null), draft).bar;
   assert.doesNotMatch(bar, /<select data-field="model"/);
-  const options = [...bar.matchAll(/<button [^>]*role="option"[^>]*data-action="pick-model"[^>]*>.*?<\/button>/g)].map(x => x[0]);
+  const options = [...bar.matchAll(/<button [^>]*role="option"[^>]*data-action="pick-option"[^>]*>.*?<\/button>/g)].map(x => x[0]).filter(o => o.includes('data-field="model"'));
   assert.deepEqual(options.map(o => o.match(/data-value="([^"]+)"/)[1]), data().model_options.map(m => m.id));
   const astra = options.find(o => o.includes('data-value="gpt-6-astra"'));
   assert.match(astra, /aria-selected="true"/);
-  assert.match(astra, /model-default">Default</);
-  assert.equal(options.filter(o => o.includes('model-default')).length, 1);
+  assert.match(astra, /dropdown-default">Default</);
+  assert.equal(options.filter(o => o.includes('dropdown-default')).length, 1);
   assert.match(bar, /<span class="chip-text">GPT-6 Astra<\/span>/);
   const other = { ...draft, model: 'opus' };
   const bar2 = composerRegions(composerModel(data(), 'p', other, null), other).bar;
@@ -268,4 +271,14 @@ test('composer bar has no Fixes chip and startInstance sends no fix_mode', async
   const f = fakeApi({ '/api/instances': { id: 'r1' } });
   await startInstance(await draftWith('Craft'), 'p', f.api);
   assert.equal('fix_mode' in f.posts()[0].body, false);
+});
+
+test('composer bar has no native selects', async () => {
+  const { composerModel, composerRegions, newDraft } = await load();
+  const draft = { ...newDraft(), configurationId: 'a' };
+  const regions = composerRegions(composerModel(data(), 'p', draft, { key: 'p|b|a|gpt-6-astra', result: ready }), draft);
+  assert.doesNotMatch(regions.chips + regions.bar, /<select/);
+  for (const key of ['c-project', 'c-agent', 'c-model', 'c-transport']) {
+    assert.match(regions.chips + regions.bar, new RegExp(`class="chip dropdown-trigger"[^>]*data-key="${key}"`));
+  }
 });

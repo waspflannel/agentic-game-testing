@@ -480,7 +480,7 @@ function renderSettings(view) {
   let key = `settings:${section}`, inner, regions;
   if (section === 'account') {
     inner = accountSkeleton();
-    regions = accountRegions({ ai: state.data.ai, claude: state.data.ai_claude, ...state.account, blocker: accountBlocker(state.data, controlsActive()), modelLabel: (state.data.model_options || []).find(m => m.id === state.data.ai?.model)?.label });
+    regions = accountRegions({ ai: state.data.ai, claude: state.data.ai_claude, grok: state.data.ai_grok, ...state.account, blocker: accountBlocker(state.data, controlsActive()), modelLabel: (state.data.model_options || []).find(m => m.id === state.data.ai?.model)?.label });
   } else if (section === 'desktops') {
     const edit = (state.data.workers || []).some(w => w.id === query.edit) ? query.edit : '';
     key += `:${edit}`;
@@ -537,7 +537,7 @@ async function refreshAccount() {
   a.checking = true;
   renderView();
   const errors = [];
-  for (const [key, path] of [['ai', 'codex'], ['ai_claude', 'claude']]) {
+  for (const [key, path] of [['ai', 'codex'], ['ai_claude', 'claude'], ['ai_grok', 'grok']]) {
     try { state.data[key] = await api(`/api/settings/${path}/status`); }
     catch (error) { errors.push(error.message); }
   }

@@ -137,6 +137,8 @@ def validate_plan(raw, store, check_credentials=False):
             message = status.get("message", "Refresh sign-in status to verify subscription access.")
             if provider == "claude":
                 errors.append(f"Connect Claude (paste a token from claude setup-token) and verify access to {plan.model} before Launch. " + message)
+            elif provider == "grok":
+                errors.append(f"Sign in to Grok Build (run the command in Settings › Account yourself) and verify access to {plan.model} before Launch. " + message)
             else:
                 errors.append(f"Connect Codex with ChatGPT and verify access to {plan.model} before Launch. " + message)
     if plan.limits.duration_seconds is None:

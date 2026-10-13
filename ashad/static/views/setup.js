@@ -126,7 +126,7 @@ export function controlsProgressHTML(op, now) {
 export const elapsed = seconds => { const s = Math.max(0, Math.floor(seconds)); return `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, '0')}s`; };
 const noteHTML = (kind, text, extra = '') => `<p class="note${kind ? ` note-${kind}` : ''}"${kind === 'error' ? ' data-announce' : ''}>${icon(kind === 'error' ? 'alert' : 'info')}<span>${text}</span>${extra}</p>`;
 
-const PROVIDER_LABELS = { claude: 'Claude', codex: 'Codex' };
+const PROVIDER_LABELS = { claude: 'Claude', codex: 'Codex', grok: 'Grok' };
 const providersSetText = ids => ids?.length ? `${ids.map(id => PROVIDER_LABELS[id] || id).join(' and ')} set` : 'AI provider set';
 
 // Desktop readiness checklist, shared with the project overview. record: { loading, result, error, at }.

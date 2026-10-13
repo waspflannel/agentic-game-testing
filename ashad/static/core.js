@@ -119,14 +119,14 @@ export const providerModels = (data, model) => {
   return options.filter(m => m.provider === provider);
 };
 
-// One chip picker: a chip that opens a listbox popover. Rows mark the selected value, the default (if any) and disabled values.
+// One chip picker: a chip that opens a listbox popover. Rows mark the selected value, an optional note, the default (if any) and disabled values.
 export function dropdownHTML({ key, field, label, iconName, options, selected, defaultId, title, describedBy }) {
   const menuId = `${key}-menu`;
   const current = options.find(o => o.id === selected)?.label ?? selected;
   const rows = options.map(o => {
     const isSelected = o.id === selected;
     return `<button type="button" role="option" aria-selected="${isSelected}" tabindex="-1" class="menu-item dropdown-option" data-action="pick-option" data-field="${field}" data-value="${esc(o.id)}"${o.disabled ? ' aria-disabled="true"' : ''}>`
-      + `<span class="dropdown-option-label">${esc(o.label)}</span>${o.id === defaultId ? '<span class="dropdown-default">Default</span>' : ''}`
+      + `<span class="dropdown-option-label">${esc(o.label)}</span>${o.note ? `<span class="dropdown-note">${esc(o.note)}</span>` : ''}${o.id === defaultId ? '<span class="dropdown-default">Default</span>' : ''}`
       + `${isSelected ? icon('check', 'icon dropdown-check') : ''}</button>`;
   }).join('');
   return `<button type="button" class="chip dropdown-trigger" popovertarget="${menuId}" aria-haspopup="listbox" data-key="${key}"${title ? ` title="${esc(title)}"` : ''}${describedBy ? ` aria-describedby="${describedBy}"` : ''}>`

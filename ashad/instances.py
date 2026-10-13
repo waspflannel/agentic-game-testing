@@ -5,15 +5,19 @@ from typing import Literal
 from pydantic import Field
 
 from .game_controls import GameControls
-from .models import ACTIVE_STATES, CLAUDE_MODEL, MODEL, Contract, Plan
+from .models import ACTIVE_STATES, CLAUDE_MODEL, GROK_MODEL, MODEL, Contract, Plan
 from .projects import Projects
 
 
 def default_model(ai):
-    """Configurations own no model: prefer the connected Codex subscription, then Claude."""
+    """Configurations own no model: prefer the connected Codex subscription, then Claude, then Grok."""
     if ai.status.get("status") == "ready":
         return MODEL
-    return CLAUDE_MODEL if ai.claude_status.get("status") == "ready" else MODEL
+    if ai.claude_status.get("status") == "ready":
+        return CLAUDE_MODEL
+    if ai.grok_status.get("status") == "ready":
+        return GROK_MODEL
+    return MODEL
 
 
 class InstanceRequest(Contract):

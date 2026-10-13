@@ -15,7 +15,7 @@ export function settingsSkeleton(section, inner) {
 const head = (title, lede) => `<div class="page-head"><h1>${esc(title)}</h1>${lede ? `<p>${esc(lede)}</p>` : ''}</div>`;
 
 // ── Account ─────────────────────────────────────────────────────────────────
-const AI_LABELS = { ready: 'Signed in', configuration_required: 'Not signed in', login_pending: 'Sign-in pending', not_validated: 'Not checked yet',
+const AI_LABELS = { ready: 'Signed in', configuration_required: 'Not signed in', cli_missing: 'CLI missing', login_pending: 'Sign-in pending', not_validated: 'Not checked yet',
   invalid_authentication: 'Sign-in expired', model_unavailable: 'Model unavailable', connection_failure: 'Cannot reach provider', rate_limited: 'Rate limited', provider_failure: 'Provider error' };
 
 // Only the official HTTPS sign-in hosts the main process also allows; anything else is never offered.
@@ -37,7 +37,7 @@ export function accountBlocker(data, controls) {
   return '';
 }
 
-// a: { ai, claude, login, blocker, checking, busy, error }. The sign-in link exists only while a login is pending.
+// a: { ai, claude, grok, login, blocker, checking, busy, error }. The sign-in link exists only while a login is pending.
 export function accountRegions(a) {
   const ai = a.ai || {};
   const status = ai.status || 'not_validated';
@@ -66,17 +66,32 @@ export function accountRegions(a) {
     + `<button type="button" class="btn btn-secondary" data-action="claude-token-remove" data-key="claude-remove"${cDisabled}>Remove token</button></div></form>`
     + (a.blocker ? `<p class="note">${icon('info')}<span>${esc(a.blocker)}</span></p>` : '')
     + `<p class="hint">Personal use of your own subscription through the unmodified Claude CLI. See Anthropic's legal and compliance terms.</p>${errorNote(a.claudeError)}`;
+  const grok = a.grok || {};
+  const gStatus = grok.status || 'not_validated';
+  const gTone = gStatus === 'ready' ? 'live' : 'attention';
+  const gFacts = [['Status', badge({ tone: gTone, label: AI_LABELS[gStatus] || gStatus })], ['Billing', 'SuperGrok or X Premium+ subscription']];
+  let grokActions = '';
+  if (gStatus === 'cli_missing') {
+    grokActions = `<div class="signin-step"><p>Install Grok Build yourself, then Refresh status.</p><pre class="mono grok-command">${esc(grok.install_command)}</pre></div>`;
+  } else if (gStatus !== 'ready' && grok.login_command) {
+    grokActions = `<div class="signin-step"><p>Run this yourself in a terminal, then Refresh status.</p><pre class="mono grok-command">${esc(grok.login_command)}</pre><p class="hint">No browser on this machine? Add --device-code.</p></div>`;
+  } else if (gStatus === 'ready') {
+    grokActions = `<p class="hint">To sign out, run <code>grok logout</code> with the same GROK_HOME.</p>`;
+  }
   return {
     'claude-status': `<dl class="kv">${cFacts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>${claude.message ? `<p class="hint">${esc(claude.message)}</p>` : ''}`,
     'claude-actions': claudeActions,
+    'grok-status': `<dl class="kv">${gFacts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>${grok.message ? `<p class="hint">${esc(grok.message)}</p>` : ''}`,
+    'grok-actions': grokActions,
     status: `<dl class="kv">${facts.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join('')}</dl>${ai.message ? `<p class="hint">${esc(ai.message)}</p>` : ''}`,
     actions: `<div class="btn-row">${actions.join('')}</div>${a.blocker && !pending ? `<p class="note">${icon('info')}<span>${esc(a.blocker)}</span></p>` : ''}${link}${errorNote(a.error)}`,
   };
 }
 
-export const accountSkeleton = () => head('Account', 'ASHAD uses your ChatGPT (Codex) or Claude subscription. There are no API keys.')
+export const accountSkeleton = () => head('Account', 'ASHAD uses your ChatGPT (Codex), Claude or Grok subscription. There are no API keys.')
   + `<section class="card settings-card"><h2 class="card-title">ChatGPT</h2><div data-region="status"></div><div data-region="actions" class="settings-actions"></div></section>`
-  + `<section class="card settings-card"><h2 class="card-title">Claude</h2><div data-region="claude-status"></div><div data-region="claude-actions" class="settings-actions"></div></section>`;
+  + `<section class="card settings-card"><h2 class="card-title">Claude</h2><div data-region="claude-status"></div><div data-region="claude-actions" class="settings-actions"></div></section>`
+  + `<section class="card settings-card"><h2 class="card-title">Grok</h2><div data-region="grok-status"></div><div data-region="grok-actions" class="settings-actions"></div></section>`;
 
 // ── Desktops ────────────────────────────────────────────────────────────────
 export const leaseOf = (data, kind, id) => (data?.leases || []).find(l => l.kind === kind && l.resource_id === id);

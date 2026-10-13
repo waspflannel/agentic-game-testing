@@ -1,4 +1,4 @@
-"""Subscription-backed Codex planning and selection; action arguments stay local and bounded."""
+"""Subscription-backed planning and selection; action arguments stay local and bounded."""
 from __future__ import annotations
 
 import asyncio
@@ -9,8 +9,9 @@ import time
 
 from .codex_backend import CodexBackend, CodexError
 from .claude_backend import ClaudeBackend, ClaudeError
+from .grok_backend import GrokBackend, GrokError
 from .credentials import Credentials
-from .models import CLAUDE_MODEL, MODEL, PROVIDERS, SUPPORTED_MODELS, provider_of
+from .models import CLAUDE_MODEL, GROK_MODEL, MODEL, PROVIDERS, SUPPORTED_MODELS, provider_of
 from .prompts import SOURCE_NOTES_LIMIT, TUNING_MANUAL_LIMIT, TUNING_MINIMUM_BYTES
 from .store import uid
 from .subgoals import PlanningDecision
@@ -150,19 +151,28 @@ def capability_summary(observation):
 
 
 class OpenAI:
-    def __init__(self, store, credentials=None, *, backend=None, claude_backend=None):
+    def __init__(self, store, credentials=None, *, backend=None, claude_backend=None, grok_backend=None):
         self.store = store
         self.backend = backend if backend is not None else CodexBackend(store)
         self.claude_backend = claude_backend if claude_backend is not None else ClaudeBackend(store, credentials or Credentials())
+        self.grok_backend = grok_backend if grok_backend is not None else GrokBackend(store)
         self.claude_status = {"configured": False, "status": "not_validated", "model": CLAUDE_MODEL,
                               "api": "claude", "auth_method": "claude_oauth_token",
                               "message": "Check the Claude token in Settings › Account."}
+        self.grok_status = {"configured": False, "status": "not_validated", "model": GROK_MODEL,
+                            "api": "grok", "auth_method": "grok_cli_login",
+                            "message": "Check Grok sign-in in Settings › Account."}
         self.status = {"configured": False, "status": "not_validated", "model": MODEL,
                        "api": "codex", "auth_method": "chatgpt",
                        "message": "Check Codex ChatGPT sign-in in AI Settings."}
 
     def _backend(self, model):
-        return self.claude_backend if provider_of(model) == "claude" else self.backend
+        provider = provider_of(model)
+        if provider == "claude":
+            return self.claude_backend
+        if provider == "grok":
+            return self.grok_backend
+        return self.backend
 
     @staticmethod
     def _checked_model(model):
@@ -262,7 +272,7 @@ class OpenAI:
         except asyncio.CancelledError:
             diagnostic["status"] = "request_cancelled"
             raise
-        except (CodexError, ClaudeError) as exc:
+        except (CodexError, ClaudeError, GrokError) as exc:
             data = exc.selection
             if isinstance(data, dict):
                 diagnostic.update(thread_id=data.get("thread_id"), turn_id=data.get("turn_id"))
@@ -340,11 +350,13 @@ class OpenAI:
         pricing = PROVIDERS[provider]["pricing"]
         try:
             status = await self._backend(model).status(model)
-        except (CodexError, ClaudeError) as exc:
+        except (CodexError, ClaudeError, GrokError) as exc:
             status = {"configured": False, "status": exc.status, "api": pricing["api"], "auth_method": pricing["auth_method"],
                       "model": model, "available_models": [], "message": exc.message}
         if provider == "claude":
             self.claude_status = status
+        elif provider == "grok":
+            self.grok_status = status
         else:
             self.status = status
         self.store.put("settings", status, PROVIDERS[provider]["status_key"])
@@ -353,6 +365,7 @@ class OpenAI:
     async def close(self):
         await self.backend.close()
         await self.claude_backend.close()
+        await self.grok_backend.close()
 
 
     async def _stuck_report(self, evidence, observation, run_id):

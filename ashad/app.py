@@ -18,9 +18,10 @@ from fastapi.staticfiles import StaticFiles
 from .ai import OpenAI, ProviderError, SUBSCRIPTION_PRICING
 from .claude_backend import ClaudeError
 from .codex_backend import CodexError
+from .grok_backend import GrokError
 from .coordinator import Coordinator, InstanceConflict
 from .credentials import Credentials
-from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, provider_of, AI_API, ACTIVE_STATES, RecalculateGoalsRequest, IssueStatusRequest
+from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, GROK_MODEL, PROVIDERS, provider_of, ACTIVE_STATES, RecalculateGoalsRequest, IssueStatusRequest
 from . import repair_tasks
 from .repository import Repository, sha256_file
 from .reports import generate_report
@@ -76,7 +77,7 @@ def build_record(path, name=None, build_id=None):
     return manifest
 
 
-def create_app(data_root, credentials=None, start_services=True, ai_backend=None, claude_backend=None, controller_lock=None):
+def create_app(data_root, credentials=None, start_services=True, ai_backend=None, claude_backend=None, grok_backend=None, controller_lock=None):
     store = Store(data_root)
     credentials = credentials or Credentials()
     if not store.get("settings", "main"):
@@ -87,11 +88,11 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         settings["pricing"] = SUBSCRIPTION_PRICING
         store.put("settings", settings)
     previous_status = store.get("settings", "ai_status", {})
-    if previous_status and previous_status.get("api") != AI_API:
+    if previous_status and previous_status.get("api") != SUBSCRIPTION_PRICING["api"]:
         store.put("settings", {"configured": False, "status": "configuration_required", "model": MODEL,
-                  "api": AI_API, "auth_method": "chatgpt", "billing": "subscription",
+                  "api": SUBSCRIPTION_PRICING["api"], "auth_method": "chatgpt", "billing": "subscription",
                   "message": "Sign in with ChatGPT in AI Settings to connect your Codex subscription."}, "ai_status")
-    ai = OpenAI(store, credentials, backend=ai_backend, claude_backend=claude_backend)
+    ai = OpenAI(store, credentials, backend=ai_backend, claude_backend=claude_backend, grok_backend=grok_backend)
     migrate_configuration_names(store)
     migrate_tuned_configurations(store)
     retire_fixer(store)
@@ -110,6 +111,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             if start_services:
                 await ai.validate()
                 await ai.validate(CLAUDE_MODEL)
+                await ai.validate(GROK_MODEL)
                 tasks.append(asyncio.create_task(coordinator.loop()))
                 tasks.append(asyncio.create_task(heartbeats()))
             async with game_mcp.server.session_manager.run():
@@ -200,12 +202,13 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
     @app.exception_handler(ProviderError)
     @app.exception_handler(CodexError)
     @app.exception_handler(ClaudeError)
+    @app.exception_handler(GrokError)
     async def provider(request, exc):
         return JSONResponse({"detail": exc.message, "status": exc.status}, status_code=409 if exc.status == "configuration_required" else 502)
 
     @app.get("/api/health")
     async def health():
-        return {"status": "ok", "model": MODEL, "api": AI_API, "local_only": True}
+        return {"status": "ok", "providers": list(PROVIDERS), "local_only": True}
 
     @app.get("/api/runs/{run_id}/players/{player_id}/context")
     async def player_context(run_id: str, player_id: str):
@@ -261,9 +264,9 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         builds, workers = store.list("builds"), store.list("workers")
         # Persisted account-status rows are history, not current authentication.
         # In particular an import/restart must validate this backend's own home.
-        ai_status = {**ai.status, "api": AI_API}
+        ai_status = {**ai.status, "api": SUBSCRIPTION_PRICING["api"]}
         model_options = [dict(o) for o in MODEL_OPTIONS]
-        return {"settings": settings, "ai": ai_status, "ai_claude": ai.claude_status, "model_options": model_options, "default_model": default_model(ai), "builds": builds, "workers": workers, "accounts": store.list("accounts"), "configurations": store.list("configurations"), "runs": store.list("runs"), "usage_count": store.count("usage"), "leases": store.leases(), "projects": store.list("projects"),
+        return {"settings": settings, "ai": ai_status, "ai_claude": ai.claude_status, "ai_grok": ai.grok_status, "model_options": model_options, "default_model": default_model(ai), "builds": builds, "workers": workers, "accounts": store.list("accounts"), "configurations": store.list("configurations"), "runs": store.list("runs"), "usage_count": store.count("usage"), "leases": store.leases(), "projects": store.list("projects"),
                 "instance_slot": instance_slot(),
                 "workspace_import": {"interrupted": coordinator.import_interrupted()}}
 
@@ -306,7 +309,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
                 status = await ai.validate(model)
                 return {"ready": status.get("configured") is True and status.get("status") == "ready",
                         "status": status.get("status", "unknown"), "message": status.get("message", "Unknown AI connection"), "model": model}
-            except (ProviderError, CodexError, ClaudeError) as exc:
+            except (ProviderError, CodexError, ClaudeError, GrokError) as exc:
                 return {"ready": False, "status": exc.status, "message": exc.message, "model": model}
 
         Projects(store).project_for_build(build_id, project_id)
@@ -328,10 +331,11 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         if model:
             provider = await provider_check(Plan(model=model).model)
             provider["providers"] = [provider_of(provider["model"])] if provider["ready"] else []
-        else:  # No model chosen yet: either connected subscription is enough.
-            checks = await asyncio.gather(provider_check(MODEL), provider_check(CLAUDE_MODEL))
+        else:  # No model chosen yet: any connected subscription is enough.
+            checks = await asyncio.gather(provider_check(MODEL), provider_check(CLAUDE_MODEL), provider_check(GROK_MODEL))
             ready = [check for check in checks if check["ready"]]
-            providers = sorted(provider_of(check["model"]) for check in ready)  # fixed order: claude, codex
+            order = {"claude": 0, "codex": 1, "grok": 2}
+            providers = sorted((provider_of(check["model"]) for check in ready), key=order.__getitem__)  # fixed order: claude, codex, grok
             provider = {**(ready[0] if ready else {**checks[0], "message": "Set up AI in Settings › Account."}), "providers": providers}
         environments = []
         if build_validation["ready"]:
@@ -660,6 +664,10 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
     @app.get("/api/settings/claude/status")
     async def claude_status():
         return await ai.validate(CLAUDE_MODEL)
+
+    @app.get("/api/settings/grok/status")
+    async def grok_status():
+        return await ai.validate(GROK_MODEL)
 
     @app.post("/api/settings/claude/token")
     async def claude_token_save(body: dict):

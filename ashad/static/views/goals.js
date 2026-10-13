@@ -44,12 +44,14 @@ export function goalGraph(plan, events) {
   return { rootId, nodes, children };
 }
 
+const jumpChip = (label, seq) => `<button type="button" class="chip" data-action="tl-jump" data-seq="${seq}">${label} #${seq}</button>`;
+
 // Planning evidence: the card that retained the goal's source observation. Verification: the subgoals_verified card naming it.
 function goalLinks(goal, events) {
   const plannedAt = goal.source_observation?.observation_id;
   const planned = plannedAt && events.find(e => observationOf(e)?.observation_id === plannedAt);
   const verified = events.find(e => e.kind === 'subgoals_verified' && e.payload?.goal_ids?.includes(goal.id));
-  const link = (label, e, id) => (e ? `<button type="button" class="chip" data-action="tl-jump" data-seq="${e.seq}">${label} #${e.seq}</button>`
+  const link = (label, e, id) => (e ? jumpChip(label, e.seq)
     : id ? `<span class="chip mono" title="Not in the loaded activity">${label} ${esc(short(id))}</span>` : '');
   return [link('Planned from', planned, plannedAt), link('Verified', verified, goal.completion_evidence?.observation_id)].filter(Boolean).join('');
 }
@@ -88,23 +90,6 @@ export function planHistory(events) {
 const primaryHTML = (plan, root) => `<p class="section-title">Primary goal</p><p class="goal-primary">${esc(plan.primary_goal ?? root?.objective)}</p>`
   + `<p class="insp-dim">Judged by you, not by ASHAD. Plan revision ${plan.revision ?? 0}.</p>`;
 
-function workingNowHTML(plan, nodes, rootId, run) {
-  const instruction = run.recovery_instruction ? `<p class="insp-dim">Your instruction: ${esc(run.recovery_instruction)}</p>` : '';
-  const active = nodes.get(plan.active_goal_id);
-  const open = '<section class="goal-now" aria-label="Working on now"><p class="goal-now-title">Working on now</p>';
-  // The root never completes, so it is active both before the first goal and after every child completes; a blocked root waits on review.
-  if (!active || active.id === rootId) {
-    return `${open}<p class="goal-now-objective">${plan.status === 'blocked' ? 'Waiting for your review.' : 'Choosing the next concrete goal under the primary goal.'}</p>${instruction}</section>`;
-  }
-  const ancestors = [];
-  for (let g = nodes.get(active.parent_id); g && ancestors.length < 8; g = nodes.get(g.parent_id)) ancestors.unshift(g.objective);
-  return `${open}<p class="goal-now-objective">${esc(active.objective)}</p>`
-    + `${active.completion?.description ? `<p>${esc(active.completion.description)}</p>` : ''}`
-    + `${progress(active) ? `<p>${progress(active)}</p>` : ''}`
-    + `${plan.reason ? `<p class="insp-dim">Why: ${esc(plan.reason)}</p>` : ''}${instruction}`
-    + `${ancestors.length ? `<p class="goal-path">${ancestors.map(esc).join(' › ')}</p>` : ''}</section>`;
-}
-
 // A review note only for pauses that wait on the operator; "Recalculating goals…" is progress, and recovery text stays in the thread banner.
 function reviewHTML(run, plan) {
   const recalculating = run.goal_recalculation?.status === 'planning';
@@ -116,31 +101,82 @@ function reviewHTML(run, plan) {
 
 function historyHTML(events) {
   const items = planHistory(events).map(h => `<li><time data-ts="${h.timestamp}"></time><span>${esc(h.text)}</span>`
-    + `<button type="button" class="chip" data-action="tl-jump" data-seq="${h.seq}">${h.label} #${h.seq}</button></li>`).join('');
+    + `${jumpChip(h.label, h.seq)}</li>`).join('');
   return `<section class="plan-history" aria-label="Plan history"><p class="section-title">Plan history</p>`
     + `${items ? `<ol>${items}</ol>` : '<p class="hint">No planning activity is loaded. Older history is in Actions.</p>'}</section>`;
 }
 
-export function goalsHTML(run, { events, goalOpen }) {
+const REASON_SHOWN = new Set(['blocked', 'retired', 'rejected']);
+
+// One node button and its children; view = { currentId, selectedId, seenNodes }.
+function nodeHTML(graph, id, depth, view) {
+  if (depth > 8) return '';
+  const node = graph.nodes.get(id);
+  const s = NODE_STATUS[node.status];
+  const current = id === view.currentId;
+  const isNew = view.seenNodes instanceof Set && !view.seenNodes.has(id);
+  const statusText = node.status === 'active' && progress(node.goal) ? `${s.label}, ${progress(node.goal)}` : s.label;
+  const reasonLine = node.reason && REASON_SHOWN.has(node.status);
+  const kids = graph.children.get(id) || [];
+  return `<li class="goal-branch"><button type="button" class="goal-node goal-node-${s.tone}${current ? ' goal-node-current' : ''}${isNew ? ' goal-node-new' : ''}"`
+    + ` data-action="goal-select" data-node="${esc(id)}" data-key="goal-node-${esc(id)}" aria-pressed="${id === view.selectedId}"${current ? ' aria-current="step"' : ''}>`
+    + `${icon(s.icon, 'icon goal-icon')}<span class="goal-text"><span class="goal-title">${esc(node.title)}</span><span class="goal-status">${statusText}</span>`
+    + `${reasonLine ? `<span class="goal-node-reason">${esc(node.reason)}</span>` : ''}</span>${current ? '<span class="dot dot-live"></span>' : ''}</button>`
+    + `${kids.length ? `<ul>${kids.map(k => nodeHTML(graph, k, depth + 1, view)).join('')}</ul>` : ''}</li>`;
+}
+
+function goalDetailHTML(node, graph, { plan, run, events, currentId }) {
+  const goal = node.goal;
+  const current = node.id === currentId;
+  const isRoot = node.id === graph.rootId;
+  // The root never completes, so it is current both before the first goal and after every child completes; a blocked root waits on review.
+  const rootNow = isRoot && current ? `<p>${plan.status === 'blocked' ? 'Waiting for your review.' : 'Choosing the next concrete goal under the primary goal.'}</p>` : '';
+  const rejected = (graph.children.get(node.id) || []).filter(k => graph.nodes.get(k).status === 'rejected').length;
+  const quotes = (goal.evidence || []).map(e => `<li><span class="insp-dim">${esc(e.source)}${e.path ? ` ${esc(e.path)}` : ''}</span> “${esc(e.quote)}”</li>`).join('');
+  const reason = !node.reason ? '' : node.status === 'blocked' ? `<p class="goal-node-reason">${esc(node.reason)}</p>`
+    : node.status === 'retired' ? `<p class="insp-dim">${esc(node.reason)}</p>` : '';
+  const links = goalLinks(goal, events);
+  return rootNow
+    + `${goal.completion?.description ? `<p>${esc(goal.completion.description)}</p>` : ''}`
+    + `${progress(goal) ? `<p>${progress(goal)}</p>` : ''}`
+    + `${goal.attempts > 0 ? `<p class="insp-dim">Actions tried since progress: ${goal.attempts}</p>` : ''}`
+    + `${rejected > 0 ? `<p class="insp-dim">Rejected proposals: ${rejected}</p>` : ''}`
+    + `${quotes ? `<p class="insp-dim">Planning evidence</p><ul class="insp-list">${quotes}</ul>` : '<p class="insp-dim">No planning evidence recorded.</p>'}`
+    + reason
+    + `${links ? `<div class="goal-links">${links}</div>` : ''}`
+    + `${current && !isRoot && plan.reason ? `<p class="insp-dim">Why: ${esc(plan.reason)}</p>` : ''}`
+    + `${current && run.recovery_instruction ? `<p class="insp-dim">Your instruction: ${esc(run.recovery_instruction)}</p>` : ''}`;
+}
+
+function earlierPlanHTML(node) {
+  const old = node.event.payload.previous_plan || {};
+  const oldRoot = old.root_id || 'root';
+  const goals = (old.goals || []).filter(g => g.id !== oldRoot);
+  return (goals.length ? `<ul class="insp-list">${goals.map(g => `<li>${esc(g.objective)} <span class="insp-dim">${NODE_STATUS[goalStatus(g, oldRoot)].label}</span></li>`).join('')}</ul>`
+    : '<p class="insp-dim">No goals were recorded.</p>')
+    + `<div class="goal-links">${jumpChip('Plan', node.event.seq)}</div>`;
+}
+
+// The selected node's pane: goal facts, or the rejection, operator instruction or replaced plan behind an annotation node.
+function detailHTML(node, graph, ctx) {
+  const body = node.goal ? goalDetailHTML(node, graph, ctx)
+    : node.status === 'rejected' ? `${node.reason ? `<p class="goal-node-reason">${esc(node.reason)}</p>` : ''}<div class="goal-links">${jumpChip('Rejected', node.event.seq)}</div>`
+    : node.status === 'operator' ? `<p>${esc(node.event.payload.reason)}</p><div class="goal-links">${jumpChip('Operator', node.event.seq)}</div>`
+    : earlierPlanHTML(node);
+  return `<section class="goal-detail" aria-label="Selected goal"><p class="goal-detail-title">${esc(node.title)}</p><p class="goal-status">${NODE_STATUS[node.status].label}</p>${body}</section>`;
+}
+
+// seenNodes: the node ids of the previous render (null on a thread's first render); only ids missing from it animate in.
+export function goalsHTML(run, { events, selectedGoal, seenNodes }) {
   const plan = run.subgoal_plan;
   if (!plan?.goals?.length) return '<p class="insp-empty">No goal plan was recorded for this instance.</p>';
-  const nodes = new Map(plan.goals.map(g => [g.id, g]));
-  const rootId = plan.root_id || plan.goals.find(g => !g.parent_id)?.id;
-  const children = id => plan.goals.filter(g => g.parent_id === id);
-  const row = (goal, depth) => {
-    if (depth > 8) return '';
-    const s = NODE_STATUS[goalStatus(goal, rootId)];
-    const quotes = (goal.evidence || []).map(e => `<li><span class="insp-dim">${esc(e.source)}${e.path ? ` ${esc(e.path)}` : ''}</span> “${esc(e.quote)}”</li>`).join('');
-    const links = goalLinks(goal, events);
-    return `<li class="goal goal-${s.tone}"><details${goalOpen.has(goal.id) ? ' open' : ''} data-goal="${esc(goal.id)}"><summary class="goal-row" data-key="goal-${esc(goal.id)}">`
-      + `${icon(s.icon, 'icon goal-icon')}<span class="goal-text"><span class="goal-title">${esc(goal.objective)}</span><span class="goal-status">${s.label}${goal.status === 'active' && progress(goal) ? `, ${progress(goal)}` : ''}</span>`
-      + `${goal.completion?.description ? `<span class="goal-cond">${esc(goal.completion.description)}</span>` : ''}`
-      + `${goal.status === 'blocked' && goal.blocked_reason ? `<span class="${goal.retired ? 'goal-cond' : 'goal-reason'}">${esc(goal.blocked_reason)}</span>` : ''}</span></summary>`
-      + `<div class="goal-body">${goal.attempts > 0 ? `<p class="insp-dim">Actions tried since progress: ${goal.attempts}</p>` : ''}${quotes ? `<p class="insp-dim">Planning evidence</p><ul class="insp-list">${quotes}</ul>` : '<p class="insp-dim">No planning evidence recorded.</p>'}`
-      + `${links ? `<div class="goal-links">${links}</div>` : ''}</div></details>`
-      + `${children(goal.id).length ? `<ul class="goal-tree">${children(goal.id).map(c => row(c, depth + 1)).join('')}</ul>` : ''}</li>`;
-  };
-  const root = nodes.get(rootId);
-  return primaryHTML(plan, root) + workingNowHTML(plan, nodes, rootId, run) + reviewHTML(run, plan)
-    + (root ? `<p class="section-title">Goal tree</p><ul class="goal-tree goal-root">${row(root, 0)}</ul>` : '') + historyHTML(events);
+  const graph = goalGraph(plan, events);
+  const currentId = graph.nodes.get(plan.active_goal_id)?.goal ? plan.active_goal_id : graph.rootId;
+  const selected = graph.nodes.get(selectedGoal) || graph.nodes.get(currentId);
+  const root = graph.nodes.get(graph.rootId);
+  return primaryHTML(plan, root?.goal) + reviewHTML(run, plan)
+    + (root ? '<p class="section-title">Goal graph</p><div class="goal-graph-layout">'
+      + `<ul class="goal-graph" aria-label="Goal graph">${nodeHTML(graph, graph.rootId, 0, { currentId, selectedId: selected.id, seenNodes })}</ul>`
+      + `${detailHTML(selected, graph, { plan, run, events, currentId })}</div>` : '')
+    + historyHTML(events);
 }

@@ -12,7 +12,7 @@ const NOW = 10000;
 const obsEvent = (seq, id, extra = {}, ts = NOW - 5) => ({ id: `evt_${seq}`, seq, kind: 'structured_decision_context', timestamp: ts,
   payload: { player_id: 'p1', full_observation: { observation_id: id, state: { player: { inventory: [{ item_id: 'wood', count: 2 }] } }, entities: [], ...extra } } });
 const run = (state, extra = {}) => ({ id: 'r1', state, usage: [], ...extra });
-const ctx = (events, extra = {}) => ({ latest: events.findLast(e => e.payload?.full_observation) || null, selectedEvent: null, events, view: 'latest', now: NOW, goalOpen: new Set(), ...extra });
+const ctx = (events, extra = {}) => ({ latest: events.findLast(e => e.payload?.full_observation) || null, selectedEvent: null, events, view: 'latest', now: NOW, selectedGoal: null, seenNodes: null, ...extra });
 
 test('the inspector never requests live game context', () => {
   for (const file of ['ashad/static/views/inspector.js', 'ashad/static/views/goals.js', 'ashad/static/app.js']) {
@@ -70,30 +70,6 @@ test('cached and reasoning tokens are subsets, never double-counted', async () =
   assert.match(panelRegions(run('Running', { usage: [{ usage: null }] }), ctx([])).usage, /— unknown/);
 });
 
-test('blocked goals are escaped and explained; the primary goal is judged by the operator', async () => {
-  const { panelRegions } = await load();
-  const evil = '<img src=x onerror=alert(1)>';
-  const plan = { root_id: 'root', active_goal_id: 'g2', goals: [
-    { id: 'root', parent_id: null, objective: 'Craft a pickaxe', status: 'active', completion: { description: 'Manual' } },
-    { id: 'g1', parent_id: 'root', objective: 'Collect stone', status: 'completed', completion: { description: '3 stone' }, completion_evidence: { observation_id: 'o9' } },
-    { id: 'g2', parent_id: 'root', objective: `Cross ${evil}`, status: 'blocked', blocked_reason: `Bridge ${evil} is broken` },
-    { id: 'g3', parent_id: 'root', objective: 'Talk to elder', status: 'blocked', retired: true, blocked_reason: 'No longer needed.' },
-  ] };
-  const verified = { id: 'evt_7', seq: 7, kind: 'subgoals_verified', timestamp: NOW, payload: { goal_ids: ['g1'] } };
-  const html = panelRegions(run('Running', { subgoal_plan: plan }), ctx([verified])).goals;
-  assert.doesNotMatch(html, /<img/);
-  assert.match(html, /Bridge &lt;img/);
-  assert.match(html, /Blocked/);
-  assert.match(html, /Primary goal/);
-  assert.match(html, /Judged by you, not by ASHAD\./);
-  assert.doesNotMatch(html, /Needs your acceptance/);
-  assert.doesNotMatch(html, /goal-review/);
-  assert.match(html, /Not needed/);
-  assert.match(html, /data-action="tl-jump" data-seq="7">Verified #7/, 'verification links to its timeline card');
-  assert.match(html, /aria-label="Working on now">.*Cross &lt;img.*class="goal-path">Craft a pickaxe/s);
-  assert.match(panelRegions(run('Ended'), ctx([])).goals, /No goal plan was recorded for this instance\./);
-});
-
 const applePlan = (over = {}) => ({ root_id: 'root', active_goal_id: 'g2', revision: 4, reason: 'Follow the recipe', goals: [
   { id: 'root', parent_id: null, objective: 'Make 3 apple pies', status: 'active' },
   { id: 'g1', parent_id: 'root', objective: 'Obtain 3 flour', status: 'pending' },
@@ -110,23 +86,6 @@ const farmPlan = (over = {}) => ({ root_id: 'root', active_goal_id: 'g2', revisi
   { id: 'g4', parent_id: 'root', objective: 'Cross bridge', status: 'blocked', blocked_reason: 'Bridge is broken' },
   { id: 'g5', parent_id: 'root', objective: 'Talk to elder', status: 'blocked', retired: true, blocked_reason: 'No longer needed.' },
 ], ...over });
-
-test('the active goal is marked Now with measured progress', async () => {
-  const { panelRegions } = await load();
-  const goals = (plan, goalOpen = new Set(['g2'])) => panelRegions(run('Running', { subgoal_plan: plan }), ctx([], { goalOpen })).goals;
-  const html = goals(applePlan());
-  const now = html.match(/<section class="goal-now".*?<\/section>/s)[0];
-  for (const text of ['Obtain 30 wheat', 'Have 30 wheat', '8 of 30 so far', 'Why: Follow the recipe', 'Make 3 apple pies › Obtain 3 flour']) assert.ok(now.includes(text), text);
-  assert.match(html, /Now, 8 of 30 so far/);
-  assert.match(html, /Actions tried since progress: 3/);
-  assert.equal((html.match(/class="goal-status">Now/g) || []).length, 1);
-  assert.match(html, /Plan revision 4\./);
-  const unknown = applePlan();
-  unknown.goals[2].completion.kind = 'unknown';
-  assert.doesNotMatch(goals(unknown), /so far/);
-  assert.match(goals(applePlan({ active_goal_id: 'root' })), /Choosing the next concrete goal/);
-  assert.match(goals(applePlan({ active_goal_id: 'root', status: 'blocked', reason: 'stuck' })), /goal-now-objective">Waiting for your review\./);
-});
 
 test('planning pauses show a review note', async () => {
   const { panelRegions } = await load();
@@ -220,21 +179,89 @@ test('plan history lists planning events newest first with jump chips', async ()
   assert.ok(planHistory([pe(1, 'subgoal_plan_reset', { reason: 'y'.repeat(300) })])[0].text.length <= 200);
 });
 
-test('working on now shows the current instruction', async () => {
-  const { panelRegions } = await load();
-  const now = extra => panelRegions(run('Running', extra), ctx([])).goals.match(/<section class="goal-now".*?<\/section>/s)[0];
-  assert.ok(now({ subgoal_plan: applePlan(), recovery_instruction: '<b>go</b>' }).includes('Your instruction: &lt;b&gt;go&lt;/b&gt;'));
-  assert.ok(!now({ subgoal_plan: applePlan() }).includes('Your instruction'));
-  assert.ok(now({ subgoal_plan: applePlan({ active_goal_id: 'root' }), recovery_instruction: 'go' }).includes('Your instruction: go'));
+// The goals region for a run; the pane is the selected-node section and nodeOf one node's button.
+const goalsOf = async (r, events = [], extra = {}) => (await load()).panelRegions(r, ctx(events, extra)).goals;
+const pane = html => html.match(/<section class="goal-detail".*?<\/section>/s)[0];
+const nodeOf = (html, id) => html.match(new RegExp(`<button[^>]*data-node="${id}"[^>]*>.*?</button>`, 's'))[0];
+const count = (html, pattern) => (html.match(new RegExp(pattern, 'g')) || []).length;
+
+test('nodes show words and icons, and exactly one is current', async () => {
+  const farm = over => goalsOf(run('Running', { subgoal_plan: farmPlan(over) }));
+  const html = await farm();
+  assert.equal(count(html, 'aria-current="step"'), 1);
+  assert.ok(nodeOf(html, 'g2').includes('aria-current="step"'));
+  assert.equal(count(html, 'dot-live'), 1);
+  for (const text of ['Now, 1 of 3 so far', '#i-target']) assert.ok(nodeOf(html, 'g2').includes(text), text);
+  for (const text of ['Completed', '#i-circle-check', 'goal-node-done']) assert.ok(nodeOf(html, 'g1').includes(text), text);
+  for (const text of ['Primary goal', '#i-flag']) assert.ok(nodeOf(html, 'root').includes(text), text);
+  assert.ok(nodeOf(html, 'g3').includes('Pending'));
+  assert.match(html, /Judged by you, not by ASHAD\. Plan revision 7\./);
+  assert.doesNotMatch(html, /Working on now|<details/, 'the Working on now block and the details tree are gone');
+  const rootNow = await farm({ active_goal_id: 'root' });
+  assert.ok(nodeOf(rootNow, 'root').includes('aria-current="step"'));
+  assert.ok(pane(rootNow).includes('Choosing the next concrete goal under the primary goal.'));
+  assert.ok(pane(await farm({ active_goal_id: 'root', status: 'blocked', reason: 'stuck' })).includes('Waiting for your review.'));
+  assert.ok(nodeOf(await farm({ active_goal_id: 'gone' }), 'root').includes('aria-current="step"'), 'an unknown active goal falls back to the root');
+  const unknown = farmPlan();
+  unknown.goals[2].completion.kind = 'unknown';
+  assert.doesNotMatch(await goalsOf(run('Running', { subgoal_plan: unknown })), /so far/);
+  assert.match(await goalsOf(run('Ended')), /No goal plan was recorded for this instance\./);
 });
 
-test('goal text and plan reasons are escaped in every block', async () => {
-  const { panelRegions } = await load();
+test('blocked goals and rejected proposals are red with their reason; not-needed goals stay muted', async () => {
+  const html = await goalsOf(run('Running', { subgoal_plan: farmPlan() }), [pe(13, 'subgoal_plan_rejected', { goal_id: 'g2', attempt: 1, reason: 'Too <b>vague' })]);
+  for (const text of ['goal-node-danger', 'Blocked', '#i-circle-x', 'Bridge is broken']) assert.ok(nodeOf(html, 'g4').includes(text), text);
+  for (const text of ['goal-node-danger', 'Proposal rejected (attempt 1)', 'Too &lt;b&gt;vague']) assert.ok(nodeOf(html, 'rejected-13').includes(text), text);
+  for (const text of ['goal-node-muted', 'Not needed', 'No longer needed.']) assert.ok(nodeOf(html, 'g5').includes(text), text);
+  assert.ok(!nodeOf(html, 'g5').includes('goal-node-danger'), 'retirement is not failure');
+});
+
+test('selecting a node shows its evidence, attempts and links', async () => {
+  const events = [obsEvent(3, 'o1'), pe(12, 'subgoals_verified', { goal_ids: ['g1'] }), pe(13, 'subgoal_plan_rejected', { goal_id: 'g1', attempt: 1, reason: 'r' }),
+    pe(20, 'intervention', { command: 'resume', reason: 'Go north' })];
+  const farm = (selectedGoal, extra = {}) => goalsOf(run('Running', { subgoal_plan: farmPlan(), ...extra }), events, { selectedGoal });
+  const current = pane(await farm(null, { recovery_instruction: 'Dig' }));
+  for (const text of ['Get 3 wheat', 'Have 3 wheat', '1 of 3 so far', 'Why: Follow the recipe', 'Your instruction: Dig']) assert.ok(current.includes(text), text);
+  const html = await farm('g1');
+  for (const text of ['seed bag', 'Actions tried since progress: 2', 'Rejected proposals: 1', 'data-seq="3">Planned from #3', 'data-seq="12">Verified #12']) assert.ok(pane(html).includes(text), text);
+  assert.ok(!pane(html).includes('Why:'), 'Why belongs to the current goal only');
+  assert.equal(count(html, 'aria-pressed="true"'), 1);
+  assert.ok(nodeOf(html, 'g1').includes('aria-pressed="true"'));
+  assert.ok(pane(await farm('g3')).includes('No planning evidence recorded.'));
+  assert.ok(pane(await farm('nope')).includes('Get 3 wheat'), 'an unknown selection shows the current node');
+  assert.ok(pane(await farm('rejected-13')).includes('data-seq="13">Rejected #13'));
+  const operator = pane(await farm('operator-20'));
+  for (const text of ['Go north', 'data-seq="20">Operator #20']) assert.ok(operator.includes(text), text);
+});
+
+test('an earlier plan lists its goals in the pane', async () => {
+  const html = await goalsOf(run('Running', { subgoal_plan: farmPlan() }), [recalculated], { selectedGoal: 'earlier-31' });
+  for (const text of ['Earlier plan, revision 3', '#i-clock', 'goal-node-muted']) assert.ok(nodeOf(html, 'earlier-31').includes(text), text);
+  for (const text of ['Old A', 'Completed', 'Old B', 'Pending', 'data-seq="31">Plan #31']) assert.ok(pane(html).includes(text), text);
+  assert.ok(!pane(html).includes('Old root'), 'the old root is the primary goal, not a listed goal');
+  assert.ok(nodeOf(html, 'g2'));
+});
+
+test('only nodes new since the last render animate in', async () => {
+  const rejected = [pe(13, 'subgoal_plan_rejected', { goal_id: 'g2', attempt: 1, reason: 'r' })];
+  assert.equal(count(await goalsOf(run('Running', { subgoal_plan: farmPlan() }), rejected), 'goal-node-new'), 0, 'the first render animates nothing');
+  const html = await goalsOf(run('Running', { subgoal_plan: farmPlan() }), rejected, { seenNodes: new Set(['root', 'g1', 'g3', 'g4', 'g5']) });
+  assert.ok(nodeOf(html, 'g2').includes('goal-node-new'));
+  assert.ok(nodeOf(html, 'rejected-13').includes('goal-node-new'));
+  assert.equal(count(html, 'goal-node-new'), 2);
+});
+
+test('goal text, reasons and instructions are escaped in nodes and the pane', async () => {
   const evil = '<img src=x onerror=alert(1)>';
-  const plan = applePlan({ primary_goal: evil, reason: evil });
-  plan.goals[2].objective = evil;
-  plan.goals[2].completion.description = evil;
-  const events = [pe(1, 'subgoal_plan_rejected', { attempt: 1, reason: evil })];
-  const html = panelRegions(run('Investigating', { subgoal_plan: plan, pause: { category: 'planner_rejected', reason: evil } }), ctx(events)).goals;
-  assert.doesNotMatch(html, /<img/);
+  const plan = farmPlan({ primary_goal: evil, reason: evil });
+  Object.assign(plan.goals[4], { objective: evil, completion: { description: evil }, blocked_reason: evil });
+  const events = [
+    pe(1, 'subgoal_plan_reset', { previous_plan: { revision: 2, goals: [{ id: 'old', parent_id: 'root', objective: evil, status: 'pending' }] }, reason: evil }),
+    pe(2, 'subgoal_plan_rejected', { goal_id: 'g4', attempt: 1, reason: evil }),
+    pe(3, 'intervention', { command: 'resume', reason: evil }),
+  ];
+  const r = run('Investigating', { subgoal_plan: plan, recovery_instruction: evil, pause: { category: 'planner_rejected', reason: evil } });
+  for (const selectedGoal of [null, 'earlier-1', 'rejected-2', 'operator-3', 'g4']) {
+    assert.doesNotMatch(await goalsOf(r, events, { selectedGoal }), /<img/, `selected ${selectedGoal}`);
+  }
 });

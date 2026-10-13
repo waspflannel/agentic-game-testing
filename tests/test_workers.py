@@ -68,6 +68,15 @@ class WorkerContractTests(unittest.IsolatedAsyncioTestCase):
         self.observation = await self.worker.capture()
         self.desktop.commands.clear()
 
+    async def test_status_reports_last_capture_duration(self):
+        last_seconds = self.worker.status()["capture"]["last_seconds"]
+        self.assertIsInstance(last_seconds, float)
+        self.assertGreaterEqual(last_seconds, 0)
+        with tempfile.TemporaryDirectory() as directory:
+            bound = Runtime(Path(directory), desktop=DesktopDouble(), worker_id="worker-B")
+            await bound.bind(Binding(run_id="run-B", player_id="player-B", epoch="epoch-B", identity="identity-B"))
+            self.assertIsNone(bound.status()["capture"]["last_seconds"])
+
     async def test_status_reports_game_exit_code_signal_and_log_tail(self):
         self.assertIsNone(self.worker.status()["game_exit"])
         self.worker.game.returncode = -11

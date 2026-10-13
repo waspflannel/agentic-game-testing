@@ -81,6 +81,7 @@ class Runtime:
         self.live_viewers = 0
         self.tasks: list[asyncio.Task] = []
         self.last_capture_at: float | None = None
+        self.last_capture_seconds: float | None = None
         self.capture_error: str | None = None
         self.infrastructure_error: str | None = None
         self.deadline: str | float | None = None
@@ -205,6 +206,7 @@ class Runtime:
             self.observations, self.pins = {}, {}
             self.sequence = 0
             self.last_capture_at = None
+            self.last_capture_seconds = None
             self.capture_error = self.infrastructure_error = None
             self.deadline = self.run_deadline = None
             self.termination_result = None
@@ -287,6 +289,7 @@ class Runtime:
             self.interrupt.clear()
             self.observations.clear()
             self.last_capture_at = None
+            self.last_capture_seconds = None
             self.capture_error = self.infrastructure_error = None
             self.termination_result = None
             self.last_heartbeat = time.monotonic()
@@ -374,6 +377,7 @@ class Runtime:
                 self.capture_error = str(exc)
                 raise HTTPException(503, f"Capture failed: {exc}") from exc
             self.last_capture_at = time.time()
+            self.last_capture_seconds = self.last_capture_at - started
             self.capture_error = None
             observation = {"contract_version": CONTRACT_VERSION, "id": observation_id, "observation_id": observation_id,
                 "run_id": self.binding.run_id, "player_id": self.binding.player_id, "worker_id": self.worker_id,
@@ -766,7 +770,7 @@ class Runtime:
             "human_control": self.human_control,
             "world_may_continue": self.game_running, "held_keys": sorted(self.held_keys), "held_buttons": sorted(self.held_buttons),
             "capture": {"healthy": self._capture_allowed() and self.last_capture_at is not None and time.time() - self.last_capture_at < self.observation_max_age and not self.capture_error,
-                "last_at": self.last_capture_at, "error": self.capture_error, "video_running": bool(self.video_process and self.video_process.returncode is None)},
+                "last_at": self.last_capture_at, "last_seconds": self.last_capture_seconds, "error": self.capture_error, "video_running": bool(self.video_process and self.video_process.returncode is None)},
             "infrastructure_error": self.infrastructure_error, "investigation_deadline": self.deadline, "run_deadline": self.run_deadline,
             "controller_age_seconds": round(time.monotonic() - self.last_heartbeat, 3), "steam": self.steam_status(),
             "termination": self.termination_result, "disk": {"free_bytes": disk.free, "total_bytes": disk.total},

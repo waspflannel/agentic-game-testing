@@ -781,6 +781,7 @@ class StructuredPlayers:
                 # Only a worker-confirmed unopened bridge gets the bounded startup retry.
                 if getattr(exc, "code", None) == "game_bridge_starting" and time.time() - ps.get("launched_at", 0) < 15:
                     self.status(run_id, player_id, "startup_retry", f"Waiting for game interface startup: {reason}", generation, last_error=reason, error_at=time.time(), wait_until=ps["launched_at"] + 15)
+                    timing["outcome"] = "startup_retry"
                     return
                 self.status(run_id, player_id, "error", reason, generation, last_error=reason, error_at=time.time())
                 self.store.event(run_id, "agent_turn_failed", {"player_id": player_id, "category": "structured_interface_failure", "error": reason})

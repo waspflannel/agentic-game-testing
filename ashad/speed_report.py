@@ -6,6 +6,7 @@ Read-only; numbers only, no game text or credentials.
 """
 import argparse
 import json
+import math
 import os
 import platform
 import sqlite3
@@ -32,7 +33,8 @@ def percentile(values, q):
         return None
     ordered = sorted(values)
     n = len(ordered)
-    return ordered[min(n - 1, int(q * n))]
+    # Nearest rank: the smallest sample with at least q of the samples at or below it.
+    return ordered[max(0, math.ceil(q * n) - 1)]
 
 
 def spread(values):
@@ -222,6 +224,9 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
     context_bytes = sum(event["raw_bytes"] for event in events if event["kind"] == "structured_decision_context")
     store_seconds = sum((row.get("store") or {}).get("seconds") or 0 for row in timings)
     store_bytes = sum((row.get("store") or {}).get("bytes") or 0 for row in timings)
+    # tool: steps run inside the decide timer; subtract them so H1 counts model time only.
+    model_seconds = (steps.get("decide") or {}).get("total") or 0
+    model_seconds -= sum(entry["total"] or 0 for name, entry in steps.items() if name.startswith("tool:"))
     turns = len(timings) or None
     gap_total = gaps["gap_seconds"]["total"] or 0
     tick_values = _column(timings, "tick_seconds")
@@ -233,7 +238,7 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
         action_results[status] = action_results.get(status, 0) + 1
     return {
         "serial_model_calls": {
-            "model_seconds_share": _ratio((steps.get("decide") or {}).get("total") or 0, turn_total),
+            "model_seconds_share": _ratio(model_seconds, turn_total),
             "model_calls_per_decided_turn": _ratio(len(player), decided),
             "model_seconds_per_decided_turn": _ratio(player_seconds, decided),
             "max_concurrent": calls["max_concurrent"],

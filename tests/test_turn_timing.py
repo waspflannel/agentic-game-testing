@@ -9,6 +9,7 @@ import pytest
 from ashad.ai import ProviderError
 from ashad.coordinator import Coordinator
 from ashad.structured import meaningful_signature, wait_signature
+from ashad.worker_client import WorkerError
 from test_subgoals import decision, runtime
 
 
@@ -108,6 +109,19 @@ async def test_failing_turn_still_records_timing_with_error_outcome(tmp_path):
     [row] = timings(store)
     assert row["outcome"] == "error"
     assert coordinator.investigation[1] == "structured_interface_failure"
+    store.close()
+
+
+@pytest.mark.asyncio
+async def test_bridge_startup_retry_is_not_recorded_as_an_error(tmp_path):
+    store, coordinator, service = runtime(tmp_path)
+    run = store.require("runs", "run")
+    run["players"]["p"]["launched_at"] = time.time()
+    store.put("runs", run)
+    coordinator.request = AsyncMock(side_effect=WorkerError("Listener starting", 503, method="POST", path="/game", code="game_bridge_starting"))
+    await service.turn("run", "p")
+    [row] = timings(store)
+    assert row["outcome"] == "startup_retry"
     store.close()
 
 

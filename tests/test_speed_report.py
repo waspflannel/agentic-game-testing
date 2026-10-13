@@ -3,7 +3,7 @@ import json
 
 import pytest
 
-from ashad.speed_report import main
+from ashad.speed_report import main, percentile
 from ashad.store import Store
 
 
@@ -120,3 +120,18 @@ def test_report_leaves_the_data_directory_unchanged(tmp_path):
     before = (db.read_bytes(), db.stat().st_mtime_ns, ledger.read_bytes())
     main(["--data", str(tmp_path), "--out", str(tmp_path / "out")])
     assert (db.read_bytes(), db.stat().st_mtime_ns, ledger.read_bytes()) == before
+
+
+@pytest.mark.parametrize("n, p50, p95", [(1, 1, 1), (2, 1, 2), (4, 2, 4), (20, 10, 19), (100, 50, 95)])
+def test_percentile_uses_nearest_rank(n, p50, p95):
+    values = list(range(1, n + 1))
+    assert (percentile(values, 0.5), percentile(values, 0.95)) == (p50, p95)
+
+
+def test_model_share_excludes_tool_time_nested_in_decide(tmp_path):
+    seed(tmp_path)
+    out = tmp_path / "out"
+    main(["--data", str(tmp_path), "--out", str(out)])
+    _, report = _report(out)
+    # decide 2.0 minus tool:perform_action 0.2, over turn totals 2.2 + 0.1 + 3.2.
+    assert report["hypotheses"]["serial_model_calls"]["model_seconds_share"] == round(1.8 / 5.5, 6)

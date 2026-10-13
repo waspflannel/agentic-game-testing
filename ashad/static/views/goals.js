@@ -162,7 +162,7 @@ function goalDetailHTML(node, graph, { plan, run, events, currentId }) {
     + `${progress(goal) ? `<p>${progress(goal)}</p>` : ''}`
     + `${goal.attempts > 0 ? `<p class="insp-dim">Actions tried since progress: ${goal.attempts}</p>` : ''}`
     + `${rejected > 0 ? `<p class="insp-dim">Rejected proposals: ${rejected}</p>` : ''}`
-    + `${quotes ? `<p class="insp-dim">Planning evidence</p><ul class="insp-list">${quotes}</ul>` : '<p class="insp-dim">No planning evidence recorded.</p>'}`
+    + `${quotes ? `<p class="insp-dim">Planning evidence</p><ul class="insp-list">${quotes}</ul>` : claim ? '' : '<p class="insp-dim">No planning evidence recorded.</p>'}`
     + reason
     + `${links ? `<div class="goal-links">${links}</div>` : ''}`
     + `${current && !isRoot && plan.reason ? `<p class="insp-dim">Why: ${esc(plan.reason)}</p>` : ''}`

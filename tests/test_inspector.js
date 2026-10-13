@@ -305,6 +305,7 @@ test('a goal-reached root shows the claim in its pane', async () => {
   assert.match(detail, /class="mono claim-quote">wheat &lt;seed&gt;</);
   assert.ok(detail.includes('Bake the pie'));
   assert.ok(detail.includes('Goal reached #40'));
+  assert.ok(!detail.includes('No planning evidence recorded.'), 'the claim evidence is not denied below it');
   assert.ok(planHistory(events).some(h => h.text.includes('Planner judged the primary goal reached')));
 });
 

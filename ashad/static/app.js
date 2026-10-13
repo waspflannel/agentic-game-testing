@@ -880,7 +880,8 @@ function renderThread(view) {
   t.tab ??= defaultTab(run);  // Chosen once per thread, so the tab never moves when the run ends.
   const player = selectedPlayer(run);
   state.camera.sync(cameraTarget(run, player, document.hidden || t.tab !== 'bot'));  // The MJPEG stream runs only while Bot view is shown.
-  const pending = new Set(mine().filter(([, c]) => c.pending).map(([k]) => k.slice(run.id.length + 1)));
+  // A key's suffix after the action (review-goal:end) only separates command IDs; the button is busy either way.
+  const pending = new Set(mine().filter(([, c]) => c.pending).map(([k]) => k.slice(run.id.length + 1).split(':')[0]));
   const error = mine().find(([, c]) => c.error)?.[1].error;
   patchRegions(view, threadRegions(run, { status, owner, data: state.data, ui: t, pending, error, cameraStatus: state.camera.status, player, tab: t.tab, issueOpen: state.ui.issueOpen }));
   updateTimes(view.querySelector('[data-region="issues"]'));
@@ -1079,22 +1080,22 @@ async function command(action, send, ok, runOf = value => value) {
 const runPath = run => `/api/runs/${enc(run.id)}`;
 const control = (run, name, extra = {}) => id => api(`${runPath(run)}/control`, { method: 'POST', body: { command: name, command_id: id, ...extra } });
 
-// Each answer is one goal_reached command; cancelling a follow-up leaves the run paused.
+// Each answer is one goal_reached command with its own command ID, so a retried End never replays as Keep going; cancelling a follow-up leaves the run paused.
 async function answerGoalReached(run) {
   const choice = await openGoalReached(run);
   const send = extra => control(run, 'goal_reached', extra);
-  if (choice === 'end') return command('review-goal', send({ choice: 'end' }), 'Instance ended.');
+  if (choice === 'end') return command('review-goal:end', send({ choice: 'end' }), 'Instance ended.');
   if (choice === 'new_goal') {
     const form = await openDialog({ title: 'Give another goal', confirm: 'Start new goal',
       html: `<div class="field"><label for="new-goal">New goal</label><textarea id="new-goal" class="textarea" name="goal" rows="3" required maxlength="4000"></textarea></div>` });
     if (!form) return;
-    return command('review-goal', send({ choice: 'new_goal', goal: form.get('goal') }), 'New goal started.');
+    return command('review-goal:new_goal', send({ choice: 'new_goal', goal: form.get('goal') }), 'New goal started.');
   }
   if (choice === 'keep_going') {
     const form = await openDialog({ title: 'What is still missing?', confirm: 'Keep going',
       html: `<div class="field"><label for="not-done-note">Note for the planner (optional)</label><textarea id="not-done-note" class="textarea" name="reason" rows="3" maxlength="4000"></textarea></div>` });
     if (!form) return;
-    return command('review-goal', send({ choice: 'keep_going', reason: form.get('reason') }), 'Logged as a false completion. Bots resumed.');
+    return command('review-goal:keep_going', send({ choice: 'keep_going', reason: form.get('reason') }), 'Logged as a false completion. Bots resumed.');
   }
 }
 

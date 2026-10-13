@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MODEL = "gpt-6-luna"
 CLAUDE_MODEL = "sonnet"
+GROK_MODEL = "grok-4.7"
 PROVIDERS = {
     "codex": {"label": "Codex", "status_key": "ai_status", "pricing": {
         "api": "codex", "billing": "subscription", "auth_method": "chatgpt",
@@ -14,6 +15,9 @@ PROVIDERS = {
     "claude": {"label": "Claude", "status_key": "ai_status_claude", "pricing": {
         "api": "claude", "billing": "subscription", "auth_method": "claude_oauth_token",
         "limitations": "Claude Code uses your Claude subscription limits; per-request dollar cost is unavailable."}},
+    "grok": {"label": "Grok", "status_key": "ai_status_grok", "pricing": {
+        "api": "grok", "billing": "subscription", "auth_method": "grok_cli_login",
+        "limitations": "Grok Build uses your SuperGrok or X Premium+ subscription limits; per-request dollar cost is unavailable."}},
 }
 MODEL_OPTIONS = (
     {"id": "gpt-6-luna", "label": "GPT-6 Luna", "provider": "codex"},
@@ -23,14 +27,18 @@ MODEL_OPTIONS = (
     {"id": "sonnet", "label": "Claude Sonnet", "provider": "claude"},
     {"id": "opus", "label": "Claude Opus", "provider": "claude"},
     {"id": "haiku", "label": "Claude Haiku", "provider": "claude"},
+    {"id": "grok-4.7", "label": "Grok 4.7", "provider": "grok"},
+    {"id": "grok-4.6", "label": "Grok 4.6", "provider": "grok"},
+    {"id": "grok-4.5", "label": "Grok 4.5", "provider": "grok"},
 )
 CODEX_MODELS = tuple(m["id"] for m in MODEL_OPTIONS if m["provider"] == "codex")
 CLAUDE_MODELS = tuple(m["id"] for m in MODEL_OPTIONS if m["provider"] == "claude")
-SUPPORTED_MODELS = CODEX_MODELS + CLAUDE_MODELS
+GROK_MODELS = tuple(m["id"] for m in MODEL_OPTIONS if m["provider"] == "grok")
+SUPPORTED_MODELS = CODEX_MODELS + CLAUDE_MODELS + GROK_MODELS
 
 
 def provider_of(model):
-    return "claude" if model in CLAUDE_MODELS else "codex"
+    return next((m["provider"] for m in MODEL_OPTIONS if m["id"] == model), "codex")
 
 
 def require_same_provider(model, base, subject):
@@ -216,7 +224,6 @@ class Plan(Contract):
         return self
 
 
-AI_API = "codex"
 CONTROLLER_VERSION = "ashad-agent-setup-v4"
 ACTIVE_STATES = {"Starting", "Running", "Paused", "Investigating", "Stopping"}
 TERMINAL_QUEST = "demo_wrapup_moar"

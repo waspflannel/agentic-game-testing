@@ -44,6 +44,8 @@ def test_issue_titles_per_type():
     assert issue_title("planner_rejected", {"reason": "Completion threshold is below the goal's explicit quantity",
                                             "focus_objective": "plant a seed in plot #", "mode": "expand"}) == \
         "Planner rejected: Completion threshold is below the goal's explicit quantity while planning “plant a seed in plot #”"
+    assert issue_title("false_completion", {"primary_goal": "Cook a pie"}) == \
+        "False completion: the planner claimed “Cook a pie” was reached"
 
 
 def test_crash_and_bug_examples_shrink_under_limit():

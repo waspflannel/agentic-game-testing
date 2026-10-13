@@ -88,6 +88,21 @@ def hierarchy():
     return goals.apply_decision(plan, response, context())
 
 
+def claimable():
+    plan = goals.new_plan("Make an apple pie", "p", "run")
+    goals.reconcile(plan, observe(), 1)
+    child = proposed("seeds", "", "Hold 10 wheat seeds", condition("inventory_quantity", "wheat_seed", 10), True)
+    child["evidence"] = [obs_ref("/state/player/inventory/0", "wheat_seed")]
+    plan = goals.apply_decision(plan, decision(plan, "expand", subgoals=[child]), context())
+    goals.reconcile(plan, observe(), 1)
+    return plan
+
+
+def claim(plan, reason="Ten wheat seeds are held."):
+    return {"goal_id": "root", "mode": "complete", "completion": goals.active_goal(plan)["completion"],
+            "evidence": [obs_ref("/state/player/inventory/0", "wheat_seed")], "reason": reason, "subgoals": []}
+
+
 def test_recursive_goals_execute_leaves_and_verify_each_parent_independently():
     plan = hierarchy()
     assert [g["objective"] for g in goals.goal_path(plan)] == ["Make an apple pie", "Have an apple pie", "Obtain flour", "Obtain 10 wheat", "Till 10 tiles"]
@@ -503,6 +518,27 @@ async def test_hand_back_drops_a_pending_action_without_a_status_check(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_complete_claim_pauses_the_run_once_and_never_acts(tmp_path):
+    store, coordinator, service = runtime(tmp_path, claimable())
+
+    async def respond(ctx):
+        return claim(ctx["subgoal_plan"])
+
+    coordinator.plan_response = respond
+    await service.turn("run", "p")
+    kinds = [e["kind"] for e in store.events("run")]
+    assert kinds.index("subgoal_plan_updated") < kinds.index("goal_reached")
+    reached = next(e for e in store.events("run") if e["kind"] == "goal_reached")
+    assert reached["payload"]["claim"]["reason"] == "Ten wheat seeds are held."
+    assert coordinator.goal_reaches[0][:2] == ("run", "p")
+    assert coordinator.action_contexts == []
+    assert not any(op["operation"] == "perform_action" for op in coordinator.ops)
+    await service.turn("run", "p")
+    assert len(coordinator.goal_reaches) == 2 and len(coordinator.planning_contexts) == 1
+    store.close()
+
+
+@pytest.mark.asyncio
 async def test_runtime_uses_active_leaf_and_progress_survives_store_reopen(tmp_path):
     store, coordinator, service = runtime(tmp_path)
     await service.turn("run", "p")
@@ -716,6 +752,63 @@ def test_planner_rejected_pause_does_not_blame_ai_settings():
     assert Coordinator.pause_details("provider_failure", "x", ["p"])["recovery"].startswith("Check AI Settings")
 
 
+def test_complete_claim_needs_a_verified_child_and_grounded_evidence():
+    plan = claimable()
+    before = copy.deepcopy(plan)
+    decision = claim(plan)
+    result = goals.apply_decision(plan, decision, context())
+    assert result["status"] == "goal_reached" and result["reason"] == decision["reason"]
+    assert result["revision"] == before["revision"] + 1
+    recorded = goals.completion_claim(result)
+    child = next(g["id"] for g in result["goals"] if g["id"] != "root")
+    assert recorded["verified_goal_ids"] == [child]
+    assert recorded["evidence"] == decision["evidence"]
+    assert recorded["observation"]["observation_id"] == "g:obs:1"
+    assert plan == before
+
+    fresh = goals.new_plan("Make an apple pie", "p", "run")
+    goals.reconcile(fresh, observe(), 1)
+    with pytest.raises(ValueError, match="after a child goal is verified"):
+        goals.apply_decision(fresh, claim(fresh), context())
+    leaf = hierarchy()
+    on_leaf = claim(leaf)
+    on_leaf["goal_id"] = goals.active_goal(leaf)["id"]
+    with pytest.raises(ValueError, match="Only the primary objective"):
+        goals.apply_decision(leaf, on_leaf, context())
+    invented = claim(plan)
+    invented["evidence"] = [obs_ref("/state/player/inventory/0", "wheat_bag")]
+    with pytest.raises(ValueError, match="does not occur"):
+        goals.apply_decision(plan, invented, context())
+    finished = claim(plan)
+    finished["completion"] = condition("inventory_quantity", "wheat_seed", 10)
+    with pytest.raises(ValueError, match="manual acceptance"):
+        goals.apply_decision(plan, finished, context())
+
+
+def test_rejected_claim_needs_more_verified_work_before_another():
+    plan = goals.apply_decision(claimable(), claim(claimable()), context())
+    reason = goals.completion_claim(plan)["reason"]
+    goals.reopen_after_rejected_claim(plan, "Still no pie")
+    assert goals.completion_claim(plan) is None
+    assert plan["completion_rejected"] == {"note": "Still no pie", "claim_reason": reason, "verified_count": 1}
+    assert plan["status"] == "active" and "completion_rejected" in goals.prompt_plan(plan)
+    with pytest.raises(ValueError, match="not done"):
+        goals.apply_decision(plan, claim(plan), context())
+    child = proposed("tile", "", "Find tile-1", condition("observed_count", quantity=1, collection="tiles", matches=[{"field": "id", "value": "tile-1"}]), True)
+    child["evidence"] = [obs_ref("/state/tiles/0", "tile-1")]
+    plan = goals.apply_decision(plan, decision(plan, "expand", subgoals=[child]), context())
+    goals.reconcile(plan, observe(), 1)
+    assert goals.apply_decision(plan, claim(plan), context())["status"] == "goal_reached"
+
+
+def test_reconcile_keeps_a_waiting_claim():
+    claimed = goals.apply_decision(claimable(), claim(claimable()), context())
+    before = copy.deepcopy(goals.completion_claim(claimed))
+    goals.reconcile(claimed, observe(), 1)
+    assert claimed["status"] == "goal_reached" and claimed["active_goal_id"] == "root"
+    assert goals.completion_claim(claimed) == before
+
+
 def test_planning_prompt_explains_identifiers_and_rejections():
     from ashad.prompts import planning_request
     _, _, instructions = planning_request({}, {})
@@ -725,6 +818,7 @@ def test_planning_prompt_explains_identifiers_and_rejections():
     assert "observation object's root" in instructions
     assert "verbatim" in instructions
     assert "not observation evidence" in instructions
+    assert "complete" in instructions and "completion_rejected" in instructions
     assert len(instructions.encode("utf-8")) < 4608
 
 

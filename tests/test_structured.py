@@ -147,6 +147,10 @@ class CoordinatorDouble:
         self.decisions = 0
         self.ops = []
         self.result = {"status": "completed"}
+        self.goal_reaches = []
+
+    async def goal_reached(self, *args):
+        self.goal_reaches.append(args)
 
     async def request(self, worker, method, path, body):
         self.ops.append(body)

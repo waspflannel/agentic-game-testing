@@ -1,11 +1,13 @@
 """Turn timing rows from fake turns; no provider, token, network, Docker or game."""
 import asyncio
 import time
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
 from ashad.ai import ProviderError
+from ashad.coordinator import Coordinator
 from ashad.structured import meaningful_signature, wait_signature
 from test_subgoals import decision, runtime
 
@@ -147,3 +149,10 @@ async def test_timing_write_failure_never_fails_the_turn(tmp_path, monkeypatch):
     await service.turn("run", "p")
     assert len(coordinator.action_contexts) == 1
     store.close()
+
+
+@pytest.mark.asyncio
+async def test_coordinator_player_turn_forwards_tick_seconds():
+    fake = SimpleNamespace(turn=AsyncMock(return_value=None))
+    await Coordinator.player_turn(SimpleNamespace(structured=fake, store=None), "run", "p", tick_seconds=0.5)
+    assert fake.turn.await_args.kwargs["tick_seconds"] == 0.5

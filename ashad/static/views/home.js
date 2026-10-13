@@ -3,10 +3,13 @@ import { esc, icon, href, newId, dropdownHTML, ApiError } from '../core.js';
 
 const enc = encodeURIComponent;
 const chipDot = tone => `<span class="dot dot-${tone}" aria-hidden="true"></span>`;
+const STATUS_KEYS = { codex: 'ai', claude: 'ai_claude', grok: 'ai_grok' };
+const SIGNIN_NOTES = { ready: 'Signed in', cli_missing: 'CLI missing' };
+const modelOptionsWithNotes = (data, options) => options.map(o => ({ ...o, note: SIGNIN_NOTES[data?.[STATUS_KEYS[o.provider]]?.status] || 'Not signed in' }));
 
 // ── Empty workspace ─────────────────────────────────────────────────────────
 export function emptyHTML(data) {
-  const signedIn = data?.ai?.status === 'ready' || data?.ai_claude?.status === 'ready';
+  const signedIn = data?.ai?.status === 'ready' || data?.ai_claude?.status === 'ready' || data?.ai_grok?.status === 'ready';
   const desktops = (data?.workers || []).length;
   const item = (ok, label, detail, fix) => `<li class="prereq">${ok === null ? icon('info', 'icon prereq-info') : ok ? icon('check', 'icon prereq-ok') : icon('alert', 'icon prereq-missing')}`
     + `<span class="prereq-text"><span>${esc(label)}</span><span class="prereq-detail">${esc(detail)}</span></span>${fix && !ok ? fix : ''}</li>`;
@@ -66,7 +69,7 @@ export function composerModel(data, projectId, draft, readiness) {
 
   const blockers = [];
   if (slot.available === false) blockers.push(slot.blocked_reason || 'Another instance owns the slot.');
-  if (data?.ai?.status !== 'ready' && data?.ai_claude?.status !== 'ready') blockers.push('No AI provider is connected. Connect one under Settings › Account.');
+  if (data?.ai?.status !== 'ready' && data?.ai_claude?.status !== 'ready' && data?.ai_grok?.status !== 'ready') blockers.push('No AI provider is connected. Connect one under Settings › Account.');
   else if (r && r.provider?.ready === false) blockers.push(r.provider.message || 'The model is not available.');
   if (slot.available !== false) {
     if (!check || check.loading) blockers.push('Checking desktop readiness…');
@@ -76,7 +79,7 @@ export function composerModel(data, projectId, draft, readiness) {
   if (draft.transport === 'steam' && !steam.enabled) blockers.push(`${steam.reason}. No ENet fallback.`);
 
   return {
-    project, agents, agent, build, model, modelOptions: data?.model_options || [], steam, desktop, blockers,
+    project, agents, agent, build, model, modelOptions: modelOptionsWithNotes(data, data?.model_options || []), steam, desktop, blockers,
     projects: data?.projects || [],
     agentOptions: agents.map(a => ({ id: a.id, label: a.name || a.id, title: `${a.name || a.id} · build ${(data?.builds || []).find(b => b.id === a.build_id)?.name || a.build_id}` })),
     summary: agent ? `build ${build?.name || agent.build_id} · Fresh world` : '',

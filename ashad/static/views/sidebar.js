@@ -37,7 +37,7 @@ export function sidebarModel(data, ui) {
     projects: projects.map(p => group(p.id, runs.filter(r => r.project_id === p.id), { name: p.name || p.id, current: routeProject === p.id && !currentRun })),
     unassigned: unassignedRuns.length ? group('unassigned', unassignedRuns, { name: 'Unassigned' }) : null,
     active,
-    signInNeeded: data?.ai?.status !== 'ready' && data?.ai_claude?.status !== 'ready',
+    signInNeeded: data?.ai?.status !== 'ready' && data?.ai_claude?.status !== 'ready' && data?.ai_grok?.status !== 'ready',
     route: route.name,
   };
 }

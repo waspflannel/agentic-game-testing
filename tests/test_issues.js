@@ -56,9 +56,15 @@ const view = (record, extra = {}) => ({ record, loading: false, error: '', examp
 test('boardModel groups by type in fixed order', async () => {
   const { boardModel } = await issues();
   const m = boardModel(data(), 'p1', null, { rows: [...SUMMARIES, summary({ issue_id: 'x', type: 'other' }), summary({ issue_id: 'i5', type: 'planner_rejected', title: 'Planner rejected: x' })] });
-  assert.deepEqual(m.groups.map(g => g.type), ['unsupported_action', 'crash', 'game_bug', 'planner_rejected']);
-  assert.deepEqual(m.groups.map(g => g.rows.length), [2, 0, 1, 1]);
+  assert.deepEqual(m.groups.map(g => g.type), ['unsupported_action', 'crash', 'game_bug', 'planner_rejected', 'false_completion']);
+  assert.deepEqual(m.groups.map(g => g.rows.length), [2, 0, 1, 1, 0]);
   assert.equal(m.projectName, 'Agronauts');
+});
+
+test('false completions are the fifth board group', async () => {
+  const { boardModel } = await issues();
+  const labels = boardModel(data(), 'p1', null, { rows: [] }).groups.map(g => g.heading);
+  assert.deepEqual(labels, ['Unsupported actions', 'Crashes', 'Game bugs', 'Planner rejections', 'False completions']);
 });
 
 test('boardModel is null groups before the first fetch', async () => {
@@ -187,6 +193,31 @@ test('issueInfoHTML planner rejection shows the rule, the goal and the rejected 
   assert.match(html, /Rejected proposal[\s\S]*<summary>Proposal<\/summary><pre class="mono">/);
   assert.match(html, /Not recorded for this issue type\./);
   assert.equal(typeLabel('planner_rejected'), 'Planner rejection');
+});
+
+test('false completion issue view shows the claim and its evidence', async () => {
+  const { issueInfoHTML } = await issues();
+  const evil = '<img src=x onerror=alert(1)>';
+  const r = {
+    ...UNSUPPORTED(), id: 'i6', type: 'false_completion', title: 'False completion',
+    examples: [example({
+      intent: { primary_goal: 'Make an apple pie' },
+      claim: {
+        reason: 'Ten wheat seeds are held.', operator_note: 'Still no pie',
+        evidence: [{ source: 'observation', path: '/state/player/inventory/0', quote: evil }],
+        verified_goals: [{ id: 'seeds', objective: 'Hold 10 wheat seeds' }, { id: 'oven', objective: 'Find the oven' }],
+      },
+    })],
+  };
+  const html = issueInfoHTML(r, r.examples[0], { runIds: ids });
+  assert.match(html, /Planner's reason/);
+  assert.match(html, /Ten wheat seeds are held\./);
+  assert.match(html, /Your note/);
+  assert.match(html, /Still no pie/);
+  assert.match(html, /Hold 10 wheat seeds, Find the oven/);
+  assert.match(html, />Claimed evidence</);
+  assert.equal(html.includes(evil), false);
+  assert.match(html, /class="mono claim-quote">&lt;img src=x onerror=alert\(1\)&gt;/);
 });
 
 test('issueInfoHTML planner rejection says when the proposal was trimmed', async () => {

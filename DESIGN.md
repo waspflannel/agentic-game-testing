@@ -1,7 +1,7 @@
 # Design
 
 ## Direction
-Quiet, exact, compact, dark. Essence: "quiet · exact · instrument-panel". Controls read like a control on a test rig. A game-QA operator picks the model that drives the bot, at start or mid-run, and must see the current model and the default model at a glance.
+Quiet, exact, compact, dark. Essence: "quiet · exact · instrument-panel". Controls read like a control on a test rig. A game-QA operator picks a value (model, project, configuration, transport, player, build, example or filter) and must see the current value, and the default model, at a glance.
 
 ## Tokens
 All tokens live in the `:root` block of `ashad/static/app.css`.
@@ -51,7 +51,7 @@ All tokens live in the `:root` block of `ashad/static/app.css`.
 The selected row's quiet check plus the muted "Default" pill. Nothing else is decorative.
 
 ## Components
-Model menu: a chip trigger (sliders icon, label, chevron) opens a native popover listbox anchored under it, flipping above if there is no room. Rows show the label, a muted "Default" pill on the default model and a quiet check on the selected one. Keyboard: opening focuses the selected row, ArrowUp and ArrowDown clamp at the ends, Home and End jump, Enter and Space pick, and Escape closes and returns focus to the trigger.
+Dropdown (dropdownHTML): every chip picker (model, project, configuration, transport, player, build to check, issue example, usage filters) is a chip trigger (optional icon, label, chevron) that opens a native popover listbox anchored under it, flipping if there is no room. Rows show the label, a muted "Default" pill on the default model (model pickers only) and a quiet check on the selected one. Disabled rows stay visible and focusable but cannot be picked. Keyboard: opening focuses the selected row, ArrowUp and ArrowDown clamp at the ends, Home and End jump, Enter and Space pick, and Escape closes and returns focus to the trigger. Form fields in Settings and dialogs stay native selects; action menus are not dropdowns.
 Get controls meter: one `<progress class="progress">` with real `batches_done / batch_count`, the stage line and the stall note; no other decoration.
 Instance issues: plain hairline rows at the top of the Actions tab (type in words, title linking to the issue view, counts, status in words, file path in mono). Hits sit in a nested details list showing time, source and kept/counted in words. "View in project Issues" opens the board filtered to the instance. No colour-coded severity.
 Issues board: one page per project, with four plain groups in fixed order (Unsupported actions, Crashes, Game bugs, Planner rejections), each a subheading with its count and a hairline list. Rows: title link, status in words, occurrence count, last source instance (+N), first and last seen. Closed rows use --text-2. Empty groups say so; loading, error and Refresh follow the Usage page. An instance filter is a removable chip. No cards, tiles or colour-coded type.
@@ -72,3 +72,4 @@ Goals tab: primary goal in words ("Judged by you, not by ASHAD." and the plan re
 - 2026-10-12: Issues board gains Planner rejections; issue view shows the rejected proposal (feat/planner-rejected-issues).
 - 2026-10-12: Goals tab shows the primary goal, Working on now, review notes and plan history; "Needs your acceptance" and the Currently chasing breadcrumb removed (feat/goals-tab).
 - 2026-10-12: Hand back with an instruction; Goals tab shows the operator's instruction and lists it in Plan history (fix/handback-instruction-planner).
+- 2026-10-12: model menu becomes the shared dropdown; every chip picker uses it, native chip selects removed (feat/shared-dropdown).

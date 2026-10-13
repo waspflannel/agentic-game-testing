@@ -18,7 +18,7 @@ from . import repair_tasks, subgoals
 
 LOG = logging.getLogger(__name__)
 LOOP_BACKSTOP_DECISIONS = 6
-ISSUE_PREFIXES = {"unsupported_action": "uae_", "crash": "crash_", "game_bug": "bug_", "planner_rejected": "plan_"}
+ISSUE_PREFIXES = {"unsupported_action": "uae_", "crash": "crash_", "game_bug": "bug_", "planner_rejected": "plan_", "false_completion": "done_"}
 
 
 def meaningful_signature(observation):
@@ -452,6 +452,20 @@ class StructuredPlayers:
         except Exception:
             LOG.exception("Could not record planner rejection for %s/%s", run_id, player_id)
 
+    async def report_false_completion(self, run_id, player_id, plan, note):
+        """Record a completion claim the operator rejected; never raises."""
+        try:
+            run, ps = self.binding(run_id, player_id)
+            claim = subgoals.completion_claim(plan)
+            goals = {g["id"]: g for g in plan["goals"]}
+            basis = {"primary_goal": repair_tasks.target_label(plan["primary_goal"])}
+            sections = {"claim": {"reason": claim["reason"], "evidence": claim["evidence"], "operator_note": note,
+                "verified_goals": [{k: goals[i][k] for k in ("id", "objective", "completion")} for i in claim["verified_goal_ids"]],
+                "plan_revision": plan["revision"]}}
+            await self._record(run, ps, player_id, "false_completion", basis, "operator", ps.get("structured_context") or {}, sections, skip_pin=True)
+        except Exception:
+            LOG.exception("Could not record false completion for %s/%s", run_id, player_id)
+
     def forget_run(self, run_id):
         for counters in (self.loop_counts, self.bug_reports):
             for key in [k for k in counters if k[0] == run_id]:
@@ -521,6 +535,9 @@ class StructuredPlayers:
             self.status(run_id, player_id, "planner_blocked", plan["reason"], generation)
             await self.coordinator.investigate(run_id, "planner_blocked", plan["reason"], [player_id])
             return False
+        if plan["status"] == "goal_reached":
+            await self.coordinator.goal_reached(run_id, player_id, subgoals.completion_claim(plan)["reason"])
+            return False
         if not needs_plan:
             return True
         player = next(p for p in run["plan"]["players"] if p["id"] == player_id)
@@ -567,6 +584,11 @@ class StructuredPlayers:
             self.store.event(run_id, "subgoals_verified", {"player_id": player_id, "goal_ids": verified,
                              "evidence": subgoals.observation_ref(fresh), "full_observation": fresh})
         self._forget_turn((run_id, player_id))
+        if revised["status"] == "goal_reached":
+            claim = subgoals.completion_claim(revised)
+            self.store.event(run_id, "goal_reached", {"player_id": player_id, "revision": revised["revision"], "claim": claim})
+            await self.coordinator.goal_reached(run_id, player_id, claim["reason"])
+            return False
         self.status(run_id, player_id, "ready", "Plan updated; checking fresh state before the next action.", generation)
         return False  # Never act on the pre-planning snapshot after a potentially slow model call.
 

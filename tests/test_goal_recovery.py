@@ -9,10 +9,11 @@ from fastapi.testclient import TestClient
 
 from ashad import subgoals as goals
 from ashad.instances import InstanceRequest, Instances
+from ashad.repair_tasks import issue_title
 from test_controller import environment  # noqa: F401
 from test_crash_bug_issues import issue_files
 from test_instances import profile  # noqa: F401
-from test_subgoals import condition, context, decision, observe, proposed
+from test_subgoals import claim, claimable, condition, context, decision, observe, proposed
 from test_ui_http import app_at
 
 
@@ -367,3 +368,115 @@ async def test_recalculation_fails_in_plain_words_after_two_rejections(environme
     assert record["occurrences"] == 2
     assert [e["planner"]["attempt"] for e in record["examples"]] == [1, 2]
     assert not any(path == "/resume" for path, _ in calls)
+
+
+async def claim_instance(environment, profile):
+    store, coordinator, _, _ = environment
+    run = await Instances(coordinator).start(InstanceRequest(
+        configuration_id=profile["id"], primary_goal="Have at least 10 wheat in your inventory.", request_id="claim"))
+    await coordinator.admit(run)
+    run = store.require("runs", run["id"])
+    plan = goals.apply_decision(claimable(), claim(claimable()), context())
+    plan.update(player_id="player-1", run_id=run["id"])
+    run.update(state="Running", subgoal_plan=plan)
+    store.put("runs", run)
+    calls = []
+
+    async def request(worker_id, method, path, body=None):
+        calls.append((path, body))
+        if path in {"/pause", "/heartbeat"}:
+            return {"lifecycle": "paused"}
+        if path == "/resume":
+            return {"lifecycle": "running"}
+        if path == "/stop":
+            return {"teardown_confirmed": True}
+        assert path == "/game"
+        if body["operation"] == "get_action_status":
+            return {"status": "cancelled", "action_id": body["arguments"]["action_id"]}
+        assert body["operation"] == "observe"
+        return observe(run_id=run["id"], player_id="player-1")
+
+    coordinator.request = AsyncMock(side_effect=request)
+    coordinator.ai.validate = AsyncMock(return_value={"status": "ready", "configured": True})
+    await coordinator.goal_reached(run["id"], "player-1", "Ten wheat seeds are held.")
+    return store, coordinator, store.require("runs", run["id"]), calls
+
+
+def interventions(store, run_id):
+    return [e for e in store.events(run_id, limit=1000) if e["kind"] == "intervention"]
+
+
+@pytest.mark.asyncio
+async def test_goal_reached_pauses_without_deadline_incident_or_task(environment, profile):
+    store, _, run, calls = await claim_instance(environment, profile)
+    assert run["state"] == "Paused" and run["pause"]["category"] == "goal_reached"
+    assert run["investigation_deadline"] is None
+    assert run["pause"]["reason"].startswith("The planner believes the primary goal is reached")
+    kinds = {e["kind"] for e in store.events(run["id"], limit=1000)}
+    assert any(path == "/pause" for path, _ in calls) and "run_paused" in kinds
+    assert "incident_flag" not in kinds and "investigation_started" not in kinds
+    assert store.list("repair_task_exports") == []
+
+
+@pytest.mark.asyncio
+async def test_new_goal_replans_from_current_state_without_relaunch(environment, profile):
+    store, coordinator, run, calls = await claim_instance(environment, profile)
+    previous = run["subgoal_plan"]["revision"]
+    resumed = await coordinator.control(run["id"], "goal_reached", command_id="g1", choice="new_goal", goal="Cook a pie")
+    reset = next(e["payload"] for e in store.events(run["id"], limit=1000) if e["kind"] == "subgoal_plan_reset")
+    assert reset["reason"] == "Goal reached; new goal given" and reset["previous_plan"]["status"] == "goal_reached"
+    assert resumed["subgoal_plan"]["primary_goal"] == "Cook a pie" and resumed["subgoal_plan"]["revision"] == previous + 1
+    assert next(p["goal"] for p in resumed["plan"]["players"] if p["id"] == "player-1") == "Cook a pie"
+    assert any(e["kind"] == "goal_changed" for e in store.events(run["id"], limit=1000))
+    assert resumed["state"] == "Running" and any(path == "/resume" for path, _ in calls)
+    assert not any(path == "/launch" for path, _ in calls)
+    changed = await coordinator.control(run["id"], "goal", command_id="g2", player_id="player-1", goal="Bake bread")
+    assert changed["subgoal_plan"]["revision"] > resumed["subgoal_plan"]["revision"]
+    assert changed["subgoal_plan"]["primary_goal"] == "Bake bread"
+
+
+@pytest.mark.asyncio
+async def test_not_done_logs_a_false_completion_issue_and_resumes(environment, profile):
+    store, coordinator, run, _ = await claim_instance(environment, profile)
+    evidence = goals.completion_claim(run["subgoal_plan"])["evidence"]
+    resumed = await coordinator.control(run["id"], "goal_reached", "No pie in inventory", "k1", choice="keep_going")
+    [issue] = [i for i in issue_files(store) if i["type"] == "false_completion"]
+    assert issue["title"] == issue_title("false_completion", issue["signature_basis"])
+    [example] = issue["examples"]
+    assert example["example_id"].startswith("done_")
+    assert example["claim"]["operator_note"] == "No pie in inventory" and example["claim"]["evidence"] == evidence
+    assert any(e["kind"] == "false_completion_recorded" for e in store.events(run["id"], limit=1000))
+    plan = resumed["subgoal_plan"]
+    assert plan["status"] != "goal_reached" and plan["completion_rejected"]["verified_count"] == 1
+    assert goals.completion_claim(plan) is None
+    assert resumed["recovery_instruction"] == "No pie in inventory" and resumed["state"] == "Running"
+
+
+@pytest.mark.asyncio
+async def test_end_answer_finishes_with_goal_reached(environment, profile):
+    store, coordinator, run, _ = await claim_instance(environment, profile)
+    ended = await coordinator.control(run["id"], "goal_reached", command_id="e1", choice="end")
+    assert ended["ending_reason"] == "goal_reached" and ended["state"] in {"Stopping", "Ended"}
+    assert store.require("runs", run["id"])["ending_reason"] == "goal_reached"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("prepare,options,message", [
+    ("running", {"choice": "end"}, "No goal-reached claim is waiting for an answer"),
+    ("manual", {"choice": "end"}, "No goal-reached claim is waiting for an answer"),
+    ("waiting", {"choice": "maybe"}, "Answer the goal-reached claim with new_goal, end or keep_going"),
+    ("waiting", {"choice": ["end"]}, "Answer the goal-reached claim with new_goal, end or keep_going"),
+    ("waiting", {"choice": "new_goal", "goal": "   "}, "Give the new goal"),
+    ("waiting", {"choice": "new_goal", "goal": "x" * 4001}, "Give the new goal"),
+])
+async def test_goal_reached_answers_are_refused_without_a_waiting_claim(environment, profile, prepare, options, message):
+    store, coordinator, run, _ = await claim_instance(environment, profile)
+    if prepare == "running":
+        run["state"] = "Running"
+    elif prepare == "manual":
+        run["pause"] = coordinator.pause_details("manual_pause", "You paused the bots.", ["player-1"])
+    store.put("runs", run)
+    before = len(interventions(store, run["id"]))
+    with pytest.raises(ValueError, match=message):
+        await coordinator.control(run["id"], "goal_reached", command_id="refused", **options)
+    assert len(interventions(store, run["id"])) == before

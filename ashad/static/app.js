@@ -1,7 +1,7 @@
 import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTarget, createEpoch, createDrawer, patchHTML, dirtyBridge, runGoal, ago, modelLabel, nextOptionIndex } from './core.js';
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
 import { emptyHTML, noConfigurationsHTML, projectConfigurations, readinessKey, newDraft, draftModel, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
-import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions, defaultTab, nextTab } from './views/instance.js';
+import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions, defaultTab, nextTab, goalReachedHTML } from './views/instance.js';
 import { resetGoalState } from './views/goals.js';
 import { panelRegions, mergeEvents, latestObservation } from './views/inspector.js';
 import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discardSetup, getControls, setupSkeleton, setupRegions, prepareDialogText, prepareDesktop, registerBuild, elapsed } from './views/setup.js';
@@ -83,6 +83,22 @@ function openDialog({ title, body = '', html = '', confirm = 'Confirm', cancel =
   }, { once: true }));
 }
 const confirmDialog = options => openDialog(options).then(Boolean);
+
+// Resolves to the chosen answer ('new_goal', 'keep_going', 'end'), or '' on Escape. Same close handling as openDialog.
+function openGoalReached(run) {
+  const dialog = $('#dialog');
+  const opener = document.activeElement;
+  dialog.classList.add('dialog-wide');
+  dialog.innerHTML = goalReachedHTML(run);
+  dialog.returnValue = '';
+  dialog.showModal();
+  return new Promise(resolve => dialog.addEventListener('close', () => {
+    const choice = dialog.returnValue;
+    dialog.innerHTML = '';
+    opener?.focus?.();
+    resolve(choice);
+  }, { once: true }));
+}
 
 // ── Rendering ───────────────────────────────────────────────────────────────
 function renderSidebar() {
@@ -855,10 +871,17 @@ function renderThread(view) {
     for (const [k, c] of mine()) if (!c.pending) state.commands.delete(k);
     t.statusKey = status.key;
   }
+  // The claim popup opens by itself once per goal_reached pause; polls never reopen it, and Review goal does.
+  const claimKey = status.key === 'goal-reached' ? `${run.id}:${run.pause?.started_at}` : null;
+  if (claimKey && t.goalPrompted !== claimKey && !$('#dialog').open) {
+    t.goalPrompted = claimKey;
+    queueMicrotask(() => answerGoalReached(run));
+  }
   t.tab ??= defaultTab(run);  // Chosen once per thread, so the tab never moves when the run ends.
   const player = selectedPlayer(run);
   state.camera.sync(cameraTarget(run, player, document.hidden || t.tab !== 'bot'));  // The MJPEG stream runs only while Bot view is shown.
-  const pending = new Set(mine().filter(([, c]) => c.pending).map(([k]) => k.slice(run.id.length + 1)));
+  // A key's suffix after the action (review-goal:end) only separates command IDs; the button is busy either way.
+  const pending = new Set(mine().filter(([, c]) => c.pending).map(([k]) => k.slice(run.id.length + 1).split(':')[0]));
   const error = mine().find(([, c]) => c.error)?.[1].error;
   patchRegions(view, threadRegions(run, { status, owner, data: state.data, ui: t, pending, error, cameraStatus: state.camera.status, player, tab: t.tab, issueOpen: state.ui.issueOpen }));
   updateTimes(view.querySelector('[data-region="issues"]'));
@@ -1057,6 +1080,25 @@ async function command(action, send, ok, runOf = value => value) {
 const runPath = run => `/api/runs/${enc(run.id)}`;
 const control = (run, name, extra = {}) => id => api(`${runPath(run)}/control`, { method: 'POST', body: { command: name, command_id: id, ...extra } });
 
+// Each answer is one goal_reached command with its own command ID, so a retried End never replays as Keep going; cancelling a follow-up leaves the run paused.
+async function answerGoalReached(run) {
+  const choice = await openGoalReached(run);
+  const send = extra => control(run, 'goal_reached', extra);
+  if (choice === 'end') return command('review-goal:end', send({ choice: 'end' }), 'Instance ended.');
+  if (choice === 'new_goal') {
+    const form = await openDialog({ title: 'Give another goal', confirm: 'Start new goal',
+      html: `<div class="field"><label for="new-goal">New goal</label><textarea id="new-goal" class="textarea" name="goal" rows="3" required maxlength="4000"></textarea></div>` });
+    if (!form) return;
+    return command('review-goal:new_goal', send({ choice: 'new_goal', goal: form.get('goal') }), 'New goal started.');
+  }
+  if (choice === 'keep_going') {
+    const form = await openDialog({ title: 'What is still missing?', confirm: 'Keep going',
+      html: `<div class="field"><label for="not-done-note">Note for the planner (optional)</label><textarea id="not-done-note" class="textarea" name="reason" rows="3" maxlength="4000"></textarea></div>` });
+    if (!form) return;
+    return command('review-goal:keep_going', send({ choice: 'keep_going', reason: form.get('reason') }), 'Logged as a false completion. Bots resumed.');
+  }
+}
+
 async function onControl(action) {
   const run = threadRun();
   if (!run) return;
@@ -1064,6 +1106,7 @@ async function onControl(action) {
   switch (action) {
     case 'pause': return command('pause', control(run, 'pause'), 'Paused. Bot input is held; the game may keep simulating.');
     case 'resume': return command('resume', control(run, 'resume'), 'Resumed.');
+    case 'review-goal': return answerGoalReached(run);
     case 'resume-with':
     case 'handback-with':
       state.thread.instructionOpen = action === 'handback-with' ? 'handback' : 'resume';
@@ -1181,7 +1224,7 @@ async function onRoute() {
   if (composerProject(route, state.data)) state.readiness = null;  // Readiness probes on view open, never on the poll.
   if (route.name === 'composer' && route.query.configuration) draftFor(route.id).configurationId = route.query.configuration;
   if (route.name === 'instance' && state.thread.runId !== route.id) {
-    state.thread = { runId: route.id, player: null, instructionOpen: false, instructionText: '', statusKey: null, tl: createTimeline(), worldView: 'latest', lastObs: null, tab: null, scroll: {}, goalSelected: null, goalSeen: null };
+    state.thread = { runId: route.id, player: null, instructionOpen: false, instructionText: '', statusKey: null, tl: createTimeline(), worldView: 'latest', lastObs: null, tab: null, scroll: {}, goalSelected: null, goalSeen: null, goalPrompted: null };
     state.runSlot.set(null);  // Also drops a late GET for the previous thread.
     state.runMissing = false;
   }

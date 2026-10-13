@@ -146,6 +146,50 @@ test('ownership: paused, ended and unconfirmed teardown map to the §9 matrix', 
   assert.ok(!instanceState(run('Running', { external_control: { owner: 'mcp' } })).menu.includes('recalculate'));
 });
 
+test('goal reached pause shows Review goal and no plain Resume', async () => {
+  const { instanceState } = await load();
+  const reached = instanceState(run('Paused', { pause: { category: 'goal_reached' } }));
+  assert.equal(reached.key, 'goal-reached');
+  assert.deepEqual(reached.badge, { tone: 'attention', label: 'Goal reached' });
+  assert.deepEqual(reached.left, ['review-goal']);
+  assert.equal(reached.stop, true);
+  assert.deepEqual(reached.menu, ['flag']);
+  const manual = instanceState(run('Paused', { pause: { category: 'manual_pause' } }));
+  assert.equal(manual.key, 'paused');
+  assert.ok(manual.left.includes('resume'));
+  assert.equal(instanceState(run('Ended', { ending_reason: 'goal_reached' })).badge.label, 'Ended · Goal reached');
+});
+
+test('goal reached popup shows the claim, evidence and three choices, escaped', async () => {
+  const { goalReachedHTML } = await load();
+  const evil = '<img src=x onerror=alert(1)>';
+  const claim = { reason: evil, evidence: [{ source: 'observation', path: '/state/player/inventory/0', quote: evil }], verified_goal_ids: ['seeds'] };
+  const plan = {
+    primary_goal: evil, root_id: 'root', status: 'goal_reached',
+    goals: [
+      { id: 'root', completion_claim: claim },
+      { id: 'seeds', objective: evil, completion: { description: 'ten wheat seeds' } },
+    ],
+  };
+  const html = goalReachedHTML(run('Paused', { subgoal_plan: plan }));
+  assert.match(html, /<h2 id="dialog-title">Goal reached<\/h2>/);
+  assert.match(html, /class="goal-primary">&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(html, /Planner's reason: &lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(html, /\/state\/player\/inventory\/0/);
+  assert.match(html, /class="mono claim-quote">&lt;img src=x onerror=alert\(1\)&gt;/);
+  assert.match(html, /<span>&lt;img src=x onerror=alert\(1\)&gt; <span class="insp-dim">— ten wheat seeds<\/span>/);
+  assert.equal(html.includes(evil), false);
+  assert.match(html, /value="end"/);
+  assert.match(html, /value="keep_going"/);
+  assert.match(html, /value="new_goal" autofocus/);
+  assert.equal(html.match(/autofocus/g).length, 1);
+  const missing = goalReachedHTML(run('Paused'));
+  assert.match(missing, /The claim is no longer available\./);
+  assert.match(missing, /value="end"/);
+  assert.match(missing, /value="keep_going"/);
+  assert.match(missing, /value="new_goal"/);
+});
+
 test('thread markup escapes goals and pause reasons and keeps Stop right-most', async () => {
   const { instanceState, threadRegions } = await load();
   const evil = '<img src=x onerror=alert(1)>';

@@ -89,7 +89,7 @@ class ProposedGoal(Contract):
 
 class PlanningDecision(Contract):
     goal_id: str = Field(min_length=1, max_length=100)
-    mode: Literal["expand", "act", "blocked", "retire"]
+    mode: Literal["expand", "act", "blocked", "retire", "complete"]
     completion: Completion
     evidence: list[Evidence] = Field(min_length=1, max_length=4)
     reason: str = Field(min_length=1, max_length=1000)
@@ -134,6 +134,11 @@ def goal_path(plan, goal_id=None):
 
 def active_goal(plan):
     return next((g for g in plan["goals"] if g["id"] == plan.get("active_goal_id")), None)
+
+
+def completion_claim(plan):
+    """The planner's waiting or last claim that the primary objective is reached, kept on the root."""
+    return next(g for g in plan["goals"] if g["id"] == plan["root_id"]).get("completion_claim")
 
 
 def pointer(value, path):
@@ -442,7 +447,8 @@ def reconcile(plan, observation, control_generation):
         if goal["status"] != "completed" and any(g["status"] == "completed" for g in goal_path(plan, goal["id"])[:-1]):
             goal.update(retired=True, status="blocked", blocked_reason="No longer needed: the parent goal was verified directly.")
     previous_active = plan.get("active_goal_id")
-    selected = select_active(plan)
+    # A claim waits for the operator; re-selecting would move the active goal away from the root.
+    selected = active_goal(plan) if plan["status"] == "goal_reached" else select_active(plan)
     if selected and selected["id"] != previous_active:
         selected["activated_at"] = now
         # A sibling may have lost its prerequisites while another goal was being pursued.
@@ -477,6 +483,16 @@ def block(plan, reason):
     plan.update(status="blocked", reason=reason, revision=plan["revision"] + 1)
 
 
+def reopen_after_rejected_claim(plan, note):
+    """The operator said not done: the root plans again and must verify more before claiming again."""
+    root = next(g for g in plan["goals"] if g["id"] == plan["root_id"])
+    claim = root.pop("completion_claim")
+    plan["completion_rejected"] = {"note": note, "claim_reason": claim["reason"], "verified_count": len(claim["verified_goal_ids"])}
+    root["actionable"] = False
+    plan.update(status="active", reason="You said the primary goal is not done" + (f": {note}" if note else "."),
+                revision=plan["revision"] + 1)
+
+
 def retire(plan, focus, decision, context):
     """Retirement is not success: the goal and its descendants keep their predicates and leave the active path."""
     retired = {focus["id"]}
@@ -504,6 +520,21 @@ def apply_decision(plan, raw, context):
             raise ValueError("The free-text primary objective requires manual acceptance; give its observable outcomes child goals")
         if decision["mode"] in {"act", "retire"}:
             raise ValueError("Decompose the primary objective into a concrete child goal or explain why planning is blocked")
+    if decision["mode"] == "complete":
+        if focus["id"] != result["root_id"]:
+            raise ValueError("Only the primary objective can be claimed complete; use act or retire for other goals")
+        grounded_evidence(decision["evidence"], context)
+        verified = [g["id"] for g in result["goals"] if g.get("parent_id") == focus["id"]
+                    and not g.get("retired") and g["status"] == "completed"]
+        if not verified:
+            raise ValueError("Claim the primary objective complete only after a child goal is verified")
+        rejected = result.get("completion_rejected")
+        if rejected and len(verified) <= rejected["verified_count"]:
+            raise ValueError("The operator said the primary objective is not done; verify another child goal before claiming it again")
+        focus["completion_claim"] = {"reason": decision["reason"], "evidence": decision["evidence"],
+                                     "observation": observation_ref(context["observation"]), "verified_goal_ids": verified}
+        result.update(status="goal_reached", reason=decision["reason"], revision=result["revision"] + 1)
+        return result
     if decision["mode"] == "retire":
         # Retirement is not success: keep the original predicate and evidence intact.
         grounded_evidence(decision["evidence"], context)
@@ -574,6 +605,9 @@ def record_action(plan):
 
 def prompt_plan(plan):
     """Keep the hierarchy in context, not a growing duplicate of the observation ledger."""
-    return {"primary_goal": plan["primary_goal"], "active_goal_id": plan["active_goal_id"], "reason": plan["reason"],
-            "goals": [{k: g[k] for k in ("id", "parent_id", "objective", "completion", "status", "actionable")}
-                      for g in plan["goals"] if not g.get("retired")]}
+    shown = {"primary_goal": plan["primary_goal"], "active_goal_id": plan["active_goal_id"], "reason": plan["reason"],
+             "goals": [{k: g[k] for k in ("id", "parent_id", "objective", "completion", "status", "actionable")}
+                       for g in plan["goals"] if not g.get("retired")]}
+    if plan.get("completion_rejected"):
+        shown["completion_rejected"] = plan["completion_rejected"]
+    return shown

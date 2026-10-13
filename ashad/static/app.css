@@ -651,5 +651,12 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .dialog h2 { font-size: var(--fs-title); font-weight: 600; }
 .dialog p { color: var(--text-2); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px; }
+.claim-evidence, .claim-verified { list-style: none; display: grid; gap: 6px; border-top: 1px solid var(--border); padding-top: 8px; }
+.claim-verified li { display: flex; gap: 6px; align-items: baseline; color: var(--text); }
+.claim-source { color: var(--text-2); font-size: var(--fs-meta); }
+pre.claim-quote { font-family: var(--mono); background: var(--surface-2); border-radius: var(--r-row); padding: 4px 8px; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 160px; overflow: auto; }
+.goal-reached .goal-primary { color: var(--text); }
+.goal-reached-actions .btn-danger { margin-right: auto; }
+@media (max-width: 480px) { .goal-reached-actions { flex-direction: column-reverse; } .goal-reached-actions .btn { width: 100%; margin-right: 0; } }
 
 

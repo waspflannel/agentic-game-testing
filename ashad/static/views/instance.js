@@ -1,5 +1,6 @@
 // Instance thread: header, tabs, camera and control bar (spec §8.5 A–C, §9). Markup and state are pure; app.js owns I/O.
 import { esc, icon, href, newId, runGoal, humanize, badge, modelLabel, providerModels, dropdownHTML, runConfigurationId } from '../core.js';
+import { claimEvidenceHTML } from './goals.js';
 import { typeLabel } from './issues.js';
 
 const enc = encodeURIComponent;
@@ -39,6 +40,7 @@ export function instanceState(run, owner) {
   if (run?.state === 'Ended' && owner?.reason === 'teardown_unconfirmed') return make('unconfirmed', 'attention', 'Teardown unconfirmed', ['reconcile'], false, ['report', 'evidence']);
   if (run?.human_control && LIVE_STATES.has(run.state)) return make('human', 'attention', 'You have control', ['handback'], true, ['flag']);
   if (run?.goal_recalculation?.status === 'planning' && isActiveRun(run)) return make('replanning', 'pending', 'Replanning', [], true, []);
+  if (run?.state === 'Paused' && run.pause?.category === 'goal_reached') return make('goal-reached', 'attention', 'Goal reached', ['review-goal'], true, ['flag']);
   switch (run?.state) {
     case 'Queued': case 'Starting': return make('starting', 'pending', 'Starting', [], true, ['flag']);
     case 'Running': return make('running', 'live', 'Running', ['pause', ...(launched ? ['takeover'] : [])], true, [...recalc, 'flag']);
@@ -167,8 +169,23 @@ const ACTIONS = {
   recalculate: { label: 'Recalculate goals', icon: 'refresh' },
   extend: { label: 'Extend investigation', icon: 'clock' },
   flag: { label: 'Flag issue', icon: 'flag' },
+  'review-goal': { label: 'Review goal', icon: 'flag', cls: 'btn-primary' },
   stop: { label: 'Stop', icon: 'stop', cls: 'btn-danger' },
 };
+
+// The Goal reached popup body. Each answer button closes the dialog with its choice as returnValue; app.js owns the dialog.
+export function goalReachedHTML(run) {
+  const plan = run.subgoal_plan;
+  const root = plan?.goals?.find(g => g.id === plan.root_id);
+  const claim = root?.completion_claim;
+  const body = claim ? `<p class="goal-primary">${esc(plan.primary_goal)}</p><p>ASHAD's planner believes this is done. You decide.</p>`
+    + `<p>Planner's reason: ${esc(claim.reason)}</p>${claimEvidenceHTML(claim, plan)}`
+    : '<p>The claim is no longer available.</p>';
+  return `<form method="dialog" class="goal-reached"><h2 id="dialog-title">Goal reached</h2>${body}`
+    + `<div class="dialog-actions goal-reached-actions"><button class="btn btn-danger" value="end">End instance</button>`
+    + `<button class="btn btn-secondary" value="keep_going">Not done, keep going</button>`
+    + `<button class="btn btn-primary" value="new_goal" autofocus>Give another goal</button></div></form>`;
+}
 
 export const issuesHead = issues => (issues.length ? `Issues · ${issues.length}` : 'Issues');
 

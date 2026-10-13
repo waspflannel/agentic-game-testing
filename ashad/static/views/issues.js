@@ -1,7 +1,8 @@
 // Project Issues board and issue view. Fetched on view open and Refresh only; the model and markup are pure.
 import { esc, icon, href, dropdownHTML, since, humanize, runGoal } from '../core.js';
+import { evidenceListHTML } from './goals.js';
 
-export const ISSUE_TYPES = [['unsupported_action', 'Unsupported action', 'Unsupported actions'], ['crash', 'Crash', 'Crashes'], ['game_bug', 'Game bug', 'Game bugs'], ['planner_rejected', 'Planner rejection', 'Planner rejections']];
+export const ISSUE_TYPES = [['unsupported_action', 'Unsupported action', 'Unsupported actions'], ['crash', 'Crash', 'Crashes'], ['game_bug', 'Game bug', 'Game bugs'], ['planner_rejected', 'Planner rejection', 'Planner rejections'], ['false_completion', 'False completion', 'False completions']];
 export const typeLabel = type => ISSUE_TYPES.find(([t]) => t === type)?.[1] || humanize(type);
 export const statusWord = status => ({ open: 'Open', closed: 'Closed' })[status] || humanize(status);
 
@@ -92,7 +93,7 @@ const SHOT_NOTES = { pending: 'Saved when the instance ends.', deleted: 'Deleted
 
 export function issueInfoHTML(issue, example, { runIds }) {
   const type = issue.type;
-  const { wanted, outcome, capabilities, crash, report, planner } = example;
+  const { wanted, outcome, capabilities, crash, report, planner, claim } = example;
   const intent = example.intent || {};
   const sections = [];
 
@@ -108,6 +109,9 @@ export function issueInfoHTML(issue, example, { runIds }) {
   } else if (type === 'planner_rejected') {
     happened = fields([['Goal', intent.primary_goal], ['Planning for', planner?.goal?.focus?.objective], ['Rule', planner?.reason],
       ['Attempt', planner?.attempt], ['Mode', planner?.mode], ['Source', humanize(planner?.source)]]);
+  } else if (type === 'false_completion') {
+    happened = fields([['Goal', intent.primary_goal], ["Planner's reason", claim?.reason], ['Your note', claim?.operator_note],
+      ['Verified goals', (claim?.verified_goals || []).map(g => g.objective)]]);
   }
   sections.push(section('What happened', happened));
 
@@ -144,6 +148,7 @@ export function issueInfoHTML(issue, example, { runIds }) {
       + (report?.related_action ? json('Related action', report.related_action) : '')));
   }
   if (type === 'planner_rejected') sections.push(section('Rejected proposal', planner?.proposal ? json('Proposal', planner.proposal) : '<p class="hint">The proposal was trimmed from this example.</p>'));
+  if (type === 'false_completion') sections.push(section('Claimed evidence', evidenceListHTML(claim?.evidence)));
 
   const ev = example.evidence || {};
   const paths = [['Run folder', ev.run_dir], ['Ledger', ev.ledger], ['Report', ev.report]].filter(([, p]) => p);

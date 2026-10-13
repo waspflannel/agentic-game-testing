@@ -249,6 +249,7 @@ class Coordinator:
             "planner_rejected": "Your AI settings are not the problem: the model answered, but its plan failed ASHAD's checks twice. Choose Resume to plan again from fresh game state, or Recalculate goals to start the plan over. The rejected proposals are in Actions and on the project Issues board.",
             "goal_recalculation": "Review the recalculated goal, then Resume. If recalculation failed, correct the reported problem and retry Recalculate goals; no bot input has resumed.",
             "human_control": "Use the remote desktop to play, then choose Hand back to bots, with an instruction if the bots should change course. Closing the viewer leaves bots paused.",
+            "goal_reached": "Review the planner's evidence. Give another goal to continue from the current game state, end the instance, or choose Not done, keep going to log a false completion and resume.",
         }.get(category, "Inspect the latest observation and action result. Add optional recovery instructions, then Resume, or terminate the run.")
         return {"category": category, "reason": reason, "players": players,
                 "started_at": started_at or time.time(), "recovery": recovery}
@@ -923,6 +924,21 @@ class Coordinator:
         await self.flag(run_id, reason, players=players, category=category)
         return self.store.require("runs", run_id)
 
+    async def goal_reached(self, run_id, player_id, reason):
+        """A claim pauses like a manual pause, with no deadline, incident or repair task, until the operator answers."""
+        await self.cancel_tick(run_id)
+        run = self.store.require("runs", run_id)
+        if run["state"] not in {"Starting", "Running"}:
+            return run
+        run["resume_state"] = run["state"]
+        run.update(state="Paused", investigation_deadline=None)
+        run["pause"] = self.pause_details("goal_reached", f"The planner believes the primary goal is reached: {reason}", [player_id])
+        self.save_run(run)
+        self.store.event(run_id, "run_paused", run["pause"])
+        await self.hold_inputs(run)
+        publish_pending(self.store)
+        return self.store.require("runs", run_id)
+
     async def hold_inputs(self, run):
         run.setdefault("inputs_held_since", time.time())
         for state in run["events"].values():
@@ -1110,7 +1126,7 @@ class Coordinator:
             raise ValueError("Keep the instruction under 4000 characters")
         if command == "takeover_finish" and type(options.get("resume", True)) is not bool:
             raise ValueError("Resume must be true or false")
-        resuming = command == "resume" or (command == "takeover_finish" and options.get("resume", True))
+        resuming = command == "resume" or (command == "takeover_finish" and options.get("resume", True)) or (command == "goal_reached" and options.get("choice") in ("new_goal", "keep_going"))
         async with self.run_lock(run_id), (self.lock if resuming else nullcontext()):
             await self.cancel_tick(run_id)
             cached = self.store.command(run_id, command_id)
@@ -1123,8 +1139,17 @@ class Coordinator:
                 raise ValueError("Run has ended; create a rerun")
             # Rejected commands are not interventions. Resolve their targets and
             # validate options before recording intent or sending worker input.
-            if command not in {"stop", "terminate", "pause", "resume", "extend", "manual_event", "goal", "model", "takeover", "takeover_finish"}:
+            if command not in {"stop", "terminate", "pause", "resume", "extend", "manual_event", "goal", "model", "takeover", "takeover_finish", "goal_reached"}:
                 raise ValueError("Unknown lifecycle command")
+            if command == "goal_reached":
+                if run["state"] != "Paused" or (run.get("pause") or {}).get("category") != "goal_reached":
+                    raise ValueError("No goal-reached claim is waiting for an answer")
+                if options.get("choice") not in ("new_goal", "end", "keep_going"):
+                    raise ValueError("Answer the goal-reached claim with new_goal, end or keep_going")
+                new_goal = options.get("goal")
+                if options["choice"] == "new_goal" and (not isinstance(new_goal, str) or not new_goal.strip() or len(new_goal.strip()) > 4000):
+                    raise ValueError("Give the new goal (up to 4000 characters)")
+                player = next(p for p in run["plan"]["players"] if p["id"] == run["subgoal_plan"]["player_id"])
             recalculating = run.get("goal_recalculation", {}).get("status") == "planning"
             if recalculating and command not in {"stop", "terminate", "pause"}:
                 raise ValueError("Wait for goal recalculation or cancel it before changing run control")
@@ -1196,6 +1221,18 @@ class Coordinator:
                 self.save_run(run)
             elif command == "pause":
                 await self._pause(run, reason, recalculating)
+            elif command == "goal_reached":
+                if options["choice"] == "end":
+                    await self.finish(run_id, "goal_reached")
+                elif options["choice"] == "new_goal":
+                    self._set_goal(run, player, options["goal"].strip(), "Goal reached; new goal given")
+                    await self._resume(run, reason, command_id, after="resume")
+                else:
+                    # Record before _resume clears the structured context the example keeps.
+                    await self.structured.report_false_completion(run_id, player["id"], run["subgoal_plan"], reason)
+                    subgoals.reopen_after_rejected_claim(run["subgoal_plan"], reason)
+                    self.save_run(run)
+                    await self._resume(run, reason, command_id, after="resume")
             elif resuming:
                 await self._resume(run, reason, command_id, after="hand_back" if command == "takeover_finish" else "resume")
             elif command == "extend":
@@ -1206,14 +1243,7 @@ class Coordinator:
                 run["events"][event_id]["manual_triggered"] = True
                 self.save_run(run)
             elif command == "goal":
-                player["goal"] = options["goal"]
-                if run.get("subgoal_plan", {}).get("player_id") == player["id"]:
-                    self.store.event(run_id, "subgoal_plan_reset", {"previous_plan": run["subgoal_plan"], "reason": "Primary objective changed"})
-                    run["subgoal_plan"] = new_plan(options["goal"], player["id"], run_id)
-                    run["plan"]["primary_goal"] = options["goal"]
-                run["players"][player["id"]]["generation"] += 1
-                self.save_run(run)
-                self.store.event(run_id, "goal_changed", {"player_id": player["id"], "goal": player["goal"]})
+                self._set_goal(run, player, options["goal"], "Primary objective changed")
             elif command == "model":
                 run["model"] = run["plan"]["model"] = options["model"]
                 for ps in run["players"].values():
@@ -1223,6 +1253,19 @@ class Coordinator:
             self.store.command(run_id, command_id, {"acknowledged": True, "command": command})
             generate_report(self.store, run_id)
             return self.store.require("runs", run_id)
+
+    def _set_goal(self, run, player, goal, reason):
+        """Replace the primary goal; a subgoal plan restarts at its root from the next fresh observation."""
+        player["goal"] = goal
+        previous = run.get("subgoal_plan")
+        if previous and previous.get("player_id") == player["id"]:
+            self.store.event(run["id"], "subgoal_plan_reset", {"previous_plan": previous, "reason": reason})
+            run["subgoal_plan"] = new_plan(goal, player["id"], run["id"])
+            run["subgoal_plan"]["revision"] = previous["revision"] + 1
+            run["plan"]["primary_goal"] = goal
+        run["players"][player["id"]]["generation"] += 1
+        self.save_run(run)
+        self.store.event(run["id"], "goal_changed", {"player_id": player["id"], "goal": goal})
 
     async def _take_over(self, run, ps, options):
         run_id = run["id"]

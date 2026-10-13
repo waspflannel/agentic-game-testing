@@ -20,7 +20,7 @@ def selection_request(input, questions):
 def planning_request(evidence, schema):
     instructions = (
         "Plan for current_goal.id under its root objective and ancestors; never duplicate ancestors. "
-        "Return schema-matching JSON with mode expand, act, blocked or retire, and flat ordered subgoals. "
+        "Return schema-matching JSON with mode expand, act, blocked, retire or complete, and flat ordered subgoals. "
         "An empty parent_key attaches to focus; other parents must precede their children. "
         "Never supply completed or status fields: only the controller verifies success. "
         "Expand missing prerequisites; act only on achievable goals; block unsupported progress. "
@@ -35,10 +35,10 @@ def planning_request(evidence, schema):
         "inventory quantities. Never mark the entire tutorial finished from a partial checklist. An unknown completion "
         "criterion stays unknown until discovery provides a verifiable condition; an unknown parent may still have executable children. "
         "The root's free-text primary objective ALWAYS keeps completion.kind=unknown: final acceptance is manual. "
-        "At the root use expand (even for one concrete child) or blocked, never act. For other goals act only when "
+        "At the root use expand (even for one concrete child), complete or blocked, never act. For other goals act only when "
         "prerequisites are satisfied and the goal is achievable, not merely because some available action might help. "
-        "Represent the primary objective's concrete observable outcomes as child goals. When no further grounded work remains, use blocked with an "
-        "operator-review explanation rather than inventing another step or claiming primary success. "
+        "Represent the primary objective's concrete observable outcomes as child goals. "
+        "Use complete only at the root when verified children achieve the whole objective, citing observation evidence. completion_rejected means the operator said not done: expand what is missing. If no grounded work remains, use blocked for operator review. "
         "Counted goals must meet their objective's explicit quantity. Cite numeric requirements or recipe quantities, not just an item ID. "
         "Scale ingredient quantities to the parent's missing output using the cited recipe yield; account for already-held output. "
         "Never lower a required count to make a check pass. Preserve every existing known completion condition's kind, target, quantity, collection and matches; never weaken it. "

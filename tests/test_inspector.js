@@ -289,3 +289,45 @@ test('goal text, reasons and instructions are escaped in nodes and the pane', as
     assert.doesNotMatch(await goalsOf(r, events, { selectedGoal }), /<img/, `selected ${selectedGoal}`);
   }
 });
+
+test('a goal-reached root shows the claim in its pane', async () => {
+  const { planHistory } = await loadGoals();
+  const claim = { reason: 'Ten wheat seeds are held.', evidence: [{ source: 'observation', path: '/state/player/inventory/0', quote: 'wheat <seed>' }], verified_goal_ids: ['pie'] };
+  const plan = farmPlan({ status: 'goal_reached', active_goal_id: 'root', goals: [
+    { id: 'root', parent_id: null, objective: 'Make an apple pie', status: 'active', completion_claim: claim },
+    { id: 'pie', parent_id: 'root', objective: 'Bake the pie', status: 'completed' },
+  ] });
+  const events = [pe(40, 'goal_reached', { revision: 3, claim })];
+  const html = await goalsOf(run('Paused', { subgoal_plan: plan }), events);
+  assert.ok(nodeOf(html, 'root').includes('Reached, awaiting you'));
+  const detail = pane(html);
+  assert.ok(detail.includes("Planner's reason:"));
+  assert.match(detail, /class="mono claim-quote">wheat &lt;seed&gt;</);
+  assert.ok(detail.includes('Bake the pie'));
+  assert.ok(detail.includes('Goal reached #40'));
+  assert.ok(!detail.includes('No planning evidence recorded.'), 'the claim evidence is not denied below it');
+  assert.ok(planHistory(events).some(h => h.text.includes('Planner judged the primary goal reached')));
+});
+
+test('a Not done answer becomes an operator node under the root', async () => {
+  const { goalGraph } = await loadGoals();
+  const kept = goalGraph(farmPlan(), [pe(50, 'intervention', { command: 'goal_reached', choice: 'keep_going', reason: 'No pie' })]);
+  assert.equal(kept.nodes.get('operator-50').title, 'Not done: No pie');
+  assert.equal(kept.nodes.get('operator-50').parentId, kept.rootId);
+  const blank = goalGraph(farmPlan(), [pe(51, 'intervention', { command: 'goal_reached', choice: 'keep_going', reason: '' })]);
+  assert.equal(blank.nodes.get('operator-51').title, 'Not done');
+  const next = goalGraph(farmPlan(), [pe(52, 'intervention', { command: 'goal_reached', choice: 'new_goal', reason: 'Cook a pie' })]);
+  assert.equal([...next.nodes.keys()].some(id => String(id).startsWith('operator-')), false);
+});
+
+test('claim evidence is escaped', async () => {
+  const evil = '<img src=x onerror=alert(1)>';
+  const claim = { reason: evil, evidence: [{ source: 'observation', path: '/state/player/inventory/0', quote: evil }], verified_goal_ids: ['pie'] };
+  const plan = farmPlan({ status: 'goal_reached', active_goal_id: 'root', goals: [
+    { id: 'root', parent_id: null, objective: 'Make an apple pie', status: 'active', completion_claim: claim },
+    { id: 'pie', parent_id: 'root', objective: evil, status: 'completed' },
+  ] });
+  const html = await goalsOf(run('Paused', { subgoal_plan: plan }), [pe(40, 'goal_reached', { revision: 3, claim })]);
+  assert.equal(html.includes(evil), false);
+  assert.match(html, /class="mono claim-quote">&lt;img src=x onerror=alert\(1\)&gt;</);
+});

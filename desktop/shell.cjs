@@ -142,5 +142,5 @@ async function selectedManifest(selection, kind) {
   return fs.realpath(manifest);
 }
 
-module.exports = { PROTOCOL, childEnvironment, pythonLayout, diagnosticDataRoot, launchConfig, announcement, readyIdentity, cleanControllerExit, appUrl, loginUrl,
-  viewerUrl, privilegedSender, desktopHeaders, validatedStatus, quitPrompt, confirmDrain, selectedManifest };
+module.exports = { childEnvironment, pythonLayout, diagnosticDataRoot, launchConfig, announcement, readyIdentity, cleanControllerExit, appUrl, loginUrl,
+  viewerUrl, privilegedSender, desktopHeaders, validatedStatus, confirmDrain, selectedManifest };

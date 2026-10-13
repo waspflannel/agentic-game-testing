@@ -10,7 +10,7 @@ Get game controls saves each completed source batch, so retrying a failed run re
 
 ASHAD is a desktop app (Electron) for Windows x64 and Linux x64. There is no browser version: the window talks only to its own private controller, which rejects any client without the per-launch key Electron injects.
 
-This repository contains the desktop shell, the controller and its UI, worker services, supporting Python utilities, and tests/documentation. Agronauts game source, assets, builds, Godot AI-layer edits, and game-patching tools are not included. Local credentials, runtime data, and validation history also stay out of Git.
+This repository contains the desktop shell, the controller and its UI, worker services, supporting Python utilities, and documentation. Agronauts game source, assets, builds, Godot AI-layer edits, and game-patching tools are not included. Local credentials, runtime data, and validation history also stay out of Git.
 
 The app opens without game files. Getting game controls and gameplay require a separately supplied compatible game build, pinned source/control evidence, and a registered manifest; game files remain local and ignored.
 
@@ -26,7 +26,7 @@ npm --prefix desktop run build:dir
 npm --prefix desktop run build:nsis
 ```
 
-Build preparation requires Git (only tracked sources are packaged) and downloads verified private Python 3.13.16 plus hash-locked runtime wheels from PyPI, ignoring local pip configuration; pip and test tooling are not shipped. Game files and Docker Desktop's Linux engine remain separately supplied prerequisites. The app writes to `%APPDATA%\ASHAD\controller`, not its installation directory. For isolated diagnostic testing only, pass `--user-data-dir="C:bsoluteresh test data"`; this changes the store, not authentication or runtime safeguards.
+Build preparation requires Git (only tracked sources are packaged) and downloads verified private Python 3.13.16 plus hash-locked runtime wheels from PyPI, ignoring local pip configuration; pip is not shipped. Game files and Docker Desktop's Linux engine remain separately supplied prerequisites. The app writes to `%APPDATA%\ASHAD\controller`, not its installation directory. For isolated diagnostic testing only, pass `--user-data-dir="C:bsoluteresh test data"`; this changes the store, not authentication or runtime safeguards.
 
 Chromium's sandbox needs ordinary user read access to the app's files. If `ASHAD.exe` exits immediately when started inside a folder with restricted permissions, install it with the NSIS build or copy `win-unpacked` to a normal per-user location such as `%LOCALAPPDATA%`.
 
@@ -124,18 +124,20 @@ The supported workflow is getting game controls and fresh, one-bot instances. Ol
 
 Controller data lives in `%APPDATA%\ASHAD\controller` (Windows) or `~/.config/ASHAD/controller` (Linux); worker volumes contain game and Steam state. Back up both when preserving local history. Keep Steam profiles and credentials out of shared evidence exports.
 
-## Verify changes
+## Pre-merge check
 
-Development checks need Node.js and a Python environment; run `.\scripts\setup.ps1` (Windows) or `./scripts/setup.sh` (Linux) once to create `.venv`.
+Development checks need Node.js and a Python environment. Run `.\scripts\setup.ps1` (Windows) or `./scripts/setup.sh` (Linux) once to create `.venv`, then:
 
 ```powershell
-.\scripts\test.ps1
+.\scripts\check.ps1
 ```
 
 ```sh
-./scripts/test.sh
+./scripts/check.sh
 ```
 
-Mocked tests do not establish live account access, Steam gameplay, UI acceptance or autonomous campaign completion. Game-adapter checks and historical validation records are maintained separately and are not included here.
+The check proves Python compiles, JavaScript parses, and that the controller starts and serves `/api/health` and the UI shell.
 
-Code map: `ashad/` contains the controller, agents and storage; `ashad/static/` the app UI rendered by Electron; `desktop/` the Electron shell and packaging; `worker/` isolated desktop services; `integration/fixtures.py` Python-side save/archive utilities required by the controller; `tests/` app automated checks; `scripts/` development setup, desktop provisioning and verification tools.
+ASHAD has no automated code tests. Testing is Jaden's manual testing, or Jantra's computer testing when Jaden asks. The check does not establish live account access, Steam gameplay, UI acceptance or campaign completion.
+
+Code map: `ashad/` contains the controller, agents and storage; `ashad/static/` the app UI rendered by Electron; `desktop/` the Electron shell and packaging; `worker/` isolated desktop services; `integration/fixtures.py` Python-side save/archive utilities required by the controller; `scripts/` development setup, desktop provisioning and pre-merge check.

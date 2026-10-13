@@ -7,4 +7,4 @@ if (-not (Test-Path -LiteralPath '.venv\Scripts\python.exe')) {
 }
 & .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 if ($LASTEXITCODE -ne 0) { throw 'Development dependency installation failed.' }
-Write-Output 'Development setup complete. Run .\scripts\test.ps1, then build the desktop app with npm --prefix desktop run build:dir.'
+Write-Output 'Development setup complete. Run .\scripts\check.ps1, then build the desktop app with npm --prefix desktop run build:dir.'

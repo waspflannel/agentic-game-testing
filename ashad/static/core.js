@@ -1,4 +1,4 @@
-// Pure renderer helpers. Nothing here touches the DOM at import time, so Node tests import it directly.
+// Pure renderer helpers. Nothing here touches the DOM at import time.
 
 const ESCAPES = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' };
 export const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ESCAPES[c]);

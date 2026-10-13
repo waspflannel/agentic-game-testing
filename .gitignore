@@ -10,7 +10,6 @@
 !/worker/
 !/integration/
 !/scripts/
-!/tests/
 !/docs/
 !/desktop/
 
@@ -29,15 +28,14 @@
 /integration/*
 !/integration/fixtures.py
 
-# App setup and verification only, never game-patching or game-build scripts.
+# App setup and pre-merge checks only, never game-patching or game-build scripts.
 /scripts/*
 !/scripts/setup.ps1
-!/scripts/test.ps1
+!/scripts/check.ps1
 !/scripts/setup.sh
-!/scripts/test.sh
+!/scripts/check.sh
 !/scripts/provision-workers.ps1
 !/scripts/probe-desktop-runtime.py
-/tests/test_game_integration.py
 
 # App documentation only; omit local validation history and game-layer designs.
 /docs/*
@@ -46,7 +44,6 @@
 # Generated files and secrets must never accompany source.
 __pycache__/
 *.py[cod]
-.pytest_cache/
 .venv/
 node_modules/
 .env

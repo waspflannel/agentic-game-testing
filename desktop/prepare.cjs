@@ -150,5 +150,4 @@ async function prepare() {
     'print(f"Prepared private Python, {len(pins)} hash-locked pins, keyring import, Codex resources and controller/static resources.")', lock]);
 }
 
-if (require.main === module) prepare().catch(error => { console.error(error.message); process.exitCode = 1; });
-module.exports = { PYTHON_VERSION, PYTHON_URL, PYTHON_SHA256, LINUX_PYTHON_URL, LINUX_PYTHON_SHA256, prepare, copyTracked };
+prepare().catch(error => { console.error(error.message); process.exitCode = 1; });

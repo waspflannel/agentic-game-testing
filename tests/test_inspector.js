@@ -251,6 +251,30 @@ test('only nodes new since the last render animate in', async () => {
   assert.equal(count(html, 'goal-node-new'), 2);
 });
 
+test('a changed primary goal or rebuilt plan clears the goal selection and seen nodes', async () => {
+  const { resetGoalState } = await loadGoals();
+  const thread = () => ({ goalSelected: 'g2', goalSeen: new Set(['g2']) });
+  const same = {};
+  resetGoalState(same, farmPlan());
+  Object.assign(same, thread());
+  resetGoalState(same, farmPlan({ revision: 8 }));
+  assert.equal(same.goalSelected, 'g2', 'the same plan keeps its selection');
+  assert.deepEqual([...same.goalSeen], ['g2']);
+  const changed = {};
+  resetGoalState(changed, farmPlan());
+  Object.assign(changed, thread());
+  resetGoalState(changed, farmPlan({ primary_goal: 'Another goal' }));
+  assert.deepEqual([changed.goalSelected, changed.goalSeen], [null, null], 'a new primary goal starts over');
+  const rebuilt = {};
+  resetGoalState(rebuilt, farmPlan({ revision: 3 }));
+  Object.assign(rebuilt, thread());
+  resetGoalState(rebuilt, farmPlan({ revision: 0 }));
+  assert.deepEqual([rebuilt.goalSelected, rebuilt.goalSeen], [null, null], 'a revision-0 rebuild starts over');
+  const html = await goalsOf(run('Running', { subgoal_plan: farmPlan() }), [], { selectedGoal: rebuilt.goalSelected, seenNodes: rebuilt.goalSeen });
+  assert.equal(count(html, 'goal-node-new'), 0, 'no stale suppression or animation on the first render');
+  assert.ok(pane(html).includes(farmPlan().goals.find(g => g.id === farmPlan().active_goal_id)?.objective ?? ''), 'the pane falls back to the current node');
+});
+
 test('goal text, reasons and instructions are escaped in nodes and the pane', async () => {
   const evil = '<img src=x onerror=alert(1)>';
   const plan = farmPlan({ primary_goal: evil, reason: evil });

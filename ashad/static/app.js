@@ -2,6 +2,7 @@ import { esc, icon, href, newId, newOp, submitOnce, api, parseRoute, legacyNewTa
 import { sidebarModel, sidebarHTML } from './views/sidebar.js';
 import { emptyHTML, noConfigurationsHTML, projectConfigurations, readinessKey, newDraft, draftModel, composerModel, composerSkeleton, composerRegions, startInstance, checkStart } from './views/home.js';
 import { isActiveRun, playerIds, instanceState, stateAnnouncement, cameraTarget, createCamera, createRunSlot, runCommand, threadSkeleton, threadRegions, defaultTab, nextTab } from './views/instance.js';
+import { resetGoalState } from './views/goals.js';
 import { panelRegions, mergeEvents, latestObservation } from './views/inspector.js';
 import { newSetup, projectBuilds, applyDefaults, setupModel, setupDirty, discardSetup, getControls, setupSkeleton, setupRegions, prepareDialogText, prepareDesktop, registerBuild, elapsed } from './views/setup.js';
 import { settingsSkeleton, accountSkeleton, accountRegions, accountBlocker, settleLogin, desktopsSkeleton, desktopsRegions, workerPayload, steamSkeleton, steamRegions, steamErrors,
@@ -890,6 +891,7 @@ function renderPanels(view, run) {
   t.lastObs = latestObservation(events, t.lastObs);
   const selectedSeq = t.tl.selected ? Number(t.tl.selected.replace('m', '')) : null;
   const selectedEvent = events.find(e => e.seq === selectedSeq) || null;
+  resetGoalState(t, run.subgoal_plan);
   patchRegions(view, panelRegions(run, { latest: t.lastObs, selectedEvent, events, view: t.worldView, now: Date.now() / 1000, selectedGoal: t.goalSelected, seenNodes: t.goalSeen }));
   const goals = view.querySelector('[data-region="goals"]');
   updateTimes(goals);

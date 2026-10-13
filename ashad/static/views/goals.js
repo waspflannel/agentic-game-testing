@@ -166,6 +166,14 @@ function detailHTML(node, graph, ctx) {
   return `<section class="goal-detail" aria-label="Selected goal"><p class="goal-detail-title">${esc(node.title)}</p><p class="goal-status">${NODE_STATUS[node.status].label}</p>${body}</section>`;
 }
 
+// Selection and seen ids belong to one plan lineage: a new primary goal or root, or a revision that went backwards (a rebuilt plan restarts at 0 and reuses ids like goal-1-0), starts them over.
+export function resetGoalState(thread, plan) {
+  const key = `${plan?.primary_goal}|${plan?.root_id}`;
+  const revision = plan?.revision ?? 0;
+  if (thread.goalKey !== key || revision < thread.goalRevision) Object.assign(thread, { goalSelected: null, goalSeen: null });
+  Object.assign(thread, { goalKey: key, goalRevision: revision });
+}
+
 // seenNodes: the node ids of the previous render (null on a thread's first render); only ids missing from it animate in.
 export function goalsHTML(run, { events, selectedGoal, seenNodes }) {
   const plan = run.subgoal_plan;

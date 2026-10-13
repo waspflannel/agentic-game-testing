@@ -1226,33 +1226,33 @@ function toggleSidebar() {
   syncNavToggle();
 }
 
-  // Every chip picker routes here. The header model sends a model control; the composer fields update the draft (renderView re-probes readiness).
-  function chooseOption(field, value) {
-    if (field === 'run-model') {
-      command(`model:${value}`, control(threadRun(), 'model', { model: value }), `Model set to ${modelLabel(state.data, value)}. Applies from the next decision.`);
-      return;
-    }
-    if (field === 'player') { state.thread.player = value; renderView(); return; }
-    if (field === 'ov-build') {
-      overviewFor(state.route.id).buildId = value;  // A chosen build is checked at once; that is the user's request, not a poll.
-      renderView();
-      return;
-    }
-    if (field === 'usage-model' || field === 'usage-purpose') {
-      Object.assign(state.usageUi, { [field.slice(6)]: value, limit: newUsageUi().limit });
-      renderView();
-      return;
-    }
-    if (field === 'issue-example') { if (state.issue) state.issue.exampleId = value; renderView(); return; }
-    const projectId = composerProject(state.route, state.data);
-    if (!projectId) return;
-    if (field === 'project') { location.hash = href('p', value, 'new'); return; }
-    const draft = draftFor(projectId);
-    if (field === 'configuration') draft.configurationId = value;
-    else draft[field] = value;  // model, transport
-    renderView();
+// Every chip picker routes here. The header model sends a model control; the composer fields update the draft (renderView re-probes readiness).
+function chooseOption(field, value) {
+  if (field === 'run-model') {
+    command(`model:${value}`, control(threadRun(), 'model', { model: value }), `Model set to ${modelLabel(state.data, value)}. Applies from the next decision.`);
+    return;
   }
-  
+  if (field === 'player') { state.thread.player = value; renderView(); return; }
+  if (field === 'ov-build') {
+    overviewFor(state.route.id).buildId = value;  // A chosen build is checked at once; that is the user's request, not a poll.
+    renderView();
+    return;
+  }
+  if (field === 'usage-model' || field === 'usage-purpose') {
+    Object.assign(state.usageUi, { [field.slice(6)]: value, limit: newUsageUi().limit });
+    renderView();
+    return;
+  }
+  if (field === 'issue-example') { if (state.issue) state.issue.exampleId = value; renderView(); return; }
+  const projectId = composerProject(state.route, state.data);
+  if (!projectId) return;
+  if (field === 'project') { location.hash = href('p', value, 'new'); return; }
+  const draft = draftFor(projectId);
+  if (field === 'configuration') draft.configurationId = value;
+  else draft[field] = value;  // model, transport
+  renderView();
+}
+
 document.addEventListener('click', async event => {
   const row = event.target.closest('.tl-row');
   if (row) selectCard(row.closest('.tl-card').dataset.card);  // The native toggle still opens the body.
@@ -1301,7 +1301,7 @@ document.addEventListener('click', async event => {
     menu.hidePopover();
     document.querySelector(`[popovertarget="${menu.id}"]`)?.focus();  // patchHTML then keeps focus on the re-rendered trigger.
     if (target.getAttribute('aria-selected') !== 'true') chooseOption(target.dataset.field, target.dataset.value);
-    } else if (action === 'thread-tab') {
+  } else if (action === 'thread-tab') {
     setTab(target.dataset.tab);
   } else if (action === 'instruction-cancel') {
     Object.assign(state.thread, { instructionOpen: false, instructionText: '' });
@@ -1357,12 +1357,12 @@ document.addEventListener('keydown', event => {
   }
 });
 
-  // Opening a dropdown focuses the selected row, or the first row when none is selected; `toggle` does not bubble, so listen in the capture phase.
-  document.addEventListener('toggle', event => {
-    if (event.newState !== 'open' || !event.target.classList?.contains('dropdown-menu')) return;
-    (event.target.querySelector('[aria-selected="true"]') || event.target.querySelector('[role="option"]'))?.focus();
-  }, true);
-  
+// Opening a dropdown focuses the selected row, or the first row when none is selected; `toggle` does not bubble, so listen in the capture phase.
+document.addEventListener('toggle', event => {
+  if (event.newState !== 'open' || !event.target.classList?.contains('dropdown-menu')) return;
+  (event.target.querySelector('[aria-selected="true"]') || event.target.querySelector('[role="option"]'))?.focus();
+}, true);
+
 // Composer fields update the in-memory draft; the textarea itself is never re-rendered.
 document.addEventListener('input', event => {
   if (event.target.id === 'resume-reason') { state.thread.instructionText = event.target.value; return; }

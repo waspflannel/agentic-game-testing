@@ -39,6 +39,8 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / "runs").mkdir(exist_ok=True)
         self.lock = threading.RLock()
+        # Process-wide write cost read by turn timing; concurrent players share these counters.
+        self.write_seconds, self.write_bytes, self.writes = 0.0, 0, 0
         self.db = sqlite3.connect(self.root / "ashad.sqlite3", check_same_thread=False, timeout=30, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         self.db.executescript("""
@@ -62,9 +64,17 @@ class Store:
 
     def put(self, kind, data, key=None):
         key = key or data["id"]
+        raw = json.dumps(redact(data), ensure_ascii=False, allow_nan=False)
         with self.lock:
-            self.db.execute("INSERT INTO records VALUES (?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data,updated=excluded.updated", (kind, key, json.dumps(redact(data), ensure_ascii=False, allow_nan=False), time.time()))
+            started = time.perf_counter()
+            self.db.execute("INSERT INTO records VALUES (?,?,?,?) ON CONFLICT(kind,id) DO UPDATE SET data=excluded.data,updated=excluded.updated", (kind, key, raw, time.time()))
+            self._count_write(started, raw)
         return data
+
+    def _count_write(self, started, raw):
+        self.write_seconds += time.perf_counter() - started
+        self.write_bytes += len(raw.encode())
+        self.writes += 1
 
     def get(self, kind, key, default=None):
         with self.lock:
@@ -123,11 +133,13 @@ class Store:
             event["hash"] = ledger_hash(event)
             raw = json.dumps(event, ensure_ascii=False, allow_nan=False)
             # Ledger is authoritative; recovery reconciles a crash between append and DB index.
+            started = time.perf_counter()
             with (self.run_dir(run_id) / "ledger.jsonl").open("a", encoding="utf-8", newline="\n") as f:
                 f.write(raw + "\n")
                 f.flush()
                 os.fsync(f.fileno())
             self.db.execute("INSERT INTO events VALUES (?,?,?,?)", (run_id, seq, event["id"], raw))
+            self._count_write(started, raw)
             return event
 
     def recover_ledger(self, run_id):

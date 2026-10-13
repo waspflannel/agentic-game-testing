@@ -414,11 +414,11 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .dropdown-trigger .icon { width: 14px; height: 14px; }
 .dropdown-trigger .dropdown-chevron { color: var(--text-3); }
 .dropdown-trigger .chip-text { max-width: 220px; }
-.dropdown-menu { min-width: 220px; position-area: bottom span-right; position-try-fallbacks: flip-block, flip-inline; }
+.dropdown-menu { min-width: 220px; max-width: calc(100vw - 16px); grid-template-columns: minmax(0, 1fr); position-area: bottom span-right; position-try-fallbacks: flip-block, flip-inline; }
 .thread-meta .dropdown-menu { position-area: bottom span-left; }
 .dropdown-option { font-size: var(--fs); }
 .dropdown-option:focus-visible { outline: none; background: var(--surface-3); box-shadow: inset 0 0 0 2px var(--accent); }
-.dropdown-option-label { overflow: hidden; text-overflow: ellipsis; }
+.dropdown-option-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .dropdown-default { padding: 1px 8px; border-radius: 999px; background: var(--surface-3); color: var(--text-2); font-size: var(--fs-meta); }
 .dropdown-option:is(:hover, :focus-visible) .dropdown-default { background: var(--surface-2); }
 .dropdown-option .dropdown-check { margin-left: auto; color: var(--text); }

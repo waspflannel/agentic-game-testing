@@ -1226,18 +1226,16 @@ function toggleSidebar() {
   syncNavToggle();
 }
 
-// Both model menus route here: the composer updates its draft (renderView re-probes readiness); the header sends a model control unless the run already uses that model.
-function chooseModel(field, model) {
-  if (field === 'run-model') {
-    const run = threadRun();
-    if (model === run.model) return;
-    command(`model:${model}`, control(run, 'model', { model }), `Model set to ${modelLabel(state.data, model)}. Applies from the next decision.`);
-    return;
+  // Every chip picker routes here. The header model sends a model control; the composer fields update the draft (renderView re-probes readiness).
+  function chooseOption(field, value) {
+    if (field === 'run-model') {
+      command(`model:${value}`, control(threadRun(), 'model', { model: value }), `Model set to ${modelLabel(state.data, value)}. Applies from the next decision.`);
+      return;
+    }
+    draftFor(composerProject(state.route, state.data)).model = value;
+    renderView();
   }
-  draftFor(composerProject(state.route, state.data)).model = model;
-  renderView();
-}
-
+  
 document.addEventListener('click', async event => {
   const row = event.target.closest('.tl-row');
   if (row) selectCard(row.closest('.tl-card').dataset.card);  // The native toggle still opens the body.
@@ -1280,12 +1278,13 @@ document.addEventListener('click', async event => {
   } else if (action === 'ctl') {
     target.closest('[popover]')?.hidePopover();
     if (target.getAttribute('aria-disabled') !== 'true') onControl(target.dataset.ctl);
-  } else if (action === 'pick-model') {
+  } else if (action === 'pick-option') {
+    if (target.getAttribute('aria-disabled') === 'true') return;
     const menu = target.closest('[popover]');
     menu.hidePopover();
     document.querySelector(`[popovertarget="${menu.id}"]`)?.focus();  // patchHTML then keeps focus on the re-rendered trigger.
-    chooseModel(target.dataset.field, target.dataset.value);
-  } else if (action === 'thread-tab') {
+    if (target.getAttribute('aria-selected') !== 'true') chooseOption(target.dataset.field, target.dataset.value);
+    } else if (action === 'thread-tab') {
     setTab(target.dataset.tab);
   } else if (action === 'instruction-cancel') {
     Object.assign(state.thread, { instructionOpen: false, instructionText: '' });
@@ -1327,8 +1326,8 @@ document.addEventListener('keydown', event => {
     event.preventDefault();
     event.target.form.requestSubmit();
   }
-  if (event.target.classList?.contains('model-option')) {
-    const options = [...event.target.parentElement.querySelectorAll('.model-option')];
+  if (event.target.classList?.contains('dropdown-option')) {
+    const options = [...event.target.parentElement.querySelectorAll('.dropdown-option')];
     const next = nextOptionIndex(event.key, options.indexOf(event.target), options.length);
     if (next >= 0) { event.preventDefault(); options[next].focus(); }
   }
@@ -1341,11 +1340,12 @@ document.addEventListener('keydown', event => {
   }
 });
 
-// Opening a model menu focuses the selected model; `toggle` does not bubble, so listen in the capture phase.
-document.addEventListener('toggle', event => {
-  if (event.newState === 'open' && event.target.classList?.contains('model-menu')) event.target.querySelector('[aria-selected="true"]')?.focus();
-}, true);
-
+  // Opening a dropdown focuses the selected row, or the first row when none is selected; `toggle` does not bubble, so listen in the capture phase.
+  document.addEventListener('toggle', event => {
+    if (event.newState !== 'open' || !event.target.classList?.contains('dropdown-menu')) return;
+    (event.target.querySelector('[aria-selected="true"]') || event.target.querySelector('[role="option"]'))?.focus();
+  }, true);
+  
 // Composer fields update the in-memory draft; the textarea itself is never re-rendered.
 document.addEventListener('input', event => {
   if (event.target.id === 'resume-reason') { state.thread.instructionText = event.target.value; return; }

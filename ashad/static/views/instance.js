@@ -1,5 +1,5 @@
 // Instance thread: header, tabs, camera and control bar (spec §8.5 A–C, §9). Markup and state are pure; app.js owns I/O.
-import { esc, icon, href, newId, runGoal, humanize, badge, modelLabel, providerModels, modelMenuHTML, runConfigurationId } from '../core.js';
+import { esc, icon, href, newId, runGoal, humanize, badge, modelLabel, providerModels, dropdownHTML, runConfigurationId } from '../core.js';
 import { typeLabel } from './issues.js';
 
 const enc = encodeURIComponent;
@@ -201,7 +201,7 @@ export function threadRegions(run, ctx) {
   const transport = { enet: 'ENet', steam: 'Steam' }[run.plan?.transport?.mode];
   const textChip = text => `<span class="chip" title="${esc(text)}"><span class="chip-text">${esc(text)}</span></span>`;
   const chips = [agent?.name, model, build && `build ${build}`, transport].filter(Boolean).map(textChip).join('');
-  const modelMenu = modelMenuHTML({ key: 't-model', field: 'run-model', options: providerModels(data, run.model), selected: run.model, defaultModel: run.plan?.model });
+  const modelMenu = dropdownHTML({ key: 't-model', field: 'run-model', label: 'Model', iconName: 'sliders', options: providerModels(data, run.model), selected: run.model, defaultId: run.plan?.model });
   const live = run.model && MODEL_CHANGE_STATES.has(run.state);
   const metaChips = [agent?.name && textChip(agent.name), model && (live ? modelMenu : textChip(model)), build && textChip(`build ${build}`), transport && textChip(transport)].filter(Boolean).join('');
   const head = `<button type="button" class="thread-goal" popovertarget="goal-full" data-key="t-goal" title="Show the full goal">${esc(goal)}</button>`

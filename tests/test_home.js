@@ -213,12 +213,12 @@ test('composer offers every model and marks the server default model as Default'
   const draft = { ...newDraft(), configurationId: 'a' };
   const bar = composerRegions(composerModel(data(), 'p', draft, null), draft).bar;
   assert.doesNotMatch(bar, /<select data-field="model"/);
-  const options = [...bar.matchAll(/<button [^>]*role="option"[^>]*data-action="pick-model"[^>]*>.*?<\/button>/g)].map(x => x[0]);
+  const options = [...bar.matchAll(/<button [^>]*role="option"[^>]*data-action="pick-option"[^>]*>.*?<\/button>/g)].map(x => x[0]);
   assert.deepEqual(options.map(o => o.match(/data-value="([^"]+)"/)[1]), data().model_options.map(m => m.id));
   const astra = options.find(o => o.includes('data-value="gpt-6-astra"'));
   assert.match(astra, /aria-selected="true"/);
-  assert.match(astra, /model-default">Default</);
-  assert.equal(options.filter(o => o.includes('model-default')).length, 1);
+  assert.match(astra, /dropdown-default">Default</);
+  assert.equal(options.filter(o => o.includes('dropdown-default')).length, 1);
   assert.match(bar, /<span class="chip-text">GPT-6 Astra<\/span>/);
   const other = { ...draft, model: 'opus' };
   const bar2 = composerRegions(composerModel(data(), 'p', other, null), other).bar;

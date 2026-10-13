@@ -6,6 +6,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
 const load = () => import(pathToFileURL(path.join(__dirname, '../ashad/static/views/inspector.js')).href);
+const loadGoals = () => import(pathToFileURL(path.join(__dirname, '../ashad/static/views/goals.js')).href);
 
 const NOW = 10000;
 const obsEvent = (seq, id, extra = {}, ts = NOW - 5) => ({ id: `evt_${seq}`, seq, kind: 'structured_decision_context', timestamp: ts,
@@ -14,7 +15,7 @@ const run = (state, extra = {}) => ({ id: 'r1', state, usage: [], ...extra });
 const ctx = (events, extra = {}) => ({ latest: events.findLast(e => e.payload?.full_observation) || null, selectedEvent: null, events, view: 'latest', now: NOW, goalOpen: new Set(), ...extra });
 
 test('the inspector never requests live game context', () => {
-  for (const file of ['ashad/static/views/inspector.js', 'ashad/static/app.js']) {
+  for (const file of ['ashad/static/views/inspector.js', 'ashad/static/views/goals.js', 'ashad/static/app.js']) {
     assert.doesNotMatch(fs.readFileSync(path.join(__dirname, '..', file), 'utf8'), /\/context/, `${file} must not call …/context`);
   }
 });
@@ -133,7 +134,8 @@ test('planning pauses show a review note', async () => {
 const pe = (seq, kind, payload) => ({ id: `evt_${seq}`, seq, kind, timestamp: NOW - seq, payload });
 
 test('plan history lists planning events newest first with jump chips', async () => {
-  const { panelRegions, planHistory } = await load();
+  const { panelRegions } = await load();
+  const { planHistory } = await loadGoals();
   const events = [
     pe(3, 'subgoal_planning_context', { context: { current_goal: { objective: 'Obtain wheat' } } }),
     pe(4, 'subgoal_plan_rejected', { attempt: 1, reason: 'Bad <b>' }),

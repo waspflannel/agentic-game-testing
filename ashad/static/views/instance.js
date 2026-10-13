@@ -218,8 +218,7 @@ export function threadRegions(run, ctx) {
 
   const ids = playerIds(run);
   const players = ids.length > 1
-    ? `<label class="chip chip-select player-switch">${icon('monitor')}<span class="sr-only">Player</span><select data-field="player" data-key="t-player" aria-label="Player">`
-      + ids.map(id => `<option value="${esc(id)}"${id === player ? ' selected' : ''}>${esc((run.plan?.players || []).find(p => p.id === id)?.name || id)}</option>`).join('') + `</select></label>`
+    ? dropdownHTML({ key: 't-player', field: 'player', label: 'Player', iconName: 'monitor', options: ids.map(id => ({ id, label: (run.plan?.players || []).find(p => p.id === id)?.name || id })), selected: player })
     : '';
 
   return { head, banner, players,

@@ -269,18 +269,10 @@ a.active-pill:hover { text-decoration: none; background: var(--surface-2); }
 .composer-bar { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-top: 8px; }
 .composer-bar-left, .composer-bar-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .composer-bar-left { flex: 0 1 auto; flex-wrap: wrap; }
-.composer-bar-left .chip-select { min-width: 0; }
-.composer-bar-left .chip-select select { max-width: 220px; min-width: 0; }
 .composer-bar-right { flex: 1 1 0; justify-content: flex-end; min-width: 36px; }
 .composer-bar-right .btn-round { flex: none; }
 .composer-summary { min-width: 0; color: var(--text-3); font-size: var(--fs-meta); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .composer-status { display: grid; gap: 6px; min-height: 20px; }
-.chip-select { position: relative; padding-right: 6px; }
-.chip-select select { appearance: none; border: 0; background: transparent; color: var(--text); font-size: var(--fs-meta); max-width: 260px; text-overflow: ellipsis; cursor: pointer; padding-right: 2px; }
-.chip-select select:focus-visible { outline: none; }
-.chip-select:focus-within { outline: 2px solid var(--accent); outline-offset: 2px; }
-.chip-select option { background: var(--surface-2); color: var(--text); }
-.chip-select .icon { width: 14px; height: 14px; }
 a.chip:hover { text-decoration: none; color: var(--text); background: var(--surface-3); }
 .chip-text { overflow: hidden; text-overflow: ellipsis; max-width: 420px; }
 .chip-attention { color: var(--attention); }
@@ -439,7 +431,6 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .thread-banner { display: flex; gap: 10px; padding: 10px 12px; border-radius: var(--r-card); background: color-mix(in srgb, var(--attention) 10%, var(--bg)); color: var(--text); }
 .thread-banner > .icon { color: var(--attention); margin-top: 2px; }
 .thread-banner p { color: var(--text-2); margin-top: 2px; }
-.player-switch { justify-self: start; }
 
 .camera { position: relative; width: min(100%, calc(64vh * 16 / 9)); aspect-ratio: 16 / 9; margin: 0 auto; border-radius: var(--r-big); background: #000; overflow: hidden; }
 .camera-media, .camera-overlay { position: absolute; inset: 0; }

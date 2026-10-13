@@ -1,5 +1,5 @@
 // Usage page (spec §8.7). Fetched on view open and Refresh only; the model and markup are pure.
-import { esc, icon, href, since, humanize } from '../core.js';
+import { esc, icon, href, dropdownHTML, since, humanize } from '../core.js';
 
 export const PAGE_ROWS = 200;
 export const RANGES = [['7d', '7 days', 7], ['30d', '30 days', 30], ['all', 'All time', null]];
@@ -53,10 +53,10 @@ export function usageRegions(usage, ui, modelLabels, now = Date.now() / 1000) {
   const m = usageModel(usage.rows, ui, now);
   const label = id => modelLabels.get(id) || id || 'Unknown';
   const seg = RANGES.map(([id, text]) => `<button type="button" class="seg-btn" data-action="usage-range" data-range="${id}" data-key="u-range-${id}" aria-pressed="${ui.range === id}">${text}</button>`).join('');
-  const select = (field, all, values, current, name) => `<label class="chip chip-select"><span class="sr-only">${name}</span><select data-field="${field}" data-key="u-${field}" aria-label="${name}">`
-    + `<option value="">${all}</option>${values.map(v => `<option value="${esc(v)}"${v === current ? ' selected' : ''}>${esc(field === 'usage-model' ? label(v) : humanize(v))}</option>`).join('')}</select></label>`;
   const controls = `<div class="usage-controls"><div class="seg" role="group" aria-label="Range">${seg}</div>`
-    + select('usage-model', 'All models', m.models, ui.model, 'Model') + select('usage-purpose', 'All purposes', m.purposes, ui.purpose, 'Purpose') + `</div>`;
+    + dropdownHTML({ key: 'u-usage-model', field: 'usage-model', label: 'Model', options: [{ id: '', label: 'All models' }, ...m.models.map(v => ({ id: v, label: label(v) }))], selected: ui.model })
+    + dropdownHTML({ key: 'u-usage-purpose', field: 'usage-purpose', label: 'Purpose', options: [{ id: '', label: 'All purposes' }, ...m.purposes.map(v => ({ id: v, label: humanize(v) }))], selected: ui.purpose })
+    + `</div>`;
   const th = ([key, text]) => `<th scope="col" aria-sort="${ui.sort === key ? (ui.dir === 'asc' ? 'ascending' : 'descending') : 'none'}"><button type="button" class="th-btn" data-action="usage-sort" data-sort="${key}" data-key="u-sort-${key}">${text}${ui.sort === key ? icon(ui.dir === 'asc' ? 'arrow-up' : 'arrow-down', 'icon th-icon') : ''}</button></th>`;
   const rows = m.rows.map(r => {
     const tokens = rowTokens(r);

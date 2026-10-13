@@ -1,5 +1,5 @@
 // Project overview (spec §8.3). Model and markup are pure; app.js owns the DOM, the chooser and I/O.
-import { esc, icon, href, ago, since, newOp, runGoal, runTime, runStatus } from '../core.js';
+import { esc, icon, href, dropdownHTML, ago, since, newOp, runGoal, runTime, runStatus } from '../core.js';
 import { readinessHTML, projectBuilds, controlsProgressHTML } from './setup.js';
 
 const enc = encodeURIComponent;
@@ -87,8 +87,7 @@ export function overviewRegions(m, ov, now = Date.now() / 1000) {
   let readiness;
   if (!m.build) readiness = `<p class="hint">Add a build to check this computer.</p>`;
   else {
-    const picker = m.builds.length > 1 ? `<label class="chip chip-select">${icon('file-text')}<span class="sr-only">Build</span><select data-field="ov-build" data-key="ov-build" aria-label="Build to check">`
-      + m.builds.map(b => `<option value="${esc(b.id)}"${b.id === m.build.id ? ' selected' : ''}>${esc(b.name || b.id)}</option>`).join('') + `</select></label>` : `<span class="hint">For build ${esc(m.build.name || m.build.id)}</span>`;
+    const picker = m.builds.length > 1 ? dropdownHTML({ key: 'ov-build', field: 'ov-build', label: 'Build to check', iconName: 'file-text', options: m.builds.map(b => ({ id: b.id, label: b.name || b.id })), selected: m.build.id }) : `<span class="hint">For build ${esc(m.build.name || m.build.id)}</span>`;
     const check = ov.readiness?.buildId === m.build.id ? ov.readiness : null;
     const op = ov.prepare;
     readiness = `<div class="row-between">${picker}<button type="button" class="btn btn-ghost btn-sm" data-action="ov-recheck" data-key="ov-recheck"${check?.loading ? ' aria-disabled="true"' : ''}>${icon('refresh')}Re-check</button></div>`

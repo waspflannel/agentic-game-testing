@@ -348,3 +348,15 @@ test('the instruction form labels its submit by mode', async () => {
   assert.match(form('handback', new Set(['handback-with'])), /aria-busy="true"/);
   assert.doesNotMatch(form('handback'), /aria-busy/);
 });
+
+test('player switch is a dropdown when there are several players', async () => {
+  const { instanceState, threadRegions } = await load();
+  const regions = r => threadRegions(r, { status: instanceState(r), data: {}, ui: {}, pending: new Set(), cameraStatus: 'offline', player: 'p2', tab: 'bot' });
+  const two = run('Running', { plan: { players: [{ id: 'p1', name: 'Player 1' }, { id: 'p2', name: 'Player 2' }], transport: { mode: 'enet' } }, players: { p1: { id: 'p1' }, p2: { id: 'p2' } } });
+  const rows = regions(two).players.match(/<button [^>]*data-field="player"[^>]*>/g);
+  assert.equal(rows.length, 2);
+  const picked = rows.filter(x => x.includes('aria-selected="true"'));
+  assert.equal(picked.length, 1);
+  assert.match(picked[0], /data-value="p2"/);
+  assert.equal(regions(run('Running')).players, '');
+});

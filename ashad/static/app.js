@@ -1232,7 +1232,24 @@ function toggleSidebar() {
       command(`model:${value}`, control(threadRun(), 'model', { model: value }), `Model set to ${modelLabel(state.data, value)}. Applies from the next decision.`);
       return;
     }
-    draftFor(composerProject(state.route, state.data)).model = value;
+    if (field === 'player') { state.thread.player = value; renderView(); return; }
+    if (field === 'ov-build') {
+      overviewFor(state.route.id).buildId = value;  // A chosen build is checked at once; that is the user's request, not a poll.
+      renderView();
+      return;
+    }
+    if (field === 'usage-model' || field === 'usage-purpose') {
+      Object.assign(state.usageUi, { [field.slice(6)]: value, limit: newUsageUi().limit });
+      renderView();
+      return;
+    }
+    if (field === 'issue-example') { if (state.issue) state.issue.exampleId = value; renderView(); return; }
+    const projectId = composerProject(state.route, state.data);
+    if (!projectId) return;
+    if (field === 'project') { location.hash = href('p', value, 'new'); return; }
+    const draft = draftFor(projectId);
+    if (field === 'configuration') draft.configurationId = value;
+    else draft[field] = value;  // model, transport
     renderView();
   }
   
@@ -1388,18 +1405,6 @@ document.addEventListener('input', event => {
 
 document.addEventListener('change', event => {
   const field = event.target.dataset?.field;
-  if (field === 'player') { state.thread.player = event.target.value; renderView(); return; }
-  if (field === 'ov-build') {
-    overviewFor(state.route.id).buildId = event.target.value;  // A chosen build is checked at once; that is the user's request, not a poll.
-    renderView();
-    return;
-  }
-  if (field === 'usage-model' || field === 'usage-purpose') {
-    Object.assign(state.usageUi, { [field.slice(6)]: event.target.value, limit: newUsageUi().limit });
-    renderView();
-    return;
-  }
-  if (field === 'issue-example') { if (state.issue) state.issue.exampleId = event.target.value; renderView(); return; }
   if (field === 'setup-build') {
     const s = setupFor(state.route);
     Object.assign(s, { buildId: event.target.value, readiness: null });
@@ -1407,13 +1412,6 @@ document.addEventListener('change', event => {
     renderView();
     return;
   }
-  const projectId = composerProject(state.route, state.data);
-  if (!projectId || !['configuration', 'transport', 'project'].includes(field)) return;
-  if (field === 'project') { location.hash = href('p', event.target.value, 'new'); return; }
-  const draft = draftFor(projectId);
-  if (field === 'configuration') draft.configurationId = event.target.value;
-  else draft[field] = event.target.value;
-  renderView();
 });
 
 document.addEventListener('submit', async event => {

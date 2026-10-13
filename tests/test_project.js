@@ -106,6 +106,7 @@ test('the overview lists builds with validation, agents, readiness and the last 
   assert.match(r.agents, /data-action="ov-refresh" data-id="a" data-key="ov-refresh-a">Get controls again…</);
   assert.match(r.agents, /href="#\/p\/p\/new\?configuration=a"/);
   assert.match(r.readiness, /data-field="ov-build"/, 'a build picker when there are several');
+  assert.match(r.readiness, /role="listbox" aria-label="Build to check"/);
   assert.match(r.readiness, /Checking this computer/);
   assert.equal(m.recent.length, 10);
   assert.match(r.recent, /View all 12 in sidebar/);

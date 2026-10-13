@@ -2,15 +2,47 @@
 import { esc, icon } from '../core.js';
 import { observationOf, short, clip } from './timeline.js';
 
-const GOAL_STATUS = {
-  completed: { label: 'Completed', icon: 'circle-check', tone: 'live' },
-  active: { label: 'Now', icon: 'target', tone: 'accent' },
-  blocked: { label: 'Blocked', icon: 'alert', tone: 'attention' },
+// One word, icon and tone per node status. Tones become goal-node-<tone> classes; red (danger) only where something is stuck.
+const NODE_STATUS = {
+  root: { label: 'Primary goal', icon: 'flag', tone: 'plain' },
+  active: { label: 'Now', icon: 'target', tone: 'plain' },
+  completed: { label: 'Completed', icon: 'circle-check', tone: 'done' },
+  blocked: { label: 'Blocked', icon: 'circle-x', tone: 'danger' },
   retired: { label: 'Not needed', icon: 'ban', tone: 'muted' },
   pending: { label: 'Pending', icon: 'circle', tone: 'muted' },
-  root: { label: 'Primary goal', icon: 'flag', tone: 'muted' },
+  rejected: { label: 'Rejected', icon: 'circle-x', tone: 'danger' },
+  operator: { label: 'Operator', icon: 'hand', tone: 'operator' },
+  earlier: { label: 'Earlier plan', icon: 'clock', tone: 'muted' },
 };
-const goalStatus = (goal, rootId) => GOAL_STATUS[goal.id === rootId ? 'root' : goal.retired ? 'retired' : goal.status] || GOAL_STATUS.pending;
+const goalStatus = (goal, rootId) => (goal.id === rootId ? 'root' : goal.retired ? 'retired' : NODE_STATUS[goal.status] ? goal.status : 'pending');
+const REPLACED_PLAN = new Set(['subgoal_plan_recalculation_prepared', 'subgoal_plan_reset']);
+const OPERATOR_COMMANDS = { takeover_finish: 'Hand back', resume: 'Resume' };
+
+// The plan as a tree: goals in plan order, then loaded rejections, operator instructions and replaced plans by seq.
+// Annotation ids (rejected-<seq>, operator-<seq>, earlier-<seq>) never collide with goal ids.
+export function goalGraph(plan, events) {
+  const rootId = plan.root_id || plan.goals.find(g => !g.parent_id)?.id;
+  const nodes = new Map(plan.goals.map(g => [g.id, { id: g.id, parentId: g.parent_id, status: goalStatus(g, rootId), title: g.objective, reason: g.blocked_reason, goal: g }]));
+  const goalIds = new Set(nodes.keys());
+  // A replaced plan's goal ids can repeat in the new plan (revisions restart at 0), so older annotations go under the root.
+  const replacedAt = Math.max(0, ...events.filter(e => REPLACED_PLAN.has(e.kind)).map(e => e.seq));
+  const anchor = (goalId, e) => (e.seq > replacedAt && goalIds.has(goalId) ? goalId : rootId);
+  const add = node => nodes.set(node.id, node);
+  for (const e of events) {
+    const p = e.payload || {};
+    if (e.kind === 'subgoal_plan_rejected') {
+      add({ id: `rejected-${e.seq}`, parentId: anchor(p.goal_id, e), status: 'rejected', title: `Proposal rejected (attempt ${p.attempt ?? '?'})`, reason: p.reason, event: e });
+    } else if (e.kind === 'intervention' && OPERATOR_COMMANDS[p.command] && p.reason) {
+      const used = events.find(c => c.seq > e.seq && c.kind === 'subgoal_planning_context' && c.payload?.context?.operator_instruction?.text === p.reason);
+      add({ id: `operator-${e.seq}`, parentId: anchor(used?.payload.context.current_goal?.id, e), status: 'operator', title: `${OPERATOR_COMMANDS[p.command]}: ${p.reason}`, event: e });
+    } else if (REPLACED_PLAN.has(e.kind)) {
+      add({ id: `earlier-${e.seq}`, parentId: rootId, status: 'earlier', title: `Earlier plan, revision ${p.previous_plan?.revision ?? 0}`, event: e });
+    }
+  }
+  const children = new Map();
+  for (const node of nodes.values()) if (node.id !== rootId) children.set(node.parentId, [...(children.get(node.parentId) || []), node.id]);
+  return { rootId, nodes, children };
+}
 
 // Planning evidence: the card that retained the goal's source observation. Verification: the subgoals_verified card naming it.
 function goalLinks(goal, events) {
@@ -97,7 +129,7 @@ export function goalsHTML(run, { events, goalOpen }) {
   const children = id => plan.goals.filter(g => g.parent_id === id);
   const row = (goal, depth) => {
     if (depth > 8) return '';
-    const s = goalStatus(goal, rootId);
+    const s = NODE_STATUS[goalStatus(goal, rootId)];
     const quotes = (goal.evidence || []).map(e => `<li><span class="insp-dim">${esc(e.source)}${e.path ? ` ${esc(e.path)}` : ''}</span> “${esc(e.quote)}”</li>`).join('');
     const links = goalLinks(goal, events);
     return `<li class="goal goal-${s.tone}"><details${goalOpen.has(goal.id) ? ' open' : ''} data-goal="${esc(goal.id)}"><summary class="goal-row" data-key="goal-${esc(goal.id)}">`

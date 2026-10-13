@@ -101,6 +101,16 @@ const applePlan = (over = {}) => ({ root_id: 'root', active_goal_id: 'g2', revis
     completion: { kind: 'inventory_quantity', quantity: 30, description: 'Have 30 wheat' } },
 ], ...over });
 
+const farmPlan = (over = {}) => ({ root_id: 'root', active_goal_id: 'g2', revision: 7, status: 'active', reason: 'Follow the recipe', primary_goal: 'Reach the farm', goals: [
+  { id: 'root', parent_id: null, objective: 'Reach the farm', status: 'active' },
+  { id: 'g1', parent_id: 'root', objective: 'Find seeds', status: 'completed', attempts: 2, evidence: [{ source: 'observation', path: 'state.player', quote: 'seed bag' }],
+    source_observation: { observation_id: 'o1' }, completion_evidence: { observation_id: 'o9' } },
+  { id: 'g2', parent_id: 'root', objective: 'Get 3 wheat', status: 'active', measured: 1, completion: { kind: 'inventory_quantity', quantity: 3, description: 'Have 3 wheat' } },
+  { id: 'g3', parent_id: 'g2', objective: 'Till soil', status: 'pending' },
+  { id: 'g4', parent_id: 'root', objective: 'Cross bridge', status: 'blocked', blocked_reason: 'Bridge is broken' },
+  { id: 'g5', parent_id: 'root', objective: 'Talk to elder', status: 'blocked', retired: true, blocked_reason: 'No longer needed.' },
+], ...over });
+
 test('the active goal is marked Now with measured progress', async () => {
   const { panelRegions } = await load();
   const goals = (plan, goalOpen = new Set(['g2'])) => panelRegions(run('Running', { subgoal_plan: plan }), ctx([], { goalOpen })).goals;
@@ -132,6 +142,54 @@ test('planning pauses show a review note', async () => {
 });
 
 const pe = (seq, kind, payload) => ({ id: `evt_${seq}`, seq, kind, timestamp: NOW - seq, payload });
+
+test('the goal graph nests goals and annotations under the goal they belong to', async () => {
+  const { goalGraph } = await loadGoals();
+  const plain = goalGraph(farmPlan(), []);
+  assert.deepEqual(plain.children.get('root'), ['g1', 'g2', 'g4', 'g5']);
+  assert.deepEqual(plain.children.get('g2'), ['g3']);
+  assert.equal(plain.nodes.get('g5').status, 'retired');
+  assert.equal(plain.nodes.get('g4').status, 'blocked');
+  const graph = goalGraph(farmPlan(), [pe(13, 'subgoal_plan_rejected', { goal_id: 'g2', attempt: 1, reason: 'Too vague' }), pe(14, 'subgoal_plan_rejected', { goal_id: 'nope', attempt: 2, reason: 'x' })]);
+  assert.deepEqual(graph.children.get('g2'), ['g3', 'rejected-13']);
+  assert.equal(graph.children.get('root').at(-1), 'rejected-14', 'a rejection naming an unknown goal sits under the root');
+  assert.equal(graph.nodes.get('rejected-13').title, 'Proposal rejected (attempt 1)');
+});
+
+test('operator instructions anchor to the goal the next planning round used them for', async () => {
+  const { goalGraph } = await loadGoals();
+  const graph = goalGraph(farmPlan(), [
+    pe(20, 'intervention', { command: 'takeover_finish', reason: 'Use the hoe' }),
+    pe(21, 'subgoal_planning_context', { context: { current_goal: { id: 'g2' }, operator_instruction: { text: 'Use the hoe' } } }),
+    pe(22, 'intervention', { command: 'resume', reason: 'Go north' }),
+    pe(23, 'intervention', { command: 'resume', reason: '' }),
+    pe(24, 'intervention', { command: 'pause', reason: 'x' }),
+  ]);
+  assert.ok(graph.children.get('g2').includes('operator-20'));
+  assert.equal(graph.nodes.get('operator-20').title, 'Hand back: Use the hoe');
+  assert.ok(graph.children.get('root').includes('operator-22'), 'an instruction no planning round used sits under the root');
+  assert.equal(graph.nodes.get('operator-22').title, 'Resume: Go north');
+  assert.equal(graph.nodes.has('operator-23'), false);
+  assert.equal(graph.nodes.has('operator-24'), false);
+});
+
+const recalculated = pe(31, 'subgoal_plan_recalculation_prepared', { previous_plan: { root_id: 'root', revision: 3, goals: [{ id: 'root', objective: 'Old root', status: 'active' },
+  { id: 'goal-3-0', parent_id: 'root', objective: 'Old A', status: 'completed' }, { id: 'goal-3-1', parent_id: 'root', objective: 'Old B', status: 'pending' }] } });
+
+test('replaced plans become earlier-plan nodes and older annotations fall back to the root', async () => {
+  const { goalGraph } = await loadGoals();
+  const graph = goalGraph(farmPlan(), [
+    pe(30, 'subgoal_plan_rejected', { goal_id: 'g2', attempt: 1, reason: 'old' }),
+    recalculated,
+    pe(32, 'subgoal_plan_reset', { previous_plan: { revision: 5, goals: [] }, reason: 'Primary objective changed' }),
+  ]);
+  assert.ok(graph.children.get('root').includes('rejected-30'), 'a rejection from before the replan sits under the root');
+  assert.ok(!graph.children.get('g2').includes('rejected-30'));
+  assert.equal(graph.nodes.get('earlier-31').title, 'Earlier plan, revision 3');
+  assert.equal(graph.nodes.get('earlier-32').title, 'Earlier plan, revision 5');
+  assert.ok(graph.children.get('root').includes('earlier-31') && graph.children.get('root').includes('earlier-32'));
+  assert.deepEqual(graph.children.get('root').slice(0, 4), ['g1', 'g2', 'g4', 'g5']);
+});
 
 test('plan history lists planning events newest first with jump chips', async () => {
   const { panelRegions } = await load();

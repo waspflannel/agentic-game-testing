@@ -460,7 +460,7 @@ class OpenAI:
                         "When current_goal is supplied, pursue that active leaf in the context of the root objective, "
                         "its goal_path ancestors and subgoal_plan hierarchy. Do not skip to a sibling or treat a leaf's success "
                         "as completion of its ancestors. Closing menus and dialogue are actions within the current goal. "
-                        "Verify actual effects against the current_goal completion predicate using fresh observations. "
+                        "current_goal.completion is a fact check and current_goal.measured its current value; choose actions that move that value toward the target, verified on fresh observations. "
                         "Text entry only edits the observed field; inspect its text and focus, then click the observed commit button. "
                         "Do not retype matching text or assume a targetless ui_accept submits character creation. "
                         "Use the game_controls manual as game knowledge, "

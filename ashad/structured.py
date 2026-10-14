@@ -15,15 +15,15 @@ from .game_controls import run_configuration
 from .models import MODEL, PROVIDERS, provider_of
 from .repository import Repository
 from .store import uid
-from . import repair_tasks, subgoals
+from . import facts, repair_tasks, subgoals
 
 LOG = logging.getLogger(__name__)
 LOOP_BACKSTOP_DECISIONS = 6
 MOVEMENT_STALL_LIMIT = 2  # Failed moves from one unchanged position: input is not reaching the character.
-ISSUE_PREFIXES = {"unsupported_action": "uae_", "crash": "crash_", "game_bug": "bug_", "planner_rejected": "plan_", "false_completion": "done_", "capability_gap": "gap_"}
+ISSUE_PREFIXES = {"unsupported_action": "uae_", "crash": "crash_", "game_bug": "bug_", "false_completion": "done_", "capability_gap": "gap_"}
 # Controller replan reasons, by prefix, as category labels; planner prose never reaches the timing row.
 PLAN_TRIGGERS = (("The last action failed", "action_failed"),
-                 ("Observed objectives or recipes changed", "knowledge_changed"), ("Control or game binding changed", "rebound"),
+                 ("Observed objectives changed", "knowledge_changed"), ("Control or game binding changed", "rebound"),
                  ("No supported direct action fits", "needs_instructions"), ("The game state did not change across", "loop_backstop"),
                  ("You said the primary goal is not done", "completion_rejected"),
                  ("Repeating the same action", "action_repeat"))
@@ -58,7 +58,7 @@ def wait_signature(observation):
     facts = {"generation": observation.get("generation"), "ready": observation.get("ready"),
              "inventory": player.get("inventory"), "hotbar": player.get("hotbar"),
              "objectives": state.get("objectives"), "completed": state.get("completed_quests"),
-             "tiles": state.get("tiles"),
+             "tiles": state.get("tiles"), "facts": state.get("facts"),
              "targets": [{"id": e.get("id"), "actions": e.get("actions"),
                           "crafting": e.get("state", {}).get("is_crafting")}
                          for e in observation.get("entities", []) if e.get("kind") != "ground_item"]}
@@ -225,6 +225,9 @@ class StructuredPlayers:
             ids = {q["id"] for q in active}
             result["definitions"] = [g for g in catalog.get("goals", []) if g.get("id") in ids]
         return result
+
+    def item_ids(self, run):
+        return [i["id"] for i in Repository(run["build"]).catalog(run["build"]).get("items", []) if isinstance(i, dict) and isinstance(i.get("id"), str)]
 
     async def dispatch(self, run_id, player_id, name, args, observation, generation, owner="agent"):
         run, ps = self.binding(run_id, player_id)
@@ -505,44 +508,23 @@ class StructuredPlayers:
         except Exception:
             LOG.exception("Could not report game bug for %s/%s", run_id, player_id)
 
-    async def report_planner_rejection(self, run_id, player_id, source, plan, proposal, reason, attempt, observation):
-        """Record one rejected planner proposal; never raises or blocks planning."""
-        try:
-            run, ps = self.binding(run_id, player_id)
-            focus = subgoals.active_goal(plan)
-            mode = proposal.get("mode") if isinstance(proposal, dict) else None
-            # List indices in the validator location ("subgoals.2.completion") would split one rule into many issues.
-            rule = re.sub(r"(?<=\.)\d+(?=[.)])", "#", reason)
-            basis = {"reason": rule, "focus_objective": repair_tasks.target_label(focus["objective"]), "mode": mode}
-            sections = {"planner": {"source": source, "attempt": attempt, "reason": reason, "mode": mode, "proposal": proposal,
-                "goal": {"primary_goal": plan["primary_goal"], "focus": {k: focus[k] for k in ("id", "objective", "completion")},
-                         "goal_path": [g["objective"] for g in subgoals.goal_path(plan)]},
-                "plan_revision": plan["revision"]}}
-            await self._record(run, ps, player_id, "planner_rejected", basis, source, observation, sections, skip_pin=True)
-        except Exception:
-            LOG.exception("Could not record planner rejection for %s/%s", run_id, player_id)
-
     async def report_capability_gap(self, run_id, player_id, plan, focus, *, kind, tried, missing, observation):
         """Record one given-up goal; never raises or blocks the turn."""
         try:
             run, ps = self.binding(run_id, player_id)
-            statuses, effects = [], []
+            effects = []
             for event in self._recent_events(run_id):
                 if (event["kind"] not in {"action_result", "structured_action_outcome"} or event["payload"].get("player_id") != player_id
                         or event["timestamp"] < focus.get("activated_at", 0)):
                     continue
-                result = event["payload"].get("result") or {}
-                statuses.append(result.get("status"))
-                if result.get("effect"):
-                    effects.append(result["effect"])
-            if kind == "planner" or (kind == "stuck" and (focus["completion"]["kind"] == "unknown" or focus.get("progress_changes") or "changed" in effects)):
-                cause = "planner_gap"  # unmeasurable or invalid criteria/targets: the plan, not the game, is wrong
-            elif kind == "blocked" or any(status in FAILED_STATUSES for status in statuses):
-                cause = "mcp_gap"  # missing action/observation support
-            elif effects and all(effect == "no_effect" for effect in effects):
-                cause = "game_bug"  # actions ran and the observed state did not change
-            else:
-                cause = "planner_gap"
+                effect = (event["payload"].get("result") or {}).get("effect")
+                if effect:
+                    effects.append(effect)
+            check = focus["completion"]
+            known = check.get("fact", "unknown") != "unknown"
+            value = facts.read(facts.values(observation), check["fact"], facts.args_of(check)) if known else None
+            cause = ("planner_gap" if not known else "mcp_gap" if value is None
+                     else "game_bug" if effects and all(e == "no_effect" for e in effects) else "planner_gap")
             basis = {"kind": kind, "cause": cause, "focus_objective": repair_tasks.target_label(focus["objective"]),
                      "missing": re.sub(r"(?<=\.)\d+(?=[.)])", "#", missing)[:200]}
             bounded = []
@@ -550,8 +532,8 @@ class StructuredPlayers:
                 text = json.dumps(item, ensure_ascii=False)
                 bounded.append(item if len(text) <= 2000 else text[:2000])
             shown = missing
-            if focus["completion"]["kind"] in {"observed_count", "inventory_quantity"}:
-                shown += f" (measured {focus.get('measured')} of {focus['completion']['quantity']})"
+            if known:
+                shown += f" (measured {focus.get('measured')}, target {check['op']} {check['value']})"
             sections = {"gap": {"kind": kind, "cause": cause, "missing": shown, "tried": bounded,
                 "subgoal": {"id": focus["id"], "objective": focus["objective"], "completion": focus["completion"],
                             "goal_path": [g["objective"] for g in subgoals.goal_path(plan, focus["id"])]}},
@@ -568,7 +550,7 @@ class StructuredPlayers:
             claim = subgoals.completion_claim(plan)
             goals = {g["id"]: g for g in plan["goals"]}
             basis = {"primary_goal": repair_tasks.target_label(plan["primary_goal"])}
-            sections = {"claim": {"reason": claim["reason"], "evidence": claim["evidence"], "operator_note": note,
+            sections = {"claim": {"reason": claim["reason"], "operator_note": note,
                 "verified_goals": [{k: goals[i][k] for k in ("id", "objective", "completion")} for i in claim["verified_goal_ids"]],
                 "plan_revision": plan["revision"]}}
             await self._record(run, ps, player_id, "false_completion", basis, "operator", self.store.get("observations", f"{run_id}:{player_id}") or {}, sections, skip_pin=True)
@@ -718,7 +700,7 @@ class StructuredPlayers:
         timing["plan_trigger"] = "new_active_goal" if plan.get("active_goal_id") != previous_active else next(
             (label for prefix, label in PLAN_TRIGGERS if reason.startswith(prefix)), "other")
         context = self.decision_context(run, player, observation)
-        context["tile_values"] = subgoals.tile_values(plan, observation)
+        context["fact_catalog"] = facts.catalog(observation, self.item_ids(run))
         revision = plan["revision"]
         self.status(run_id, player_id, "planning", "Finding the next achievable prerequisite for: " + context["current_goal"]["objective"], generation)
         warnings = []
@@ -751,12 +733,10 @@ class StructuredPlayers:
                 focus = subgoals.active_goal(latest_plan)
                 self.store.event(run_id, "subgoal_plan_rejected", {"player_id": player_id, "reason": reason, "attempt": attempt + 1,
                                  "goal_id": focus["id"], "objective": focus["objective"], "revision": revision, "proposal": proposal})
-                with timed(timing, "plan_rejection_report"):
-                    await self.report_planner_rejection(run_id, player_id, "turn_planning", latest_plan, proposal, reason, attempt + 1, context["observation"])
                 if attempt:
                     tried = [context["previous_attempt_rejected"]["rejected_answer"], proposal]
                     return await self._give_up(run_id, player_id, generation, fresh, kind="planner", tried=tried,
-                                               missing=f"The planner could not produce an acceptable plan: {reason}")
+                                               missing=f"The planner's completion check did not match fact_catalog: {reason}")
                 # One corrective retry: show the planner its rejected answer and the validator's reason.
                 context = {**context, "previous_attempt_rejected": {"reason": reason, "rejected_answer": proposal}}
         revised["last_planning_key"] = planning_key  # Only an applied plan counts; cancelled or rejected planning may retry.

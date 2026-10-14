@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import contextlib
-import copy
 import hashlib
 import json
 import logging
@@ -65,6 +64,28 @@ def wait_signature(observation):
     return hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()
 
 
+def effect_basis(observation):
+    return {"facts": wait_signature(observation), "position": observation.get("state", {}).get("player", {}).get("position")}
+
+
+def action_effect(before, observation):
+    """Did the observed state change after a completed action? The game's own `completed` only means input was delivered."""
+    if not before:
+        return None
+    return "no_effect" if before == effect_basis(observation) else "changed"
+
+
+def own_action_line(event):
+    """One short line per own event for the decision context, keeping only keys with values."""
+    payload = event["payload"]
+    given, result = payload.get("input") or {}, payload.get("result") or {}
+    line = {"kind": event["kind"],
+            "verb": (payload.get("action") or {}).get("tool") if event["kind"] == "decision_selected" else given.get("verb"),
+            "target_id": given.get("target_id") or None, "status": result.get("status"), "effect": result.get("effect"),
+            "reason": str(payload.get("reason") or result.get("reason") or "")[:160]}
+    return {k: v for k, v in line.items() if v}
+
+
 OWN_ACTION_KINDS = frozenset({"decision_selected", "structured_action_intent", "action_result", "structured_action_outcome", "goal_changed"})
 
 
@@ -72,6 +93,7 @@ def observed_entity(observation, target_id):
     return next((e for e in observation.get("entities", []) if target_id and e.get("id") == target_id), {})
 
 
+GOAL_CONTEXT_KEYS = ("id", "parent_id", "objective", "completion", "status", "actionable", "measured", "attempts")
 FAILED_STATUSES = frozenset({"failed", "rejected", "expired", "cancelled"})
 
 
@@ -235,6 +257,8 @@ class StructuredPlayers:
             previous = await self.call_game(run_id, player_id, "get_action_status", {"action_id": self.pending[key]})
             if previous.get("status", "unknown") in {"unknown", "running", "accepted"}:
                 return {"status": "rejected", "reason": "Reconcile pending action first", "previous": previous}
+            if previous.get("status") == "completed":
+                previous["effect"] = action_effect((ps.get("pending_action") or {}).get("before"), observation)
             self.store.event(run_id, "structured_action_outcome", {"player_id": player_id, "result": previous})
             self.pending.pop(key, None)
             run, ps = self.binding(run_id, player_id)
@@ -249,7 +273,8 @@ class StructuredPlayers:
              "source_observation": observation["observation_id"], "reason": args.get("reason"), "input": payload,
              "target_kind": observed_entity(observation, payload["target_id"]).get("kind")})
         self.pending[key] = action_id
-        ps["pending_action"] = {"action_id": action_id, "expires_at": payload["expires_at"], "verb": payload["verb"]}
+        ps["pending_action"] = {"action_id": action_id, "expires_at": payload["expires_at"], "verb": payload["verb"],
+                              "before": effect_basis(observation)}
         if owner == "agent" and run.get("subgoal_plan", {}).get("player_id") == player_id:
             subgoals.record_action(run["subgoal_plan"], payload)
         self.store.put("runs", run)
@@ -361,7 +386,7 @@ class StructuredPlayers:
                          "event_ids": list(event_ids)},
             "truncated": []}
 
-    async def _record(self, run, ps, player_id, issue_type, basis, source, observation, sections, *, event_ids=(), skip_pin=False):
+    async def _record(self, run, ps, player_id, issue_type, basis, source, observation, sections, *, event_ids=(), skip_pin=False, event_fields=None):
         """Write one issue example of any type; returns the outcome, or None when recording failed."""
         try:
             run_id = run["id"]
@@ -380,7 +405,7 @@ class StructuredPlayers:
             if outcome in {"kept", "counted"}:
                 self.store.event(run_id, f"{issue_type}_recorded", {"player_id": player_id,
                     "issue_id": key, "example_id": example_id,
-                    "source": source, "kept": outcome == "kept", "outcome": outcome})
+                    "source": source, "kept": outcome == "kept", "outcome": outcome, **(event_fields or {})})
                 if previous and previous["status"] == "closed":
                     self.store.event(run_id, "issue_reopened", {"player_id": player_id, "issue_id": key, "example_id": example_id})
             elif outcome == "full":
@@ -492,26 +517,38 @@ class StructuredPlayers:
         """Record one given-up goal; never raises or blocks the turn."""
         try:
             run, ps = self.binding(run_id, player_id)
-            skip = {None, "running", "accepted", "unknown"}
-            settled = []
+            statuses, effects = [], []
             for event in self._recent_events(run_id):
-                if event["kind"] not in {"action_result", "structured_action_outcome"} or event["payload"].get("player_id") != player_id:
+                if (event["kind"] not in {"action_result", "structured_action_outcome"} or event["payload"].get("player_id") != player_id
+                        or event["timestamp"] < focus.get("activated_at", 0)):
                     continue
-                status = (event["payload"].get("result") or {}).get("status")
-                if status not in skip:
-                    settled.append(status)
-            cause = "game_bug" if kind == "stuck" and settled[-1:] == ["completed"] else "mcp_gap"
+                result = event["payload"].get("result") or {}
+                statuses.append(result.get("status"))
+                if result.get("effect"):
+                    effects.append(result["effect"])
+            if kind == "planner" or (kind == "stuck" and (focus["completion"]["kind"] == "unknown" or focus.get("progress_changes") or "changed" in effects)):
+                cause = "planner_gap"  # unmeasurable or invalid criteria/targets: the plan, not the game, is wrong
+            elif kind == "blocked" or any(status in FAILED_STATUSES for status in statuses):
+                cause = "mcp_gap"  # missing action/observation support
+            elif effects and all(effect == "no_effect" for effect in effects):
+                cause = "game_bug"  # actions ran and the observed state did not change
+            else:
+                cause = "planner_gap"
             basis = {"kind": kind, "cause": cause, "focus_objective": repair_tasks.target_label(focus["objective"]),
                      "missing": re.sub(r"(?<=\.)\d+(?=[.)])", "#", missing)[:200]}
             bounded = []
             for item in tried:
                 text = json.dumps(item, ensure_ascii=False)
                 bounded.append(item if len(text) <= 2000 else text[:2000])
-            sections = {"gap": {"kind": kind, "cause": cause, "missing": missing, "tried": bounded,
+            shown = missing
+            if focus["completion"]["kind"] in {"observed_count", "inventory_quantity"}:
+                shown += f" (measured {focus.get('measured')} of {focus['completion']['quantity']})"
+            sections = {"gap": {"kind": kind, "cause": cause, "missing": shown, "tried": bounded,
                 "subgoal": {"id": focus["id"], "objective": focus["objective"], "completion": focus["completion"],
                             "goal_path": [g["objective"] for g in subgoals.goal_path(plan, focus["id"])]}},
                 "capabilities": capability_summary(observation)}
-            await self._record(run, ps, player_id, "capability_gap", basis, "agent", observation, sections, skip_pin=kind != "stuck")
+            await self._record(run, ps, player_id, "capability_gap", basis, "agent", observation, sections, skip_pin=kind != "stuck",
+                               event_fields={"goal_id": focus["id"]})
         except Exception:
             LOG.exception("Could not record capability gap for %s/%s", run_id, player_id)
 
@@ -591,20 +628,21 @@ class StructuredPlayers:
                OWN_ACTION_KINDS][-20:]
         team = [e for e in recent if e["kind"] == "team_message"][-12:] if player.get("cooperation") == "team" else []
         configuration_id, snapshot = run_configuration(run)
+        failures = repeated_failures(own)
+        controls = (self.store.get("run_game_controls", run["id"]) or run.get("game_controls") or {}).get("controls")
         context = {"play_mode": run["plan"]["play_mode"], "player": player, "goal": player["goal"],
-            "game_controls": (run.get("game_controls") or {}).get("controls") or (snapshot or {}).get("instructions", ""), "configuration_id": configuration_id,
+            "game_controls": controls or (snapshot or {}).get("instructions", ""), "configuration_id": configuration_id,
             "observation": prompt_observation(observation, max_chars=48000), "guidance": self.guidance(run, player, observation),
-            "memory": ps.get("agent_memory", ""), "recent_own_actions": own, "team_messages": team,
+            "memory": ps.get("agent_memory", ""), "recent_own_actions": [own_action_line(e) for e in own], "team_messages": team,
             "setup": run["plan"]["world_setup"], "transport": run["plan"]["transport"],
             "world_namespace": run.get("world_namespace"), "seed": run["plan"].get("seed")}
-        failures = repeated_failures(own)
         if failures:
             context["repeated_failures"] = failures
         if run.get("recovery_instruction"):
             context["operator_instruction"] = {"text": run["recovery_instruction"], "after": run.get("recovery_after") or "resume"}
         plan = run.get("subgoal_plan")
         if plan and plan["player_id"] == player["id"]:
-            context.update(subgoal_plan=subgoals.prompt_plan(plan), current_goal=copy.deepcopy(subgoals.active_goal(plan)),
+            context.update(subgoal_plan=subgoals.prompt_plan(plan), current_goal={k: v for k, v in subgoals.active_goal(plan).items() if k in GOAL_CONTEXT_KEYS},
                            goal_path=[{"id": g["id"], "objective": g["objective"], "completion": g["completion"]} for g in subgoals.goal_path(plan)])
         return context
 
@@ -671,6 +709,7 @@ class StructuredPlayers:
         timing["plan_trigger"] = "new_active_goal" if plan.get("active_goal_id") != previous_active else next(
             (label for prefix, label in PLAN_TRIGGERS if reason.startswith(prefix)), "other")
         context = self.decision_context(run, player, observation)
+        context["tile_values"] = subgoals.tile_values(plan, observation)
         revision = plan["revision"]
         self.status(run_id, player_id, "planning", "Finding the next achievable prerequisite for: " + context["current_goal"]["objective"], generation)
         warnings = []
@@ -773,6 +812,8 @@ class StructuredPlayers:
                 return True
             self.status(run_id, player_id, "waiting_action", "Waiting for the game to acknowledge the action outcome.", generation, action_id=self.pending[key], wait_until=deadline)
             return True
+        if result.get("status") == "completed":
+            result["effect"] = action_effect((ps.get("pending_action") or {}).get("before"), observation)
         self.store.event(run_id, "structured_action_outcome", {"player_id": player_id, "result": result})
         if result.get("status", "unknown") == "unknown":
             self.status(run_id, player_id, "error", "The last action outcome is unknown; input is held for review.", generation, action_id=self.pending[key])
@@ -853,7 +894,7 @@ class StructuredPlayers:
                 context = self.decision_context(run, player, observation)
                 context["bug_already_reported"] = self.bug_reports.get(key) == signature
                 self.store.event(run_id, "structured_decision_context", {"player_id": player_id, "context": context,
-                    "full_observation": observation, "source_revision": run["build"].get("source_revision")})
+                    "observation_ref": subgoals.observation_ref(observation), "source_revision": run["build"].get("source_revision")})
             timing["bytes"].update(prompt_observation=json_bytes(context["observation"]), decision_context=json_bytes(context))
             timing["context_truncated"] = bool(context["observation"].get("context_truncated"))
             self.last_decisions[key] = (signature, time.time(), generation)

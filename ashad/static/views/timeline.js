@@ -51,6 +51,7 @@ export function outcomeLabel(result) {
   if (status === 'no_effect') return { tone: 'attention', text: 'Input delivered · no visible effect' };
   if (status === 'completed') {
     if (result.effect === 'changed') return { tone: 'live', text: 'Input delivered · game state changed' };
+    if (result.effect === 'no_effect') return { tone: 'attention', text: 'Input delivered · no visible effect' };
     return { tone: 'muted', text: 'Input delivered · effect not confirmed' };
   }
   if (status === 'accepted' || status === 'running') return { tone: 'muted', text: 'Input delivered · effect not confirmed' };

@@ -972,8 +972,9 @@ class StructuredPlayers:
                 self.status(run_id, player_id, "error", reason, generation, last_error=reason, error_at=time.time())
                 trace = "".join(traceback.format_exception(exc)[-4:])[-1500:]
                 self.store.event(run_id, "agent_turn_failed", {"player_id": player_id, "category": "structured_interface_failure", "error": reason, "traceback": trace})
-                await self.report_crash(run_id, player_id, "agent_turn_failure", "structured_interface_failure", f"{reason}\n{trace}")
                 await self.coordinator.investigate(run_id, "structured_interface_failure", reason, [player_id])
+                # Report after investigate, as the coordinator does: the failure hold is not delayed by the screenshot pin.
+                await self.report_crash(run_id, player_id, "agent_turn_failure", "structured_interface_failure", f"{reason}\n{trace}")
         finally:
             self._record_turn_timing(run_id, player_id, timing, started, store_before)
 

@@ -476,8 +476,9 @@ def reconcile(plan, observation, control_generation):
         if goal["status"] != "completed" and any(g["status"] == "completed" for g in goal_path(plan, goal["id"])[:-1]):
             goal.update(retired=True, status="blocked", blocked_reason="No longer needed: the parent goal was verified directly.")
     previous_active = plan.get("active_goal_id")
-    # A claim waits for the operator; re-selecting would move the active goal away from the root.
-    selected = active_goal(plan) if plan["status"] == "goal_reached" else select_active(plan)
+    # A claim or hand-back waits for the operator; re-selecting would move the active goal away from the root.
+    waiting = plan["status"] == "goal_reached" or (plan["status"] == "handed_back" and not (rebound or resumed))
+    selected = active_goal(plan) if waiting else select_active(plan)
     if selected and selected["id"] != previous_active:
         selected["activated_at"] = now
         # A sibling may have lost its prerequisites while another goal was being pursued.

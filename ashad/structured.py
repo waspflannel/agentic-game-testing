@@ -649,6 +649,9 @@ class StructuredPlayers:
             self.status(run_id, player_id, "planner_blocked", plan["reason"], generation)
             await self.coordinator.investigate(run_id, "planner_blocked", plan["reason"], [player_id])
             return False
+        if plan["status"] == "handed_back":
+            await self._after_give_up(run_id, player_id, generation, plan, subgoals.active_goal(plan))
+            return False
         if plan["status"] == "goal_reached":
             await self.coordinator.goal_reached(run_id, player_id, subgoals.completion_claim(plan)["reason"])
             return False
@@ -658,12 +661,11 @@ class StructuredPlayers:
             return await self._give_up(run_id, player_id, generation, observation, kind="stuck", tried=tried, missing=stuck)
         if not needs_plan:
             return True
-        planning_key = hashlib.sha256(json.dumps([plan["active_goal_id"], generation, wait_signature(observation)]).encode()).hexdigest()
+        # The replan reason is input too: a failed action or first repeat on unchanged state still replans once.
+        planning_key = hashlib.sha256(json.dumps([plan["active_goal_id"], generation, wait_signature(observation), plan.get("reason")]).encode()).hexdigest()
         if planning_key == plan.get("last_planning_key"):
             return await self._give_up(run_id, player_id, generation, observation, kind="stuck", tried=[],
                                        missing="Planning was needed again on unchanged game state")
-        plan["last_planning_key"] = planning_key
-        self.store.put("runs", run)
         player = next(p for p in run["plan"]["players"] if p["id"] == player_id)
         reason = plan.get("reason") or ""
         timing["plan_trigger"] = "new_active_goal" if plan.get("active_goal_id") != previous_active else next(
@@ -709,6 +711,7 @@ class StructuredPlayers:
                                                missing=f"The planner could not produce an acceptable plan: {reason}")
                 # One corrective retry: show the planner its rejected answer and the validator's reason.
                 context = {**context, "previous_attempt_rejected": {"reason": reason, "rejected_answer": proposal}}
+        revised["last_planning_key"] = planning_key  # Only an applied plan counts; cancelled or rejected planning may retry.
         live["subgoal_plan"] = revised
         self.store.put("runs", live)
         self.store.event(run_id, "subgoal_plan_updated", {"player_id": player_id, "plan": revised, "warnings": warnings})

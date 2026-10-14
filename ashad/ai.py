@@ -104,7 +104,7 @@ def action_groups(context):
         if actions or "ui_drag" in advertised:
             detail = {k: entity[k] for k in ("kind", "tooltip", "state") if k in entity}
             description = f"{label[:100]} in {entity.get('parent', '')} at {entity.get('position', entity.get('rect', ''))}; {json.dumps(detail, ensure_ascii=False)[:900]}"
-            groups.append({"description": description, "evidence": entity, "actions": actions,
+            groups.append({"description": description, "evidence": entity, "actions": actions, "subject": label,
                            "drag_source": entity if "ui_drag" in advertised else None})
 
     for tile in state.get("tiles", []):
@@ -119,7 +119,7 @@ def action_groups(context):
                 actions.append(action("input", {"name": name, "world_position": position, "duration_ms": 500},
                                       label=f"{name} at observed tile {position}; use only with the appropriate equipped item"))
         if actions:
-            groups.append({"description": f"Visible tile: {json.dumps(tile)}", "actions": actions})
+            groups.append({"description": f"Visible tile: {json.dumps(tile)}", "subject": str(position), "actions": actions})
 
     ordinary = [action("input", {"name": name, "duration_ms": 160}, label=f"Press advertised input {name}") for name in sorted(inputs)]
     if ordinary:
@@ -472,13 +472,17 @@ class OpenAI:
         if not can_continue():
             return
         def listed(group):
+            """Actions first, each without its repeated target name, so trimming cuts target detail; byte ends show what survived."""
             if group.get("drag_source"):
-                return group["description"]  # Drag destinations are expanded only after the source is chosen.
-            # Target first: trimming then cuts actions (re-asked below), never the target's identity and state.
-            return "Target: " + group["description"] + ". Actions: " + "; ".join(f"{i}) {a['description']}" for i, a in enumerate(group["actions"]))
+                return group["description"], []  # Drag destinations are expanded only after the source is chosen.
+            subject, text, ends = group.get("subject"), "Actions:", []
+            for i, a in enumerate(group["actions"]):
+                text += f" {i}) " + (a["description"].replace(subject, "it") if subject else a["description"]) + ";"
+                ends.append(len(text.encode("utf-8")))
+            return text + " Target: " + group["description"], ends
         width = max([len(g["actions"]) for g in groups if not g.get("drag_source")] + [1])
-        listings = [(str(i), listed(g)) for i, g in enumerate(groups)]
-        target_options = bounded_descriptions(listings, evidence)
+        listings = [listed(g) for g in groups]
+        target_options = bounded_descriptions([(str(i), text) for i, (text, _) in enumerate(listings)], evidence)
         picked = await self.decisions(evidence, [
             choice("target", instructions + " Select a target or action group.", target_options),
             choice("action", "Select the number of the chosen target's listed action; any number if it lists none.",
@@ -499,14 +503,20 @@ class OpenAI:
         if not candidates:
             raise ProviderError("decision_needs_instructions", "The selected target has no supported action or observed drag destination. Inspect the current UI before continuing.",
                                 report={"source": "no_candidates", "wanted_verb": "ui_drag", "wanted_target_id": source["id"] if source else None, "blocker": "target_missing"})
-        inline = picked["action"]["choice"]
-        calls = 1
+        inline = int(picked["action"]["choice"])
+        fallback = None
         if len(candidates) == 1:
             answer = {"choice": "0"}
-        elif not source and int(inline) < len(candidates) and target_options[index] == listings[index]:
-            answer = {"choice": inline}
+        elif source:
+            fallback = "drag"
+        elif inline >= len(candidates):
+            fallback = "out_of_range"
+        elif len(target_options[index][1].encode("utf-8")) < listings[index][1][inline]:
+            fallback = "trimmed"  # The chosen action's text was cut before the model saw it.
         else:
-            calls = 2
+            answer = {"choice": str(inline)}
+        calls = 2 if fallback else 1
+        if fallback:
             action_evidence = evidence + "\nSelected target: " + json.dumps(group.get("evidence", group["description"]), ensure_ascii=False)
             action_options = bounded_descriptions([(str(i), a["description"] + " " + json.dumps(a["args"], ensure_ascii=False)) for i, a in enumerate(candidates)], action_evidence)
             selected = await self.decisions(action_evidence, [choice("action", instructions + " Select one complete action; all arguments are fixed.", action_options)], run_id=run_id)
@@ -517,7 +527,7 @@ class OpenAI:
         action = candidates[int(answer["choice"])]
         decision = {"player_id": context["player"]["id"], "observation_id": context["observation"].get("observation_id"),
                     "target": group["description"], "action": action, "candidate_count": len(candidates), "target_count": len(groups),
-                    "evidence_truncated": bool(evidence_context["observation"].get("context_truncated")), "calls": calls}
+                    "evidence_truncated": bool(evidence_context["observation"].get("context_truncated")), "calls": calls, "fallback": fallback}
         self.store.event(run_id, "decision_selected", decision)
         if action["tool"] == "needs_instructions":
             report = await self._stuck_report(evidence, context["observation"], run_id)

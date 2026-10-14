@@ -1,5 +1,5 @@
 // Project Issues board and issue view. Fetched on view open and Refresh only; the model and markup are pure.
-import { esc, icon, href, dropdownHTML, since, humanize, runGoal } from '../core.js';
+import { esc, icon, href, dropdownHTML, since, humanize, runGoal, runTime } from '../core.js';
 import { evidenceListHTML } from './goals.js';
 
 export const ISSUE_TYPES = [['unsupported_action', 'Unsupported action', 'Unsupported actions'], ['crash', 'Crash', 'Crashes'], ['game_bug', 'Game bug', 'Game bugs'], ['planner_rejected', 'Planner rejection', 'Planner rejections'], ['false_completion', 'False completion', 'False completions']];
@@ -9,18 +9,28 @@ export const statusWord = status => ({ open: 'Open', closed: 'Closed' })[status]
 const times = n => `${n} ${n === 1 ? 'time' : 'times'}`;
 const loadingNote = text => `<p class="note">${icon('loader', 'icon spin')}<span>${text}</span></p>`;
 
+// Same-goal instances are told apart by their start time.
+const runLabel = run => {
+  const t = runTime(run);
+  return Number.isFinite(t) ? `${runGoal(run)} · ${new Date(t * 1000).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : runGoal(run);
+};
+
 export function boardModel(data, projectId, runId, board) {
   const runs = data?.runs || [];
   const project = (data?.projects || []).find(p => p.id === projectId);
   const run = runId ? runs.find(r => r.id === runId) : null;
+  const projectRuns = runs.filter(r => r.project_id === projectId).sort((a, b) => (runTime(b) || 0) - (runTime(a) || 0));
+  const runOptions = [{ id: '', label: 'All instances' }, ...projectRuns.map(r => ({ id: r.id, label: runLabel(r) }))];
+  if (runId && !run) runOptions.push({ id: runId, label: 'Deleted instance' });
   const row = r => {
     const last = runs.find(x => x.id === r.last_run_id);
-    return { id: r.issue_id, title: r.title, status: r.status, count: r.occurrences, source: { id: r.last_run_id, label: last ? runGoal(last) : 'Deleted instance', linked: Boolean(last) },
+    return { id: r.issue_id, title: r.title, status: r.status, count: r.occurrences, source: { id: r.last_run_id, label: last ? runLabel(last) : 'Deleted instance', linked: Boolean(last) },
       more: Math.max(0, (r.runs?.length || 0) - 1), first: r.first_at, last: r.last_at };
   };
   return {
     projectId, projectName: project?.name || projectId,
-    runFilter: runId ? { id: runId, goal: run ? runGoal(run) : 'Deleted instance' } : null,
+    runOptions,
+    runFilter: runId ? { id: runId, goal: run ? runLabel(run) : 'Deleted instance' } : null,
     groups: board?.rows ? ISSUE_TYPES.map(([type, , heading]) => ({ type, heading, rows: board.rows.filter(r => r.type === type).map(row) })) : null,
   };
 }
@@ -42,8 +52,7 @@ export function boardRegions(m, board, now = Date.now() / 1000) {
   const head = `<div><h1>Issues</h1><p><a href="${href('p', m.projectId)}" data-key="issues-project">${esc(m.projectName)}</a></p></div>`
     + `<div class="btn-row"><span class="hint">${board?.at ? `Fetched ${since(board.at, now)}` : ''}</span>`
     + `<button type="button" class="btn btn-secondary" data-action="issues-refresh" data-key="issues-refresh"${board?.loading ? ' aria-busy="true" aria-disabled="true"' : ''}>${icon(board?.loading ? 'loader' : 'refresh', board?.loading ? 'icon spin' : 'icon')}Refresh</button></div>`;
-  const goal = m.runFilter?.goal;
-  const filter = m.runFilter ? `<a class="chip issue-filter" href="${href('p', m.projectId, 'issues')}" data-key="issues-unfilter" aria-label="Remove filter: instance ${esc(goal)}"><span class="chip-text">Instance: ${esc(goal)}</span>${icon('circle-x')}</a>` : '';
+  const filter = `<div class="issue-filter">${dropdownHTML({ key: 'issues-run', field: 'issues-run', label: 'Instance', iconName: 'monitor', options: m.runOptions, selected: m.runFilter?.id || '' })}</div>`;
   if (!m.groups) {
     const groups = board?.error ? `<p class="note note-error" data-announce>${icon('alert')}<span>Issues are unavailable: ${esc(board.error)}. Refresh to try again.</span></p>` : loadingNote('Loading issues…');
     return { head, filter, groups };

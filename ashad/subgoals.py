@@ -18,6 +18,8 @@ STUCK_ACTIONS = 6
 STUCK_PLANS = 2
 STUCK_REPEATS = 2
 MAX_OBSERVATION_AGE = 5
+TILE_FIELDS = ("ground", "state", "plant", "growth_stage", "tillable", "waterable", "harvestable")
+MAX_REMEMBERED_TILES = 256
 
 
 def stale(stamp, now=None):
@@ -326,7 +328,64 @@ def records(observation, collection):
     return None
 
 
-def check_completion(condition, observation):
+def remember_tiles(plan, observation):
+    """Keep changed tiles (tilled, watered, planted) after they leave the 9x9 window; untouched ones are forgotten."""
+    if observation.get("ready") is not True:
+        return
+    memory = plan.setdefault("tile_memory", {})
+    for tile in observation.get("state", {}).get("tiles") or []:
+        if not isinstance(tile, dict) or not isinstance(tile.get("id"), str):
+            continue
+        memory.pop(tile["id"], None)
+        if tile.get("state") not in (None, "Default") or tile.get("plant"):
+            memory[tile["id"]] = {k: tile[k] for k in TILE_FIELDS if k in tile}
+    while len(memory) > MAX_REMEMBERED_TILES:
+        del memory[next(iter(memory))]
+
+
+def tile_records(plan, observation):
+    """Visible tiles plus remembered ones out of view; None when the observation has no tile list."""
+    visible = records(observation, "tiles")
+    if visible is None:
+        return None
+    seen = {t.get("id") for t in visible if isinstance(t, dict)}
+    return visible + [{"id": tid, **record} for tid, record in plan.get("tile_memory", {}).items() if tid not in seen]
+
+
+def tile_values(plan, observation):
+    """Observed values of the fields completions match on, so the planner does not guess them."""
+    tiles = tile_records(plan, observation) or []
+    values = {}
+    for field in ("state", "plant", "growth_stage"):
+        found = {json.dumps(t[field]): t[field] for t in tiles if isinstance(t, dict) and field in t}
+        values[field] = [found[k] for k in sorted(found)][:20]
+    return values
+
+
+def held_counts(observation):
+    """{item_id: count} over inventory and hotbar, ignoring malformed counts; None when either list is missing."""
+    player = observation.get("state", {}).get("player", {})
+    inventory, hotbar = player.get("inventory"), player.get("hotbar")
+    if not isinstance(inventory, list) or not isinstance(hotbar, list):
+        return None
+    counts = {}
+    for item in inventory + hotbar:
+        count = item.get("count")
+        if type(count) in (int, float) and math.isfinite(count) and count >= 0:
+            counts[item.get("item_id")] = counts.get(item.get("item_id"), 0) + count
+    return counts
+
+
+def progress_facts(observation, tiles):
+    """Hash of measurable facts: the progress signal for completions that cannot be counted."""
+    state = observation.get("state", {})
+    facts = [sorted([t.get("id"), t.get("state"), t.get("plant"), t.get("growth_stage")] for t in tiles or []),
+             held_counts(observation), [[q.get("id"), q.get("requirements")] for q in state.get("objectives", [])],
+             state.get("completed_quests")]
+    return hashlib.sha256(json.dumps(facts, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def check_completion(condition, observation, tiles=None):
     """Return (satisfied, measured value). Missing facts never count as success."""
     kind = condition["kind"]
     if kind == "unknown":
@@ -345,14 +404,12 @@ def check_completion(condition, observation):
         done = condition["target"] in quests
         return done, int(done)
     if kind == "inventory_quantity":
-        player = state.get("player", {})
-        inventory, hotbar = player.get("inventory"), player.get("hotbar")
-        if not isinstance(inventory, list) or not isinstance(hotbar, list):
+        held = held_counts(observation)
+        if held is None:
             return False, None
-        value = sum(item["count"] for item in inventory + hotbar if item.get("item_id") == condition["target"]
-                    and type(item.get("count")) in (int, float) and math.isfinite(item["count"]) and item["count"] >= 0)
+        value = held.get(condition["target"], 0)
     else:
-        values = records(observation, condition["collection"])
+        values = tiles if condition["collection"] == "tiles" and tiles is not None else records(observation, condition["collection"])
         if values is None:
             return False, None
         def matches(record):
@@ -441,12 +498,18 @@ def reconcile(plan, observation, control_generation):
                 goal.update(actionable=False, status="pending", attempts=0, reviews=0)
                 goal.pop("blocked_reason", None)
                 goal.pop("progress_high_water", None)
+                goal.pop("progress_signal", None)
+                goal.pop("progress_changes", None)
                 goal.pop("recent_actions", None)
                 goal.pop("repeating", None)
                 goal.pop("repeats", None)
         plan["reason"] = "Control or game binding changed; reassess from fresh observations."
+    if rebound:
+        plan.pop("tile_memory", None)
     # Unloading emits an empty world ID. Keep the last actual world so A -> menu -> B cannot reuse A's proof.
     plan.update(world_id=world or previous_world, observation_generation=binding, control_generation=control_generation)
+    remember_tiles(plan, observation)
+    tiles = tile_records(plan, observation)
     completed = []
     for goal in plan["goals"]:
         if goal["status"] == "completed" or goal.get("retired"):
@@ -454,13 +517,19 @@ def reconcile(plan, observation, control_generation):
         # Generation-local entity IDs must not validate a new game's binding.
         if rebound and goal["completion"]["kind"] == "observed_count":
             goal["completion"] = unknown("Rebind this observed-state check to the current game generation.")
-        done, value = check_completion(goal["completion"], observation)
-        previous_best = goal.get("progress_high_water")
-        if value is not None and (previous_best is None or value > previous_best):
-            goal.update(attempts=0, reviews=0, progress_at=now, progress_high_water=value)
+        done, value = check_completion(goal["completion"], observation, tiles)
+        signal = value if value is not None else (progress_facts(observation, tiles) if observation.get("ready") is True else None)
+        previous = goal.get("progress_signal")
+        if signal is not None and previous is not None and signal != previous:
+            # Any measured change is progress: planting turns Tilled into planted, watering dries, walking no longer drops counts.
+            goal.update(attempts=0, reviews=0, progress_at=now, progress_changes=goal.get("progress_changes", 0) + 1)
             goal.pop("recent_actions", None)
             goal.pop("repeating", None)
             goal.pop("repeats", None)
+        if signal is not None:
+            goal["progress_signal"] = signal
+        if value is not None:
+            goal["progress_high_water"] = max(value, goal.get("progress_high_water", value))
         goal["measured"] = value
         if done:
             goal.update(status="completed", completion_evidence={**observation_ref(observation), "value": value})
@@ -697,8 +766,10 @@ def record_action(plan, action=None):
 
 def prompt_plan(plan):
     """Keep the hierarchy in context, not a growing duplicate of the observation ledger."""
+    full = {g["id"] for g in goal_path(plan)} | {g["id"] for g in plan["goals"] if g.get("parent_id") == plan.get("active_goal_id")}
     shown = {"primary_goal": plan["primary_goal"], "active_goal_id": plan["active_goal_id"], "reason": plan["reason"],
-             "goals": [{k: g[k] for k in ("id", "parent_id", "objective", "completion", "status", "actionable")}
+             "goals": [{k: g[k] for k in ("id", "parent_id", "objective", "completion", "status", "actionable")} if g["id"] in full
+                       else {"id": g["id"], "parent_id": g["parent_id"], "status": g["status"], "objective": g["objective"][:160]}
                        for g in plan["goals"] if not g.get("retired")]}
     if plan.get("completion_rejected"):
         shown["completion_rejected"] = plan["completion_rejected"]

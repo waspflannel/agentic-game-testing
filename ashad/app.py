@@ -267,7 +267,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         # In particular an import/restart must validate this backend's own home.
         ai_status = {**ai.status, "api": SUBSCRIPTION_PRICING["api"]}
         model_options = [dict(o) for o in MODEL_OPTIONS]
-        return {"settings": settings, "ai": ai_status, "ai_claude": ai.claude_status, "ai_grok": ai.grok_status, "model_options": model_options, "default_model": default_model(ai), "builds": builds, "workers": workers, "accounts": store.list("accounts"), "configurations": store.list("configurations"), "runs": store.list("runs"), "usage_count": store.count("usage"), "leases": store.leases(), "projects": store.list("projects"),
+        return {"settings": settings, "ai": ai_status, "ai_claude": ai.claude_status, "ai_grok": ai.grok_status, "model_options": model_options, "default_model": default_model(ai, settings.get("last_model")), "builds": builds, "workers": workers, "accounts": store.list("accounts"), "configurations": store.list("configurations"), "runs": store.list("runs"), "usage_count": store.count("usage"), "leases": store.leases(), "projects": store.list("projects"),
                 "instance_slot": instance_slot(),
                 "workspace_import": {"interrupted": coordinator.import_interrupted()}}
 

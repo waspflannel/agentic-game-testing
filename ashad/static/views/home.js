@@ -24,25 +24,40 @@ export function emptyHTML(data) {
 }
 
 // ── Composer model ──────────────────────────────────────────────────────────
-// Saved, ready configurations whose build is registered in this project.
+// Saved, ready configurations for this project (including when the pinned build registration is gone).
 export function projectConfigurations(data, projectId) {
   const builds = new Map((data?.builds || []).map(b => [b.id, b]));
-  return (data?.configurations || []).filter(a => builds.has(a.build_id)
-    && (a.project_id || builds.get(a.build_id).project_id) === projectId
+  return (data?.configurations || []).filter(a => (a.project_id || builds.get(a.build_id)?.project_id) === projectId
     && [undefined, 'ready', 'completed'].includes(a.status));  // Retired configurations are hidden.
+}
+
+const regatherHint = 'Open the project overview and choose Get controls again on a current build.';
+
+export function configurationPinBlocker(data, agent, buildValidation) {
+  if (!agent) return '';
+  const builds = new Map((data?.builds || []).map(b => [b.id, b]));
+  if (!builds.has(agent.build_id)) {
+    return `Pinned build ${agent.build_id} is no longer registered. ${regatherHint}`;
+  }
+  if (buildValidation?.ready === false) {
+    return `Pinned build ${agent.build_id} is no longer valid. ${regatherHint}`;
+  }
+  return '';
+}
+
+function desktopReasonMessage(r, agent, data) {
+  const pin = configurationPinBlocker(data, agent, r?.build_validation);
+  if (pin) return pin;
+  if (r.build_validation?.ready !== true) return r.build_validation?.reason || 'Build is not validated';
+  const envs = r.environments || [];
+  if (!envs.some(e => e.ready === true)) return envs.find(e => e.reason)?.reason || 'No desktop is registered';
+  return '';
 }
 
 export const readinessKey = (projectId, agent, model) => `${projectId}|${agent?.build_id}|${agent?.id}|${model}`;
 export const newDraft = () => ({ goal: '', configurationId: '', model: '', transport: 'enet', requestId: null, sent: null, busy: false, result: null });
 
 export const draftModel = (data, draft) => ((data?.model_options || []).some(m => m.id === draft.model) ? draft.model : data?.default_model);
-
-function desktopReason(r) {
-  if (r.build_validation?.ready !== true) return r.build_validation?.reason || 'Build is not validated';
-  const envs = r.environments || [];
-  if (!envs.some(e => e.ready === true)) return envs.find(e => e.reason)?.reason || 'No desktop is registered';
-  return '';
-}
 
 // readiness: { key, loading, result, error } from the probe run on view open. A record for another agent or build is ignored.
 export function composerModel(data, projectId, draft, readiness) {
@@ -64,17 +79,19 @@ export function composerModel(data, projectId, draft, readiness) {
   if (slot.available === false && owner) desktop = { tone: 'live', label: 'Instance running', href: href('i', owner.run_id) };
   else if (!check || check.loading) desktop = { tone: 'pending', label: 'Checking desktop…' };
   else if (check.error) desktop = { tone: 'attention', label: `Not ready: ${check.error}`, href: href('p', projectId) };
-  else if (desktopReason(r)) desktop = { tone: 'attention', label: `Not ready: ${desktopReason(r)}`, href: href('p', projectId) };
+  else if (desktopReasonMessage(r, agent, data)) desktop = { tone: 'attention', label: `Not ready: ${desktopReasonMessage(r, agent, data)}`, href: href('p', projectId) };
   else desktop = { tone: 'live', label: 'Desktop ready' };
 
   const blockers = [];
   if (slot.available === false) blockers.push(slot.blocked_reason || 'Another instance owns the slot.');
   if (data?.ai?.status !== 'ready' && data?.ai_claude?.status !== 'ready' && data?.ai_grok?.status !== 'ready') blockers.push('No AI provider is connected. Connect one under Settings › Account.');
   else if (r && r.provider?.ready === false) blockers.push(r.provider.message || 'The model is not available.');
+  const pinBlocker = configurationPinBlocker(data, agent, r?.build_validation);
+  if (pinBlocker) blockers.push(pinBlocker);
   if (slot.available !== false) {
     if (!check || check.loading) blockers.push('Checking desktop readiness…');
-    else if (check.error) blockers.push(`Readiness check failed: ${check.error}`);
-    else if (desktopReason(r)) blockers.push(`Desktop not ready: ${desktopReason(r)}`);
+    else if (check.error && !pinBlocker) blockers.push(`Readiness check failed: ${check.error}`);
+    else if (!pinBlocker && desktopReasonMessage(r, agent, data)) blockers.push(`Desktop not ready: ${desktopReasonMessage(r, agent, data)}`);
   }
   if (draft.transport === 'steam' && !steam.enabled) blockers.push(`${steam.reason}. No ENet fallback.`);
 

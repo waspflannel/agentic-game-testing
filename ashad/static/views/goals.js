@@ -151,7 +151,7 @@ function nodeHTML(graph, id, depth, view) {
   const s = NODE_STATUS[node.status];
   const current = id === view.currentId;
   const isNew = view.seenNodes instanceof Set && !view.seenNodes.has(id);
-  const statusText = node.status === 'active' && progress(node.goal) ? `${s.label}, ${progress(node.goal).replace(/^now /, "")}` : s.label;
+  const statusText = node.status === 'active' && progress(node.goal) ? `${s.label}, ${progress(node.goal).replace(/^now /, '')}` : s.label;
   const reasonLine = node.reason && REASON_SHOWN.has(node.status);
   const kids = graph.children.get(id) || [];
   return `<li class="goal-branch"><button type="button" class="goal-node goal-node-${s.tone}${current ? ' goal-node-current' : ''}${isNew ? ' goal-node-new' : ''}"`

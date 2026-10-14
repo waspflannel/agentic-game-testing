@@ -12,6 +12,7 @@ import platform
 import sqlite3
 import subprocess
 import sys
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -230,12 +231,7 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
     turns = len(timings) or None
     gap_total = gaps["gap_seconds"]["total"] or 0
     tick_values = _column(timings, "tick_seconds")
-    action_results = {}
-    for event in events:
-        if event["kind"] != "action_result":
-            continue
-        status = _action_status(event["payload"])
-        action_results[status] = action_results.get(status, 0) + 1
+    action_results = dict(Counter(_action_status(event["payload"]) for event in events if event["kind"] == "action_result"))
     return {
         "serial_model_calls": {
             "model_seconds_share": _ratio(model_seconds, turn_total),
@@ -249,6 +245,7 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
             "decision_context": _ends(_present(timings, "bytes", "decision_context")),
             "input_bytes": _ends(inputs),
             "truncated_turns": sum(1 for row in timings if row.get("context_truncated") is True),
+            "evidence_truncated_turns": sum(1 for event in events if event["kind"] == "decision_selected" and event["payload"].get("evidence_truncated") is True),
             "list_entities_calls": sum((row.get("calls") or {}).get("tool:list_entities", 0) for row in timings),
             "store_seconds_per_turn": _ratio(store_seconds, turns),
             "store_bytes_per_turn": _ratio(store_bytes, turns),
@@ -257,6 +254,7 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
         "validator_retries": {
             "planning_turns": sum(1 for row in timings if row.get("outcome") == "planning"),
             "planner_attempts": sum((row.get("calls") or {}).get("plan_model", 0) for row in timings),
+            "plan_triggers": dict(Counter(row["plan_trigger"] for row in timings if row.get("plan_trigger"))),
             "plan_rejected": sum((row.get("counts") or {}).get("plan_rejected", 0) for row in timings),
             "rejected_events": sum(1 for event in events if event["kind"] == "subgoal_plan_rejected"),
             "plan_seconds_share": _ratio(plan_seconds, turn_total),

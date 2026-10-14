@@ -10,7 +10,7 @@ import re
 import time
 from datetime import datetime, timezone
 
-from .ai import GAME_VERBS, ProviderError, capability_summary
+from .ai import GAME_VERBS, ProviderError, capability_summary, prompt_observation
 from .game_controls import run_configuration
 from .models import MODEL, PROVIDERS, provider_of
 from .repository import Repository
@@ -20,6 +20,11 @@ from . import repair_tasks, subgoals
 LOG = logging.getLogger(__name__)
 LOOP_BACKSTOP_DECISIONS = 6
 ISSUE_PREFIXES = {"unsupported_action": "uae_", "crash": "crash_", "game_bug": "bug_", "planner_rejected": "plan_", "false_completion": "done_"}
+# Controller replan reasons, by prefix, as category labels; planner prose never reaches the timing row.
+PLAN_TRIGGERS = (("The last action failed", "action_failed"), ("Several actions have not verified", "review_interval"),
+                 ("Observed objectives or recipes changed", "knowledge_changed"), ("Control or game binding changed", "rebound"),
+                 ("No supported direct action fits", "needs_instructions"), ("The game state did not change across", "loop_backstop"),
+                 ("You said the primary goal is not done", "completion_rejected"))
 
 
 def meaningful_signature(observation):
@@ -27,21 +32,6 @@ def meaningful_signature(observation):
     return hashlib.sha256(json.dumps({k: observation.get(k) for k in
         ("generation", "world_id", "ready", "state", "entities", "active_action")},
         sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-def prompt_observation(observation, max_chars=28000):
-    result = copy.deepcopy(observation)
-    entities = result.pop("entities", [])
-    result.pop("known_locations", None)
-    result["entities"] = []
-    # Interactive targets before decorative labels. Preserve full state in evidence.
-    for entity in sorted(entities, key=lambda e: not bool(e.get("actions"))):
-        if len(json.dumps(result)) + len(json.dumps(entity)) > max_chars:
-            result["complete"] = False
-            result["context_truncated"] = True
-            break
-        result["entities"].append(entity)
-    return result
 
 
 @contextlib.contextmanager
@@ -153,7 +143,7 @@ class StructuredPlayers:
         # Game and controller clocks may disagree; planning freshness uses the controller's receipt time.
         result["received_at"] = time.time()
         run, ps = self.binding(run_id, player_id)
-        ps["structured_context"] = result
+        self.store.put("observations", result, f"{run_id}:{player_id}")
         ps["last_observation"] = {"observation_id": result.get("observation_id"), "timestamp": result.get("timestamp"), "source": "structured_game"}
         signature = wait_signature(result)
         if signature != ps.get("observation_signature"):
@@ -405,7 +395,7 @@ class StructuredPlayers:
                 "last_action": last_action,
                 "timing": {"detected_at": time.time(), **{k: ps.get(k) for k in ("launched_at", "telemetry_received_at",
                     "feed_captured_at", "simulation_advanced_at")}}}
-            await self._record(run, ps, player_id, "crash", basis, "monitor", ps.get("structured_context") or {},
+            await self._record(run, ps, player_id, "crash", basis, "monitor", self.store.get("observations", f"{run_id}:{player_id}") or {},
                 sections, skip_pin=kind == "worker_lost")
         except Exception:
             LOG.exception("Could not report %s crash for %s/%s", kind, run_id, player_id)
@@ -479,7 +469,7 @@ class StructuredPlayers:
             sections = {"claim": {"reason": claim["reason"], "evidence": claim["evidence"], "operator_note": note,
                 "verified_goals": [{k: goals[i][k] for k in ("id", "objective", "completion")} for i in claim["verified_goal_ids"]],
                 "plan_revision": plan["revision"]}}
-            await self._record(run, ps, player_id, "false_completion", basis, "operator", ps.get("structured_context") or {}, sections, skip_pin=True)
+            await self._record(run, ps, player_id, "false_completion", basis, "operator", self.store.get("observations", f"{run_id}:{player_id}") or {}, sections, skip_pin=True)
         except Exception:
             LOG.exception("Could not record false completion for %s/%s", run_id, player_id)
 
@@ -559,6 +549,9 @@ class StructuredPlayers:
         if not needs_plan:
             return True
         player = next(p for p in run["plan"]["players"] if p["id"] == player_id)
+        reason = plan.get("reason") or ""
+        timing["plan_trigger"] = "new_active_goal" if plan.get("active_goal_id") != previous_active else next(
+            (label for prefix, label in PLAN_TRIGGERS if reason.startswith(prefix)), "other")
         context = self.decision_context(run, player, observation)
         revision = plan["revision"]
         self.status(run_id, player_id, "planning", "Finding the next achievable prerequisite for: " + context["current_goal"]["objective"], generation)
@@ -678,7 +671,7 @@ class StructuredPlayers:
         ended = self.turn_ended_at.get(key)
         timing = {"outcome": "interrupted", "started_at": time.time(), "gap_seconds": None if ended is None else started - ended,
                   "tick_seconds": tick_seconds, "capture_seconds": ((ps.get("worker_status") or {}).get("capture") or {}).get("last_seconds"),
-                  "context_truncated": None, "seconds": {}, "calls": {}, "counts": {}, "bytes": {}}
+                  "context_truncated": None, "plan_trigger": None, "seconds": {}, "calls": {}, "counts": {}, "bytes": {}}
         try:
             previous_status = ps.get("agent_status") or {}
             # Polling a known wait must not replace its useful status with a flash of "observing".

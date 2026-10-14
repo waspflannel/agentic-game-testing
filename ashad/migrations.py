@@ -87,3 +87,14 @@ def migrate_issue_projects(store):
                 path.unlink(missing_ok=True)
             except OSError:
                 LOG.warning("Could not remove legacy issue file %s", path)
+
+
+def drop_run_observations(store):
+    """Observations live in their own records now; strip the copy every run save used to rewrite."""
+    with store.transaction():
+        for run in store.list("runs"):
+            stale = [ps for ps in run.get("players", {}).values() if "structured_context" in ps]
+            for ps in stale:
+                del ps["structured_context"]
+            if stale:
+                store.put("runs", run)

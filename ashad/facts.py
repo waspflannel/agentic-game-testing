@@ -80,7 +80,7 @@ def catalog(observation, item_ids):
     ids = {
         "item_id": sorted(set(item_ids) | set(current.get("item_count", {})) | {i for items in delivered.values() for i in items}),
         "quest_id": sorted(set(current.get("quest_completed", {})) | set(current.get("quest_requirement_progress", {}))),
-        "plant_id": sorted({p for fact in PLANT_FACTS for p in current.get(fact, {})}),
+        "plant_id": sorted({p for fact in PLANT_FACTS for p in current.get(fact, {})} | {i for i in item_ids if i.endswith("_seed")}),
         "target": list(delivered),
         "index": "integer index into the quest's requirements",
     }

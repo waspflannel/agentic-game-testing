@@ -269,6 +269,7 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
             "plan_seconds_share": _ratio(plan_seconds, turn_total),
             "action_results": action_results,
             "action_outcomes": dict(Counter((event["payload"].get("result") or {}).get("status", "unknown") for event in events if event["kind"] == "structured_action_outcome")),
+            "action_effects": dict(Counter((event["payload"].get("result") or {}).get("effect") or "none" for event in events if event["kind"] == "structured_action_outcome")),
             "turn_failures": dict(Counter(event["payload"].get("category", "unknown") for event in events if event["kind"] == "agent_turn_failed")),
         },
         "polling_waits": {

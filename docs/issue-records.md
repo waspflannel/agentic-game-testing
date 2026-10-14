@@ -53,7 +53,7 @@ Basis keys per type:
 | `crash` | `kind, detector, exit` |
 | `game_bug` | `symptom, expected, observed, action_verb, target_kind, target_label` |
 | `planner_rejected` | `reason, focus_objective, mode`; `focus_objective` is the focused goal's objective normalised like `target_label` (digits become `#`, case-folded, at most 60 chars); list indices in `reason`'s location become `#` (`subgoals.2.completion` → `subgoals.#.completion`) |
-| `capability_gap` | `kind, cause, focus_objective, missing`; `cause` is `game_bug \| mcp_gap` |
+| `capability_gap` | `kind, cause, focus_objective, missing`; `cause` is `game_bug \| mcp_gap \| planner_gap`: `planner_gap` when the goal's check is `unknown` or the planner reported a plan problem, or when a stuck goal's measured progress or actions changed the observed state (the plan is wrong, not the game); `mcp_gap` when the agent was blocked or an action failed (missing action or observation support); `game_bug` when actions completed and the observed state did not change |
 
 Titles per type:
 
@@ -63,7 +63,7 @@ Titles per type:
 | `crash` | `"<kind title> (<exit or detector>)"`, for example `Game process exited (signal:SIGSEGV)` or `Game worker was lost (worker_unreachable)`. Kind titles: `game_exit` "Game process exited", `game_hang` "Game stopped responding", `worker_lost` "Game worker was lost", `desktop_lost` "Game desktop was lost" |
 | `game_bug` | `"Game bug (<symptom>): expected <expected>, observed <observed>"`, then `" on <target_label or target_kind>"` when there is a target (a `target_kind` of `none` counts as none), then `" after <action_verb>"` when there is an action |
 | `planner_rejected` | `"Planner rejected: <reason> while planning “<focus_objective>”"` |
-| `capability_gap` | `"MCP or game needs updating (<game bug or MCP gap>): <missing> while working on “<focus_objective>”"` (`game bug` when `cause` is `game_bug`, otherwise `MCP gap`) |
+| `capability_gap` | `"MCP or game needs updating (<game bug, MCP gap or planner gap>): <missing> while working on “<focus_objective>”"` (`game bug`, `MCP gap` or `planner gap` for the matching `cause`) |
 
 ## Example fields
 
@@ -186,8 +186,12 @@ Each is written to the run ledger after the record is stored, never before, so t
 | Event | Payload |
 |---|---|
 | `unsupported_action_recorded`, `crash_recorded`, `game_bug_recorded`, `planner_rejected_recorded`, `capability_gap_recorded` | `{player_id, issue_id, example_id, source, kept, outcome}`; `outcome` is `kept` or `counted`, and nothing is written for a failed record |
+| `capability_gap_recorded` (extra) | `goal_id`, the focused subgoal's id |
 | `issue_reopened` | `{player_id, issue_id, example_id}` |
 | `issue_cap_reached` | `{player_id, issue_type, signature}` |
+| `worker_heartbeat_retry` | a worker heartbeat failed and is being retried |
+| `host_suspended` | the host was suspended (for example sleep) while the run was active |
+| `structured_action_outcome` | `result.effect` is `changed` or `no_effect` when the action completed (observed facts or player position changed or not), absent otherwise |
 | `game_bug_report_rejected` | `{player_id, reason}` |
 
 ## Per-instance history

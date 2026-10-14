@@ -48,6 +48,7 @@ def planning_request(evidence, schema):
         "For observed_count use entities, tiles or recipes and exact field/value matches that must all hold on each counted record; "
         "use an observed entity identity or kind as well as its state. Entity match fields are id/kind/label/parent or state.<field>; "
         "tile fields are id/ground/state/plant/growth_stage/tillable/waterable/harvestable; recipe fields are id/name/output/count. "
+        "Match tile_values; count. "
         "Quest targets must be actual observed quest IDs. Use target only for quest/inventory; otherwise keep it empty. "
         "Keep collection and matches empty except for observed_count. "
         "Each goal cites at least one evidence item showing why it fits current state: path is a JSON pointer from the observation root (e.g. /state/tiles/0), quote a short fragment found there. Evidence explains the plan; completion matches may describe states not yet observed. "

@@ -66,17 +66,17 @@ export function goalGraph(plan, events) {
 
 const jumpChip = (label, seq) => `<button type="button" class="chip" data-action="tl-jump" data-seq="${seq}">${label} #${seq}</button>`;
 
-// Cited observation quotes; shared by the Goals pane, the Goal reached popup and the False completion issue view. All text escaped.
-export const evidenceListHTML = evidence => (evidence?.length
-  ? `<ul class="claim-evidence">${evidence.map(e => `<li><span class="claim-source">${esc(e.source)}${e.path ? ` · ${esc(e.path)}` : ''}</span><pre class="mono claim-quote">${esc(e.quote)}</pre></li>`).join('')}</ul>`
-  : '<p class="hint">No evidence was recorded.</p>');
+// "fact(arg=value) op value" for a typed check; old-shape goals (no fact) and unknown checks give ''.
+export const checkText = c => (c?.fact && c.fact !== 'unknown' ? `${c.fact}(${(c.args || []).map(a => `${a.name}=${a.value}`).join(', ')}) ${c.op} ${c.value}` : '');
 
-// The claim's proof, shared by the Goal reached popup and the root's pane.
+// The claim's proof, shared by the Goal reached popup and the root's pane: each verified goal with its check.
 export function claimEvidenceHTML(claim, plan) {
   const goals = (claim?.verified_goal_ids || []).map(id => plan.goals.find(g => g.id === id)).filter(Boolean)
-    .map(g => `<li>${icon('check')}<span>${esc(g.objective)}${g.completion?.description ? ` <span class="insp-dim">— ${esc(g.completion.description)}</span>` : ''}</span></li>`).join('');
-  return `<p class="section-title">Evidence</p>${evidenceListHTML(claim?.evidence)}`
-    + `<p class="section-title">Verified goals</p><ul class="claim-verified">${goals}</ul>`;
+    .map(g => {
+      const check = checkText(g.completion);
+      return `<li>${icon('check')}<span>${esc(g.objective)} ${check ? `<code class="mono claim-check">${esc(check)}</code>` : g.completion?.description ? `<span class="insp-dim">— ${esc(g.completion.description)}</span>` : ''}</span></li>`;
+    }).join('');
+  return `<p class="section-title">Verified goals</p><ul class="claim-verified">${goals}</ul>`;
 }
 
 // Planning evidence: the card that retained the goal's source observation. Verification: the subgoals_verified card naming it.
@@ -89,10 +89,12 @@ function goalLinks(goal, events) {
   return [link('Planned from', planned, plannedAt), link('Verified', verified, goal.completion_evidence?.observation_id)].filter(Boolean).join('');
 }
 
-const MEASURED = new Set(['inventory_quantity', 'observed_count']);
-// "8 of 30 so far" only when the controller measured a countable condition.
-const progress = goal => (Number.isFinite(goal?.measured) && MEASURED.has(goal.completion?.kind)
-  ? `${goal.measured} of ${goal.completion.quantity} so far` : '');
+// "1 of 5 so far" for a numeric target, "now <value>" for a measured boolean or other target, '' when unknown or never measured.
+const progress = goal => {
+  const m = goal?.measured, c = goal?.completion;
+  if (m == null || !c?.fact || c.fact === 'unknown') return '';
+  return typeof m === 'number' && typeof c.value === 'number' ? `${m} of ${c.value} so far` : `now ${m}`;
+};
 
 const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
 const HISTORY_KINDS = {
@@ -169,16 +171,15 @@ function goalDetailHTML(node, graph, { plan, run, events, currentId }) {
   const rootNow = claim ? `<p>Planner's reason: ${esc(claim.reason)}</p>${claimEvidenceHTML(claim, plan)}${claimEvent ? `<div class="goal-links">${jumpChip('Goal reached', claimEvent.seq)}</div>` : ''}`
     : isRoot && current ? `<p>${['blocked', 'handed_back'].includes(plan.status) ? 'Waiting for your review.' : 'Choosing the next concrete goal under the primary goal.'}</p>` : '';
   const rejected = (graph.children.get(node.id) || []).filter(k => graph.nodes.get(k).status === 'rejected').length;
-  const quotes = (goal.evidence || []).map(e => `<li><span class="insp-dim">${esc(e.source)}${e.path ? ` ${esc(e.path)}` : ''}</span> “${esc(e.quote)}”</li>`).join('');
   const reason = !node.reason ? '' : (node.status === 'blocked' || node.status === 'gave_up') ? `<p class="goal-node-reason">${esc(node.reason)}</p>`
     : node.status === 'retired' || node.status === 'skipped' ? `<p class="insp-dim">${esc(node.reason)}</p>` : '';
   const links = goalLinks(goal, events);
   return rootNow
     + `${goal.completion?.description ? `<p>${esc(goal.completion.description)}</p>` : ''}`
+    + `${checkText(goal.completion) ? `<p class="mono">${esc(checkText(goal.completion))}</p>` : ''}`
     + `${progress(goal) ? `<p>${progress(goal)}</p>` : ''}`
     + `${goal.attempts > 0 ? `<p class="insp-dim">Actions tried since progress: ${goal.attempts}</p>` : ''}`
-    + `${rejected > 0 ? `<p class="insp-dim">Rejected proposals: ${rejected}</p>` : ''}`
-    + `${quotes ? `<p class="insp-dim">Planning evidence</p><ul class="insp-list">${quotes}</ul>` : claim ? '' : '<p class="insp-dim">No planning evidence recorded.</p>'}`
+    + `${rejected > 0 ? `<p class="insp-dim">Invalid checks retried: ${rejected}</p>` : ''}`
     + reason
     + `${links ? `<div class="goal-links">${links}</div>` : ''}`
     + `${current && !isRoot && plan.reason && !plan.reason.startsWith('Skipped blocked goal "') ? `<p class="insp-dim">Why: ${esc(plan.reason)}</p>` : ''}`

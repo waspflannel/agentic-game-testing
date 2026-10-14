@@ -1,8 +1,8 @@
 // Project Issues board and issue view. Fetched on view open and Refresh only; the model and markup are pure.
 import { esc, icon, href, dropdownHTML, since, humanize, runGoal, runTime } from '../core.js';
-import { evidenceListHTML } from './goals.js';
+import { checkText } from './goals.js';
 
-export const ISSUE_TYPES = [['unsupported_action', 'Unsupported action', 'Unsupported actions'], ['crash', 'Crash', 'Crashes'], ['game_bug', 'Game bug', 'Game bugs'], ['planner_rejected', 'Planner rejection', 'Planner rejections'], ['false_completion', 'False completion', 'False completions'], ['capability_gap', 'MCP or game needs updating', 'MCP or game needs updating']];
+export const ISSUE_TYPES = [['unsupported_action', 'Unsupported action', 'Unsupported actions'], ['crash', 'Crash', 'Crashes'], ['game_bug', 'Game bug', 'Game bugs'], ['false_completion', 'False completion', 'False completions'], ['capability_gap', 'MCP or game needs updating', 'MCP or game needs updating']];
 export const typeLabel = type => ISSUE_TYPES.find(([t]) => t === type)?.[1] || humanize(type);
 export const statusWord = status => ({ open: 'Open', closed: 'Closed' })[status] || humanize(status);
 
@@ -119,9 +119,6 @@ export function issueInfoHTML(issue, example, { runIds }) {
     happened = fields([['Kind', humanize(crash?.kind)], ['Detector', crash?.detector], ['Reason', crash?.reason], ['Exit code', crash?.exit_code], ['Signal', crash?.signal]]);
   } else if (type === 'game_bug') {
     happened = fields([['Symptom', humanize(report?.symptom)], ['Expected', report?.expected], ['Observed', report?.observed], ['Target', [report?.target_label, report?.target_kind].filter(Boolean).join(', ')]]);
-  } else if (type === 'planner_rejected') {
-    happened = fields([['Goal', intent.primary_goal], ['Planning for', planner?.goal?.focus?.objective], ['Rule', planner?.reason],
-      ['Attempt', planner?.attempt], ['Mode', planner?.mode], ['Source', humanize(planner?.source)]]);
   } else if (type === 'capability_gap') {
     happened = fields([['Goal', intent.primary_goal], ['Subgoal', gap?.subgoal?.objective], ['Cause', { game_bug: 'Game bug', mcp_gap: 'MCP gap', planner_gap: 'Planner gap' }[gap?.cause] || 'Unknown'], ['Kind', humanize(gap?.kind)], ['Missing', gap?.missing]]);
   } else if (type === 'false_completion') {
@@ -162,9 +159,10 @@ export function issueInfoHTML(issue, example, { runIds }) {
     sections.push(section('Bug report', fields([['Target ID', report?.target_id], ['Target state', targetState !== null && typeof targetState === 'object' ? JSON.stringify(targetState) : targetState]])
       + (report?.related_action ? json('Related action', report.related_action) : '')));
   }
-  if (type === 'planner_rejected') sections.push(section('Rejected proposal', planner?.proposal ? json('Proposal', planner.proposal) : '<p class="hint">The proposal was trimmed from this example.</p>'));
   if (type === 'capability_gap') sections.push(section('Tried', gap?.tried?.length ? json('Tried', gap.tried) : '<p class="hint">Nothing was tried.</p>'));
-  if (type === 'false_completion') sections.push(section('Claimed evidence', evidenceListHTML(claim?.evidence)));
+  if (type === 'false_completion') sections.push(section('Verified goals', claim?.verified_goals?.length
+    ? `<ul class="claim-verified">${claim.verified_goals.map(g => `<li>${esc(g.objective)} ${checkText(g.completion) ? `<code class="mono claim-check">${esc(checkText(g.completion))}</code>` : ''}</li>`).join('')}</ul>`
+    : '<p class="hint">No verified goals were recorded.</p>'));
 
   const ev = example.evidence || {};
   const paths = [['Run folder', ev.run_dir], ['Ledger', ev.ledger], ['Report', ev.report]].filter(([, p]) => p);

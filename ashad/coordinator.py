@@ -16,7 +16,7 @@ from .reports import generate_report
 from .repair_tasks import record_task, publish_pending, remove_project_issue_files
 from .store import uid
 from .worker_client import WorkerError
-from . import subgoals
+from . import facts, subgoals
 from .subgoals import new_plan
 from .validation import validate_plan
 from .workspace_environment import inspect_environment, validate_build
@@ -1065,6 +1065,7 @@ class Coordinator:
             subgoals.reconcile(plan, observation, generation)
             player = next(p for p in live["plan"]["players"] if p["id"] == player_id)
             context = self.structured.decision_context({**live, "subgoal_plan": plan}, player, observation)
+            context["fact_catalog"] = facts.catalog(observation, self.structured.item_ids(live))
             context["replanning_reason"] = "The operator requested a new plan from current state. Old setup goals may be obsolete; keep the primary objective unchanged."
             warnings = []
             self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": plan["revision"], "context": context})
@@ -1080,7 +1081,6 @@ class Coordinator:
                     reason = subgoals.rejection_message(exc)
                     self.store.event(run_id, "subgoal_plan_rejected", {"player_id": player_id, "reason": reason, "attempt": attempt + 1,
                                      "goal_id": plan["root_id"], "objective": plan["primary_goal"], "revision": plan["revision"], "proposal": proposal})
-                    await self.structured.report_planner_rejection(run_id, player_id, "recalculation", plan, proposal, reason, attempt + 1, observation)
                     if attempt:
                         raise ValueError(f"The planner proposed a plan ASHAD could not verify: {reason}") from exc
                     context = {**context, "previous_attempt_rejected": {"reason": reason, "rejected_answer": proposal}}

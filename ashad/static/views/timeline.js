@@ -107,17 +107,20 @@ function summary(event, kind, finals) {
   }
 }
 
-// Adjacent model events collapse into one "Model turn" row.
+// Adjacent model events collapse into one row; rows without a model request are agent turn bookkeeping.
 function modelSummary(events) {
-  let total = 0, known = false, seconds = 0;
+  let total = 0, known = false, requested = false, seconds = 0;
   for (const e of events) {
+    if (e.kind === 'inference_usage' || e.kind.startsWith('provider_request_')) requested = true;
     const usage = e.kind === 'inference_usage' ? e.payload?.usage : null;
     const n = usage ? rowTokens({ usage }) : null;
     if (Number.isFinite(n)) { total += n; known = true; }
     if (e.kind === 'inference_usage' && Number.isFinite(e.payload?.latency_seconds)) seconds += e.payload.latency_seconds;
     if (e.kind === 'agent_turn_completed' && Number.isFinite(e.payload?.duration_seconds)) seconds = Math.max(seconds, e.payload.duration_seconds);
+    if (e.kind === 'agent_turn_timing' && Number.isFinite(e.payload?.total_seconds)) seconds = Math.max(seconds, e.payload.total_seconds);
   }
-  return { text: ['Model turn', known ? `${tokens(total)} tokens` : 'tokens unknown', seconds ? `${seconds.toFixed(1)}s` : null].filter(Boolean).join(' · ') };
+  const usageText = known ? `${tokens(total)} tokens` : requested ? 'tokens unknown' : null;
+  return { text: [requested ? 'Model turn' : 'Agent turn', usageText, seconds ? `${seconds.toFixed(1)}s` : null].filter(Boolean).join(' · ') };
 }
 
 // ── Window state ────────────────────────────────────────────────────────────

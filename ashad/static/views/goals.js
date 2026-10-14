@@ -17,10 +17,12 @@ const NODE_STATUS = {
   earlier: { label: 'Earlier plan', icon: 'clock', tone: 'muted' },
 };
 const skipPrefix = goal => `Skipped blocked goal "${goal.objective}": `;
+// A skip retires the blocked goal and its subtree with one reason, so only the goal or an ancestor can be the skipped one.
 const skippedBy = (goal, goals) => {
   const reason = String(goal.blocked_reason || '');
   if (!goal.retired || !reason) return null;
-  return goals.find(g => reason.startsWith(skipPrefix(g))) || null;
+  for (let g = goal; g; g = goals.find(x => x.id === g.parent_id)) if (reason.startsWith(skipPrefix(g))) return g;
+  return null;
 };
 const goalStatus = (goal, rootId, goals) => (goal.id === rootId ? 'root'
   : goal.retired && skippedBy(goal, goals) ? 'skipped'

@@ -438,6 +438,7 @@ function onSetupAction(action, target, event) {
 
 // While Get game controls runs, its progress is read every 3s from the recovery route: no probe, no inference.
 async function watchControls(op) {
+  op.progressAt = Date.now() / 1000;  // Starts the stale clock, so a progress route that never answers still shows the hint.
   while (op.status === 'busy' || op.waiting) {
     if (op.status === 'busy' && op.requestId && !document.hidden) {
       try {

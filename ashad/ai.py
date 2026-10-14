@@ -5,6 +5,7 @@ import asyncio
 import copy
 import json
 import math
+import re
 import time
 
 from .codex_backend import CodexBackend, CodexError
@@ -472,14 +473,16 @@ class OpenAI:
         if not can_continue():
             return
         def listed(group):
-            """Actions first, each without its repeated target name, so trimming cuts target detail; byte ends show what survived."""
+            """Target name, then actions saying "it" for that name, then target detail: trimming cuts detail, never identity. Byte ends show which actions survived."""
             if group.get("drag_source"):
                 return group["description"], []  # Drag destinations are expanded only after the source is chosen.
-            subject, text, ends = group.get("subject"), "Actions:", []
+            subject, ends = group.get("subject"), []
+            text = f"Target {subject[:100]}. Actions:" if subject else "Actions:"
             for i, a in enumerate(group["actions"]):
-                text += f" {i}) " + (a["description"].replace(subject, "it") if subject else a["description"]) + ";"
+                described = re.sub(rf"(?<!\w){re.escape(subject)}(?!\w)", "it", a["description"]) if subject else a["description"]
+                text += f" {i}) {described};"
                 ends.append(len(text.encode("utf-8")))
-            return text + " Target: " + group["description"], ends
+            return text + " Detail: " + group["description"], ends
         width = max([len(g["actions"]) for g in groups if not g.get("drag_source")] + [1])
         listings = [listed(g) for g in groups]
         target_options = bounded_descriptions([(str(i), text) for i, (text, _) in enumerate(listings)], evidence)

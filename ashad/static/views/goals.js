@@ -9,6 +9,7 @@ const NODE_STATUS = {
   active: { label: 'Now', icon: 'target', tone: 'plain' },
   completed: { label: 'Completed', icon: 'circle-check', tone: 'done' },
   blocked: { label: 'Blocked', icon: 'circle-x', tone: 'danger' },
+  gave_up: { label: 'Gave up', icon: 'circle-x', tone: 'danger' },
   retired: { label: 'Not needed', icon: 'ban', tone: 'muted' },
   skipped: { label: 'Skipped', icon: 'ban', tone: 'muted' },
   pending: { label: 'Pending', icon: 'circle', tone: 'muted' },
@@ -127,8 +128,8 @@ const primaryHTML = (plan, root) => `<p class="section-title">Primary goal</p><p
 function reviewHTML(run, plan) {
   const recalculating = run.goal_recalculation?.status === 'planning';
   const pause = run.pause;
-  const reason = ['planner_rejected', 'planner_blocked'].includes(pause?.category) || (pause?.category === 'goal_recalculation' && !recalculating) ? pause.reason
-    : plan.status === 'blocked' ? plan.reason : '';
+  const reason = ['planner_rejected', 'planner_blocked', 'handed_back'].includes(pause?.category) || (pause?.category === 'goal_recalculation' && !recalculating) ? pause.reason
+    : ['blocked', 'handed_back'].includes(plan.status) ? plan.reason : '';
   return reason ? `<p class="note goal-review">Needs review: ${esc(reason)}</p>` : '';
 }
 
@@ -139,7 +140,7 @@ function historyHTML(events) {
     + `${items ? `<ol>${items}</ol>` : '<p class="hint">No planning activity is loaded. Older history is in Actions.</p>'}</section>`;
 }
 
-const REASON_SHOWN = new Set(['blocked', 'retired', 'rejected', 'skipped']);
+const REASON_SHOWN = new Set(['blocked', 'gave_up', 'retired', 'rejected', 'skipped']);
 
 // One node button and its children; view = { currentId, selectedId, seenNodes }.
 function nodeHTML(graph, id, depth, view) {
@@ -169,7 +170,7 @@ function goalDetailHTML(node, graph, { plan, run, events, currentId }) {
     : isRoot && current ? `<p>${plan.status === 'blocked' ? 'Waiting for your review.' : 'Choosing the next concrete goal under the primary goal.'}</p>` : '';
   const rejected = (graph.children.get(node.id) || []).filter(k => graph.nodes.get(k).status === 'rejected').length;
   const quotes = (goal.evidence || []).map(e => `<li><span class="insp-dim">${esc(e.source)}${e.path ? ` ${esc(e.path)}` : ''}</span> “${esc(e.quote)}”</li>`).join('');
-  const reason = !node.reason ? '' : node.status === 'blocked' ? `<p class="goal-node-reason">${esc(node.reason)}</p>`
+  const reason = !node.reason ? '' : (node.status === 'blocked' || node.status === 'gave_up') ? `<p class="goal-node-reason">${esc(node.reason)}</p>`
     : node.status === 'retired' || node.status === 'skipped' ? `<p class="insp-dim">${esc(node.reason)}</p>` : '';
   const links = goalLinks(goal, events);
   return rootNow

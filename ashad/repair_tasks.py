@@ -30,7 +30,7 @@ MAX_RUNS = 50
 MAX_BUILDS = 20
 RUN_ISSUE_EVENTS = 500
 RUN_ISSUE_HITS_SHOWN = 20
-ISSUE_EVENT_KINDS = ("unsupported_action_recorded", "crash_recorded", "game_bug_recorded", "planner_rejected_recorded", "false_completion_recorded")
+ISSUE_EVENT_KINDS = ("unsupported_action_recorded", "crash_recorded", "game_bug_recorded", "planner_rejected_recorded", "false_completion_recorded", "capability_gap_recorded")
 CRASH_TITLES = {"game_exit": "Game process exited", "game_hang": "Game stopped responding",
                 "worker_lost": "Game worker was lost", "desktop_lost": "Game desktop was lost"}
 
@@ -93,6 +93,8 @@ def issue_title(issue_type, basis):
         return title
     if issue_type == "false_completion":
         return f"False completion: the planner claimed “{basis['primary_goal']}” was reached"
+    if issue_type == "capability_gap":
+        return f"MCP or game needs updating ({'game bug' if basis['cause'] == 'game_bug' else 'MCP gap'}): {basis['missing']} while working on “{basis['focus_objective']}”"
     if issue_type == "planner_rejected":
         return f"Planner rejected: {basis['reason']} while planning “{basis['focus_objective']}”"
     verb = basis["verb"] if basis["verb"] not in (None, "other") else "perform an action this interface does not offer"

@@ -167,7 +167,7 @@ function goalDetailHTML(node, graph, { plan, run, events, currentId }) {
   const claimEvent = claim && events.findLast(e => e.kind === 'goal_reached');
   // The root never completes, so it is current both before the first goal and after every child completes; a blocked root waits on review, a claimed root on your answer.
   const rootNow = claim ? `<p>Planner's reason: ${esc(claim.reason)}</p>${claimEvidenceHTML(claim, plan)}${claimEvent ? `<div class="goal-links">${jumpChip('Goal reached', claimEvent.seq)}</div>` : ''}`
-    : isRoot && current ? `<p>${plan.status === 'blocked' ? 'Waiting for your review.' : 'Choosing the next concrete goal under the primary goal.'}</p>` : '';
+    : isRoot && current ? `<p>${['blocked', 'handed_back'].includes(plan.status) ? 'Waiting for your review.' : 'Choosing the next concrete goal under the primary goal.'}</p>` : '';
   const rejected = (graph.children.get(node.id) || []).filter(k => graph.nodes.get(k).status === 'rejected').length;
   const quotes = (goal.evidence || []).map(e => `<li><span class="insp-dim">${esc(e.source)}${e.path ? ` ${esc(e.path)}` : ''}</span> “${esc(e.quote)}”</li>`).join('');
   const reason = !node.reason ? '' : (node.status === 'blocked' || node.status === 'gave_up') ? `<p class="goal-node-reason">${esc(node.reason)}</p>`

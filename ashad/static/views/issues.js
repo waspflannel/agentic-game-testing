@@ -62,7 +62,7 @@ export function boardRegions(m, board, now = Date.now() / 1000) {
     const count = total === rows.length ? `${rows.length}` : `${rows.length} · ${total} times`;
     return `<section class="issue-group" aria-labelledby="ig-${type}"><h2 id="ig-${type}" class="issue-group-head">${heading} <span class="issue-count">${count}</span></h2>`
       + (rows.length ? `<ol class="issue-board-list">${rows.map(r => boardRow(m, r)).join('')}</ol>`
-        : `<p class="hint">${m.runFilter ? 'None in this instance.' : `No ${heading.toLowerCase()} recorded.`}</p>`) + `</section>`;
+        : `<p class="hint">${m.runFilter ? 'None in this instance.' : 'None recorded.'}</p>`) + `</section>`;
   }).join('');
   return { head, filter, groups };
 }

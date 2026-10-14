@@ -19,6 +19,7 @@ from . import repair_tasks, subgoals
 
 LOG = logging.getLogger(__name__)
 LOOP_BACKSTOP_DECISIONS = 6
+MOVEMENT_STALL_LIMIT = 2  # Failed moves from one unchanged position: input is not reaching the character.
 ISSUE_PREFIXES = {"unsupported_action": "uae_", "crash": "crash_", "game_bug": "bug_", "planner_rejected": "plan_", "false_completion": "done_"}
 # Controller replan reasons, by prefix, as category labels; planner prose never reaches the timing row.
 PLAN_TRIGGERS = (("The last action failed", "action_failed"), ("Several actions have not verified", "review_interval"),
@@ -71,6 +72,29 @@ def observed_entity(observation, target_id):
     return next((e for e in observation.get("entities", []) if target_id and e.get("id") == target_id), {})
 
 
+FAILED_STATUSES = frozenset({"failed", "rejected", "expired", "cancelled"})
+
+
+def repeated_failures(events):
+    """Actions that failed more than once, so the planner sees them instead of re-planning them."""
+    intents = {e["payload"].get("action_id"): e["payload"].get("input") or {}
+               for e in events if e["kind"] == "structured_action_intent"}
+    failures = {}
+    for event in events:
+        result = event["payload"].get("result") or {}
+        action_id = event["payload"].get("action_id") or result.get("action_id")
+        action = intents.get(action_id)
+        if event["kind"] in {"action_result", "structured_action_outcome"} and action and result.get("status") in FAILED_STATUSES:
+            failures[action_id] = (action, str(result.get("reason") or result["status"])[:200])
+    grouped = {}
+    for action, reason in failures.values():
+        fingerprint = json.dumps([action.get("verb"), action.get("target_id", ""), action.get("parameters") or {}], sort_keys=True)
+        entry = grouped.setdefault(fingerprint, {"verb": action.get("verb"), "target_id": action.get("target_id", ""),
+                                                 "parameters": action.get("parameters") or {}, "reason": reason, "failures": 0})
+        entry.update(reason=reason, failures=entry["failures"] + 1)
+    return [entry for entry in grouped.values() if entry["failures"] >= 2]
+
+
 class StructuredPlayers:
     def __init__(self, coordinator):
         self.coordinator = coordinator
@@ -81,6 +105,7 @@ class StructuredPlayers:
         self.generations = {}
         self.control_owners = {}
         self.loop_counts = {}
+        self.movement_stalls = {}
         self.bug_reports = {}
         self.turn_ended_at = {}
         self.crashes_recorded = set()
@@ -161,7 +186,7 @@ class StructuredPlayers:
             result["next_steps"] = (["Use the visible menu controls to create/select the world as host, or join as configured.",
                                      "Complete character creation and visible dialogue prompts first."] if not observation.get("ready") else
                 ["Read the active objective and visible dialogue. Gather or produce its requested items using ordinary controls.",
-                 "Select tools with slot_1 through slot_9; aim use_item at an observed world position.",
+                 "Select a hotbar item with the input named on its hotbar entry (slot_1 is hotbar slot 0); aim use_item at an observed world position.",
                  "Move in local waypoints, then interact when the target is highlighted. Use visible slots/buttons for transfers and crafting.",
                  "Inspect the next observation after input. Wait for production/growth or votes instead of repeating failed actions."])
         if player.get("context_policy") != "instructions":
@@ -224,7 +249,7 @@ class StructuredPlayers:
              "source_observation": observation["observation_id"], "reason": args.get("reason"), "input": payload,
              "target_kind": observed_entity(observation, payload["target_id"]).get("kind")})
         self.pending[key] = action_id
-        ps["pending_action"] = {"action_id": action_id, "expires_at": payload["expires_at"]}
+        ps["pending_action"] = {"action_id": action_id, "expires_at": payload["expires_at"], "verb": payload["verb"]}
         if owner == "agent" and run.get("subgoal_plan", {}).get("player_id") == player_id:
             subgoals.record_action(run["subgoal_plan"], payload)
         self.store.put("runs", run)
@@ -248,11 +273,13 @@ class StructuredPlayers:
                 outcome=result, event_ids=(outcome_event["id"],))
         if result.get("status", "unknown") not in {"running", "accepted", "unknown"}:
             self.clear_pending(run_id, player_id, generation)
-        if result.get("status") in {"rejected", "failed", "expired", "cancelled"}:
+        if result.get("status") in FAILED_STATUSES:
             latest = self.store.require("runs", run_id)
             if latest["players"][player_id]["generation"] == generation:
                 latest["players"][player_id]["invalid_actions"] = latest["players"][player_id].get("invalid_actions", 0) + 1
                 self.store.put("runs", latest)
+            if await self._pause_if_stalled(run_id, player_id, generation, payload["verb"], observation, result):
+                return result
             self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
             self.status(run_id, player_id, "action_failed", str(result.get("reason") or result.get("status")), generation, action_id=action_id)
         return result
@@ -476,7 +503,7 @@ class StructuredPlayers:
             LOG.exception("Could not record false completion for %s/%s", run_id, player_id)
 
     def forget_run(self, run_id):
-        for counters in (self.loop_counts, self.bug_reports, self.turn_ended_at):
+        for counters in (self.loop_counts, self.movement_stalls, self.bug_reports, self.turn_ended_at):
             for key in [k for k in counters if k[0] == run_id]:
                 del counters[key]
         self.crashes_recorded -= {e for e in self.crashes_recorded if e[0] == run_id}
@@ -504,6 +531,32 @@ class StructuredPlayers:
         self.status(run_id, player_id, "error", reason, generation, last_error=reason, error_at=time.time())
         await self.coordinator.investigate(run_id, "decision_needs_instructions", reason, [player_id])
 
+    def _movement_stalled(self, key, generation, observation):
+        """True once enough failed moves leave the player at one position; any other position restarts the count."""
+        position = observation.get("state", {}).get("player", {}).get("position")
+        if not isinstance(position, list):
+            self.movement_stalls.pop(key, None)
+            return False
+        previous = self.movement_stalls.get(key)
+        count = previous[2] + 1 if previous and previous[:2] == (generation, position) else 1
+        if count < MOVEMENT_STALL_LIMIT:
+            self.movement_stalls[key] = (generation, position, count)
+            return False
+        self.movement_stalls.pop(key, None)
+        return True
+
+    async def _pause_if_stalled(self, run_id, player_id, generation, verb, observation, result):
+        """Pause for review when a failed move leaves the player stalled; True when paused."""
+        if verb != "move_to" or not self._movement_stalled((run_id, player_id), generation, observation):
+            return False
+        position = observation["state"]["player"]["position"]
+        reason = (f"The character has not moved from {position} after "
+                  f"{MOVEMENT_STALL_LIMIT} failed moves; game input is not reaching it. "
+                  f"Last result: {result.get('reason') or result.get('status')}")
+        self.status(run_id, player_id, "error", reason, generation, last_error=reason, error_at=time.time())
+        await self.coordinator.investigate(run_id, "movement_unavailable", reason, [player_id])
+        return True
+
     def decision_context(self, run, player, observation):
         ps = run["players"][player["id"]]
         recent = self.store.events(run["id"], after=max(0, self.store.count_events(run["id"])-120), limit=120)
@@ -517,6 +570,9 @@ class StructuredPlayers:
             "memory": ps.get("agent_memory", ""), "recent_own_actions": own, "team_messages": team,
             "setup": run["plan"]["world_setup"], "transport": run["plan"]["transport"],
             "world_namespace": run.get("world_namespace"), "seed": run["plan"].get("seed")}
+        failures = repeated_failures(own)
+        if failures:
+            context["repeated_failures"] = failures
         if run.get("recovery_instruction"):
             context["operator_instruction"] = {"text": run["recovery_instruction"], "after": run.get("recovery_after") or "resume"}
         plan = run.get("subgoal_plan")
@@ -624,7 +680,7 @@ class StructuredPlayers:
         self._forget_turn((run_id, player_id))
         return True
 
-    async def _reconcile_pending(self, run_id, player_id, ps, generation):
+    async def _reconcile_pending(self, run_id, player_id, ps, generation, observation):
         """Settle the last action's outcome; True when this turn must end."""
         key = (run_id, player_id)
         result = await self.call_game(run_id, player_id, "get_action_status", {"action_id": self.pending[key]})
@@ -642,9 +698,12 @@ class StructuredPlayers:
             self.status(run_id, player_id, "error", "The last action outcome is unknown; input is held for review.", generation, action_id=self.pending[key])
             await self.coordinator.investigate(run_id, "unknown_execution", "Structured action acknowledgement could not be reconciled; fresh review required", [player_id])
             return True
+        verb = (ps.get("pending_action") or {}).get("verb")
         self.clear_pending(run_id, player_id, generation)
         self.last_decisions.pop(key, None)
-        if result.get("status") in {"failed", "rejected", "expired", "cancelled"}:
+        if result.get("status") in FAILED_STATUSES:
+            if await self._pause_if_stalled(run_id, player_id, generation, verb, observation, result):
+                return True
             self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
         return False
 
@@ -658,6 +717,7 @@ class StructuredPlayers:
             self.pending.pop(key, None)
             self._forget_turn(key)
             self.loop_counts.pop(key, None)
+            self.movement_stalls.pop(key, None)
             self.turn_ended_at.pop(key, None)
             self.bug_reports.pop(key, None)
             self.generations[key] = generation
@@ -684,7 +744,7 @@ class StructuredPlayers:
             timing["bytes"]["observation"] = json_bytes(observation)
             if key in self.pending:
                 with timed(timing, "reconcile_pending"):
-                    turn_ends = await self._reconcile_pending(run_id, player_id, ps, generation)
+                    turn_ends = await self._reconcile_pending(run_id, player_id, ps, generation, observation)
                 if turn_ends:
                     timing["outcome"] = "pending_action"
                     return

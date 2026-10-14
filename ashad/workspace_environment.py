@@ -412,10 +412,13 @@ async def prepare_environment(store, credentials, *, project_id, build, request_
     root = await asyncio.to_thread(validate_build, build)
     if not previous:
         for worker in store.list("workers"):
-            if worker.get("enabled", True) is not True:
+            if worker.get("enabled", True) is not True or worker.get("build_id") not in (None, build["id"]) and worker.get("project_id") != project_id:
                 continue
             environment = await inspect_fresh_environment(build, worker, credentials, client_factory=client_factory)
             if environment["ready"]:
+                if worker.get("build_id") not in (None, build["id"]):
+                    # Readiness only lists desktops bound to the selected build, so reuse must rebind.
+                    store.put("workers", {**worker, "build_id": build["id"]})
                 result = {"request_id": request_id, "project_id": project_id, "build_id": build["id"],
                           "status": "completed", "worker_id": worker["id"], "environment": environment}
                 store.put("environment_preparations", {"id": request_id, "request": payload,

@@ -474,9 +474,11 @@ class OpenAI:
         def listed(group):
             if group.get("drag_source"):
                 return group["description"]  # Drag destinations are expanded only after the source is chosen.
-            return "Actions: " + "; ".join(f"{i}) {a['description']}" for i, a in enumerate(group["actions"])) + ". Target: " + group["description"]
+            # Target first: trimming then cuts actions (re-asked below), never the target's identity and state.
+            return "Target: " + group["description"] + ". Actions: " + "; ".join(f"{i}) {a['description']}" for i, a in enumerate(group["actions"]))
         width = max([len(g["actions"]) for g in groups if not g.get("drag_source")] + [1])
-        target_options = bounded_descriptions([(str(i), listed(g)) for i, g in enumerate(groups)], evidence)
+        listings = [(str(i), listed(g)) for i, g in enumerate(groups)]
+        target_options = bounded_descriptions(listings, evidence)
         picked = await self.decisions(evidence, [
             choice("target", instructions + " Select a target or action group.", target_options),
             choice("action", "Select the number of the chosen target's listed action; any number if it lists none.",
@@ -484,7 +486,8 @@ class OpenAI:
         if not can_continue():
             self.store.event(run_id, "decision_cancelled", {"player_id": context["player"]["id"], "reason": "Session state or generation changed during target selection"})
             return
-        group = groups[int(picked["target"]["choice"])]
+        index = int(picked["target"]["choice"])
+        group = groups[index]
         candidates = group["actions"]
         # Expand destinations only for the selected source, not every possible pair of slots.
         source = group.get("drag_source")
@@ -500,7 +503,7 @@ class OpenAI:
         calls = 1
         if len(candidates) == 1:
             answer = {"choice": "0"}
-        elif not source and int(inline) < len(candidates):
+        elif not source and int(inline) < len(candidates) and target_options[index] == listings[index]:
             answer = {"choice": inline}
         else:
             calls = 2

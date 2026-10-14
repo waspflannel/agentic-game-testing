@@ -48,6 +48,7 @@ const FILTER_KINDS = { actions: ['selected', 'sent', 'outcome', 'tool'], plan: [
 export const SELECTED_LABEL = 'selected, not yet sent';
 export function outcomeLabel(result) {
   const status = result?.status || 'unknown';
+  if (status === 'no_effect') return { tone: 'attention', text: 'Input delivered · no visible effect' };
   if (status === 'completed') {
     if (result.effect === 'changed') return { tone: 'live', text: 'Input delivered · game state changed' };
     if (result.effect === 'no_effect') return { tone: 'attention', text: 'Input delivered · no visible effect' };

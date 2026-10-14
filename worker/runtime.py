@@ -596,6 +596,10 @@ class Runtime:
                 if self.termination_result is None:
                     self.termination_result = {"confirmed": True, "graceful_attempted": False,
                         "save_status": "unverified", "reason": "worker_restart_reconciled", "at": utc_now()}
+                    if str(self.infrastructure_error or "").startswith("worker_restarted"):
+                        self.infrastructure_error = None
+                        self.binding = None
+                        self.lifecycle = "unbound"
                     self._persist()
                 return self.status()
             self.interrupt.set()

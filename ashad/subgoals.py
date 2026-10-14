@@ -379,7 +379,7 @@ def held_counts(observation):
 def progress_facts(observation, tiles):
     """Hash of measurable facts: the progress signal for completions that cannot be counted."""
     state = observation.get("state", {})
-    facts = [sorted([t.get("id"), t.get("state"), t.get("plant"), t.get("growth_stage")] for t in tiles or []),
+    facts = [sorted(([t.get("id"), t.get("state"), t.get("plant"), t.get("growth_stage")] for t in tiles or []), key=str),
              held_counts(observation), [[q.get("id"), q.get("requirements")] for q in state.get("objectives", [])],
              state.get("completed_quests")]
     return hashlib.sha256(json.dumps(facts, sort_keys=True, default=str).encode()).hexdigest()

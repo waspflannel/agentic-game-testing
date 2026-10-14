@@ -798,9 +798,19 @@ function renderOverview(view) {
 }
 
 function updateRegatherDialog(buildId, buildName) {
-  document.querySelector('#refresh-build-id')?.setAttribute('value', buildId);
+  const input = document.querySelector('#refresh-build-id');
+  if (input) input.value = buildId;
   const desc = document.querySelector('#refresh-build-desc');
   if (desc) desc.innerHTML = `ASHAD re-reads <strong>${esc(buildName)}</strong> with Claude Sonnet and updates this project configuration. This takes a few minutes and uses your Claude subscription.`;
+  const menu = document.querySelector('#ov-refresh-build-menu');
+  const trigger = document.querySelector('[popovertarget="ov-refresh-build-menu"] .chip-text');
+  if (trigger) trigger.textContent = buildName;
+  for (const option of menu?.querySelectorAll('[role="option"]') || []) {
+    const selected = option.dataset.value === buildId;
+    option.setAttribute('aria-selected', String(selected));
+    option.querySelector('.dropdown-check')?.remove();
+    if (selected) option.insertAdjacentHTML('beforeend', icon('check', 'icon dropdown-check'));
+  }
 }
 
 async function refreshControls(ov, agent) {
@@ -819,7 +829,8 @@ async function refreshControls(ov, agent) {
   const buildId = form.get('build_id') || selectedBuildId;
   const op = newOp();  // An explicit refresh is a new request with its own ID.
   ov.refreshes.set(agent.id, op);
-  const pending = getControls(op, { build_id: buildId, project_id: ov.projectId, name: agent.name || agent.id, configuration_id: agent.id },
+  const pending = getControls(op, { build_id: buildId, project_id: ov.projectId, name: agent.name || agent.id,
+      configuration_id: agent.status === 'retired' ? undefined : agent.id },  // A retired configuration cannot be updated; regather saves a new one.
     api, ms => { renderView(); return sleep(ms); });
   watchControls(op);
   renderView();

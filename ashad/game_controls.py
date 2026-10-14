@@ -151,7 +151,8 @@ class GameControls:
                 raise ValueError("Unknown project configuration.")
             if existing.get("status") == "retired":
                 raise ValueError(CONFIGURATION_RETIRED)
-            assigned = Projects(self.store).project_for_configuration(configuration_id, project_id)
+            if project_id is not None and existing.get("project_id") not in (None, project_id):
+                raise ValueError("Project configuration and build belong to different projects")
             if not build_id:
                 build_id = existing["build_id"]
             name = existing.get("name") or name
@@ -169,6 +170,7 @@ class GameControls:
                 raise ValueError(CLAUDE_REQUIRED)
             self.progress = {"stage": "reading_source", "batch_count": 0, "batches_done": 0, "workers": 0, "started_at": time.time()}
             record = None
+            previous_file = None
             try:
                 assigned_project, build = self._validated_project_build(build_id, project_id)
                 if configuration_id and existing and existing.get("project_id") not in (None, assigned_project):
@@ -202,6 +204,11 @@ class GameControls:
                     "coverage": {**evidence["coverage"], "source_batches": len(batches), "workers": workers},
                     "generated_by": {"method": "swarm", "provider": "claude", "model": CLAUDE_MODEL, "prompt_version": TUNING_PROMPT_VERSION},
                     "created_at": record["created_at"], "limitations": list(LIMITATIONS), "controls": controls}
+                if configuration_id:
+                    try:
+                        previous_file = controls_file(self.store, record["id"]).read_bytes()
+                    except OSError:
+                        previous_file = None
                 _write_file(self.store, record, artifact)
                 self._validate(record)
                 with self.store.transaction():
@@ -211,6 +218,10 @@ class GameControls:
                 return record
             except BaseException:
                 if record and not configuration_id:
+                    remove_controls_file(self.store, record["id"])
+                elif record and previous_file is not None:
+                    controls_file(self.store, record["id"]).write_bytes(previous_file)  # Keep the saved controls usable after a failed regather.
+                elif record:
                     remove_controls_file(self.store, record["id"])
                 raise
             finally:

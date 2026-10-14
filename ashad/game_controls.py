@@ -168,7 +168,7 @@ class GameControls:
             status = await self.ai.validate(CLAUDE_MODEL)
             if status.get("status") != "ready":
                 raise ValueError(CLAUDE_REQUIRED)
-            self.progress = {"stage": "reading_source", "batch_count": 0, "batches_done": 0, "workers": 0, "started_at": time.time()}
+            self.progress = {"stage": "reading_source", "batch_count": 0, "batches_done": 0, "batches_running": 0, "workers": 0, "started_at": time.time()}
             record = None
             previous_file = None
             try:
@@ -248,18 +248,22 @@ class GameControls:
 
         async def worker(index, batch):
             async with gate:
-                batch_evidence = {"build_id": build["id"], "source_revision": build["source_revision"],
-                    "batch": index + 1, "batch_count": len(batches), "sources": batch}
-                notes_key = hashlib.sha256(json.dumps({"evidence": batch_evidence, "model": CLAUDE_MODEL,
-                    "prompt_version": TUNING_PROMPT_VERSION}, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
-                saved = self.store.get("tuning_notes", notes_key, {})
-                note = saved.get("instructions")
-                if not isinstance(note, str) or len(note.strip().encode("utf-8")) < TUNING_MINIMUM_BYTES or len(note.encode("utf-8")) > SOURCE_NOTES_LIMIT:
-                    note = await self.ai.write_controls(batch_evidence, stage="source_notes")
-                    self.store.put("tuning_notes", {"id": notes_key, "build_id": build["id"], "model": CLAUDE_MODEL,
-                        "prompt_version": TUNING_PROMPT_VERSION, "instructions": note})
-                notes[index] = note
-                self.progress["batches_done"] += 1
+                self.progress["batches_running"] += 1
+                try:
+                    batch_evidence = {"build_id": build["id"], "source_revision": build["source_revision"],
+                        "batch": index + 1, "batch_count": len(batches), "sources": batch}
+                    notes_key = hashlib.sha256(json.dumps({"evidence": batch_evidence, "model": CLAUDE_MODEL,
+                        "prompt_version": TUNING_PROMPT_VERSION}, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
+                    saved = self.store.get("tuning_notes", notes_key, {})
+                    note = saved.get("instructions")
+                    if not isinstance(note, str) or len(note.strip().encode("utf-8")) < TUNING_MINIMUM_BYTES or len(note.encode("utf-8")) > SOURCE_NOTES_LIMIT:
+                        note = await self.ai.write_controls(batch_evidence, stage="source_notes")
+                        self.store.put("tuning_notes", {"id": notes_key, "build_id": build["id"], "model": CLAUDE_MODEL,
+                            "prompt_version": TUNING_PROMPT_VERSION, "instructions": note})
+                    notes[index] = note
+                    self.progress["batches_done"] += 1
+                finally:
+                    self.progress["batches_running"] -= 1
 
         try:
             async with asyncio.TaskGroup() as group:

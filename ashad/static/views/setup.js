@@ -109,7 +109,7 @@ export function controlsProgressHTML(op, now) {
   const steps = p?.batch_count ? p.batch_count + 1 : p?.stage === 'writing' ? 1 : 0;
   const done = p?.stage === 'exploring' ? p.batches_done : p?.stage === 'writing' ? p.batch_count || 0 : 0;
   const stage = !p ? 'Starting…' : p.stage === 'reading_source' ? 'Reading the build source'
-    : p.stage === 'exploring' ? `Reading source: ${p.batches_done} of ${p.batch_count} batches (${p.workers} workers in parallel)`
+    : p.stage === 'exploring' ? `Reading source: ${p.batches_done} of ${p.batch_count} batches done, ${p.batches_running ?? 0} being read now`
       : `Writing the game controls${p.batch_count ? ` from ${p.batch_count} batches of notes` : ''}`;
   const bar = steps ? `<progress class="progress" max="${steps}" value="${done}" aria-label="Get controls progress, step ${done + 1} of ${steps}"></progress>`
     : `<progress class="progress" aria-label="Get controls in progress"></progress>`;
@@ -119,7 +119,9 @@ export function controlsProgressHTML(op, now) {
     + ` · ${p.last_call_at ? 'last reply' : 'started'} <time data-elapsed="${lastAt}">${elapsed(now - lastAt)}</time> ago`;
   const stalled = p && now - lastAt > STALL_SECONDS
     ? `<p class="note note-attention">${icon('clock')}<span>No model reply for ${Math.floor((now - lastAt) / 60)} minutes. A call usually takes under 2 minutes; the provider may be slow or rate limited. Getting game controls is still running.</span></p>` : '';
-  return `${bar}<p>${esc(stage)} · <time data-elapsed="${started}">${elapsed(now - started)}</time> elapsed</p>${calls ? `<p class="hint">${calls}</p>` : ''}${stalled}`;
+  const progressHint = op.progressAt && now - op.progressAt > 15
+    ? `<p class="hint">Progress last updated <time data-elapsed="${op.progressAt}">${elapsed(now - op.progressAt)}</time> ago.</p>` : '';
+  return `${bar}<p>${esc(stage)} · <time data-elapsed="${started}">${elapsed(now - started)}</time> elapsed</p>${calls ? `<p class="hint">${calls}</p>` : ''}${progressHint}${stalled}`;
 }
 
 // ── Markup ──────────────────────────────────────────────────────────────────

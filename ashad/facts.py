@@ -3,18 +3,19 @@ from __future__ import annotations
 
 import re
 
+# stock: changes only by the player's own actions; state: rises and falls on its own (tiles decay, harvest removes plants). item_count is the held count (inventory plus hotbar), not a gathered total.
 FACTS = {
-    "world_ready": ((), "bool"),
-    "player_can_act": ((), "bool"),
-    "item_count": (("item_id",), "int"),
-    "quest_completed": (("quest_id",), "bool"),
-    "quest_requirement_progress": (("quest_id", "index"), "int|bool"),
-    "tiles_tilled": ((), "int"),
-    "tiles_watered": ((), "int"),
-    "crops_planted": (("plant_id",), "int"),
-    "crops_harvestable": (("plant_id",), "int"),
-    "crop_growth_stage_min": (("plant_id",), "int"),
-    "delivered_to": (("target", "item_id"), "int"),
+    "world_ready": ((), "bool", "state"),
+    "player_can_act": ((), "bool", "state"),
+    "item_count": (("item_id",), "int", "stock"),
+    "quest_completed": (("quest_id",), "bool", "stock"),
+    "quest_requirement_progress": (("quest_id", "index"), "int|bool", "stock"),
+    "tiles_tilled": ((), "int", "state"),
+    "tiles_watered": ((), "int", "state"),
+    "crops_planted": (("plant_id",), "int", "state"),
+    "crops_harvestable": (("plant_id",), "int", "state"),
+    "crop_growth_stage_min": (("plant_id",), "int", "state"),
+    "delivered_to": (("target", "item_id"), "int", "stock"),
 }
 ZERO_DEFAULT = {"item_count", "delivered_to", "crops_planted", "crops_harvestable"}
 PLANT_FACTS = ("crops_planted", "crops_harvestable", "crop_growth_stage_min")
@@ -83,7 +84,7 @@ def catalog(observation, item_ids):
         "target": list(delivered),
         "index": "integer index into the quest's requirements",
     }
-    facts = {name: {"args": list(args), "type": kind} for name, (args, kind) in FACTS.items() if name in current}
+    facts = {name: {"args": list(args), "type": kind, "tag": tag} for name, (args, kind, tag) in FACTS.items() if name in current}
     used = {a for f in facts.values() for a in f["args"]}
     return {"facts": facts, "args": {k: v for k, v in ids.items() if k in used}, "values": current}
 

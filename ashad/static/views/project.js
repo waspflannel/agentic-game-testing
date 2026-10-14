@@ -109,7 +109,7 @@ export function overviewRegions(m, ov, now = Date.now() / 1000) {
     }
     return `<li class="list-row"><div class="list-main">${title}`
       + (pinWarning ? `<p class="note note-attention">${icon('alert')}<span>${esc(pinWarning)}</span></p>` : '')
-      + `<span class="check-detail">build ${esc(m.buildName(a.build_id))} · controls gathered ${a.created_at ? esc(since(a.created_at, now)) : 'at an unrecorded time'}</span>${status}</div>`
+      + `<span class="check-detail">build <span class="mono" title="${esc(m.buildName(a.build_id))}">${esc(a.build_id)}</span> · controls gathered ${a.created_at ? esc(since(a.created_at, now)) : 'at an unrecorded time'}</span>${status}</div>`
       + `<div class="list-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="ov-controls" data-id="${esc(a.id)}" data-key="ov-ctl-${esc(a.id)}">View controls</button>`
       + refresh
       + `<a class="btn btn-ghost btn-sm" href="${href('p', pid, 'new')}?configuration=${enc(a.id)}" data-key="ov-run-${esc(a.id)}">New instance</a></div></li>`;

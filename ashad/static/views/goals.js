@@ -17,8 +17,13 @@ const NODE_STATUS = {
   earlier: { label: 'Earlier plan', icon: 'clock', tone: 'muted' },
 };
 const skipPrefix = goal => `Skipped blocked goal "${goal.objective}": `;
-const goalStatus = (goal, rootId) => (goal.id === rootId ? 'root'
-  : goal.retired && String(goal.blocked_reason || '').startsWith(skipPrefix(goal)) ? 'skipped'
+const skippedBy = (goal, goals) => {
+  const reason = String(goal.blocked_reason || '');
+  if (!goal.retired || !reason) return null;
+  return goals.find(g => reason.startsWith(skipPrefix(g))) || null;
+};
+const goalStatus = (goal, rootId, goals) => (goal.id === rootId ? 'root'
+  : goal.retired && skippedBy(goal, goals) ? 'skipped'
   : goal.retired ? 'retired' : NODE_STATUS[goal.status] ? goal.status : 'pending');
 const REPLACED_PLAN = new Set(['subgoal_plan_recalculation_prepared', 'subgoal_plan_reset']);
 const OPERATOR_COMMANDS = { takeover_finish: 'Hand back', resume: 'Resume' };
@@ -28,8 +33,9 @@ const OPERATOR_COMMANDS = { takeover_finish: 'Hand back', resume: 'Resume' };
 export function goalGraph(plan, events) {
   const rootId = plan.root_id || plan.goals.find(g => !g.parent_id)?.id;
   const nodes = new Map(plan.goals.map(g => {
-    const status = goalStatus(g, rootId);
-    return [g.id, { id: g.id, parentId: g.parent_id, status, title: g.objective, reason: status === 'skipped' ? g.blocked_reason.slice(skipPrefix(g).length) : g.blocked_reason, goal: g }];
+    const skipper = skippedBy(g, plan.goals);
+    const status = goalStatus(g, rootId, plan.goals);
+    return [g.id, { id: g.id, parentId: g.parent_id, status, title: g.objective, reason: skipper ? g.blocked_reason.slice(skipPrefix(skipper).length) : g.blocked_reason, goal: g }];
   }));
   if (plan.status === 'goal_reached' && nodes.has(rootId)) nodes.get(rootId).status = 'reached';
   const goalIds = new Set(nodes.keys());
@@ -180,7 +186,7 @@ function earlierPlanHTML(node) {
   const old = node.event.payload.previous_plan || {};
   const oldRoot = old.root_id || 'root';
   const goals = (old.goals || []).filter(g => g.id !== oldRoot);
-  return (goals.length ? `<ul class="insp-list">${goals.map(g => `<li>${esc(g.objective)} <span class="insp-dim">${NODE_STATUS[goalStatus(g, oldRoot)].label}</span></li>`).join('')}</ul>`
+  return (goals.length ? `<ul class="insp-list">${goals.map(g => `<li>${esc(g.objective)} <span class="insp-dim">${NODE_STATUS[goalStatus(g, oldRoot, old.goals || [])].label}</span></li>`).join('')}</ul>`
     : '<p class="insp-dim">No goals were recorded.</p>')
     + `<div class="goal-links">${jumpChip('Plan', node.event.seq)}</div>`;
 }

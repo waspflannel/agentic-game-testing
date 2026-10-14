@@ -241,7 +241,7 @@ def reconcile(plan, observation, control_generation):
             ancestor.pop("repeating", None)
             ancestor.pop("repeats", None)
     for goal in plan["goals"]:
-        if goal["status"] != "completed" and any(g["status"] == "completed" for g in goal_path(plan, goal["id"])[:-1]):
+        if goal["status"] not in {"completed", "gave_up"} and any(g["status"] == "completed" for g in goal_path(plan, goal["id"])[:-1]):
             goal.update(retired=True, status="blocked", blocked_reason="No longer needed: the parent goal was verified directly.")
     previous_active = plan.get("active_goal_id")
     # A claim or hand-back waits for the operator; re-selecting would move the active goal away from the root.

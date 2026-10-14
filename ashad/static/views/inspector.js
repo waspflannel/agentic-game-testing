@@ -1,7 +1,7 @@
 // World state and Model usage panels (spec §8.6); the Goals panel lives in goals.js. Pure: renders only what the run and its retained events recorded. It never probes
 // the game, so there is no live-context call anywhere in this module.
 import { esc, humanize, badge } from '../core.js';
-import { observationOf, short } from './timeline.js';
+import { observationOf, short, realItems } from './timeline.js';
 import { goalsHTML } from './goals.js';
 
 export const STALE_AFTER_S = 30;  // Fresh vs Stale, while Running.
@@ -50,7 +50,10 @@ function worldBody(observation) {
   const playerRows = player && typeof player === 'object'
     ? Object.entries(player).filter(([k]) => !['inventory', 'hotbar'].includes(k)).map(([k, v]) => `<dt>${esc(humanize(k))}</dt><dd>${esc(show(v))}</dd>`).join('')
     : '';
-  const item = i => (typeof i === 'object' && i ? `${esc(i.item_id ?? i.id ?? i.name ?? '?')}${i.count !== undefined ? ` <span class="insp-dim">× ${esc(i.count)}</span>` : ''}` : esc(i));
+  const item = i => {
+    if (typeof i === 'object' && i && realItems([i]).length === 0) return '<span class="insp-dim">empty</span>';
+    return typeof i === 'object' && i ? `${esc(i.item_id ?? i.id ?? i.name ?? '?')}${i.count !== undefined ? ` <span class="insp-dim">× ${esc(i.count)}</span>` : ''}` : esc(i);
+  };
   const entities = Array.isArray(observation.entities) ? [...observation.entities].sort((a, b) => !a.actions?.length - !b.actions?.length) : undefined;
   const ui = state.ui ?? state.modal;
   return group('Player', player === undefined ? NOT_OBSERVED : playerRows ? `<dl class="insp-dl">${playerRows}</dl>` : '<p class="insp-empty">No player fields</p>')

@@ -173,6 +173,53 @@ def normalised(text):
     return re.sub(r"\s+", " ", text.replace('\\"', '"')).strip()
 
 
+def quote_matches(quote, value, key):
+    """quote is already normalised. key is the path's last segment, or ""."""
+    text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+    compact = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    if quote in normalised(text) or quote in normalised(compact) or any(quote in normalised(leaf) for leaf in string_leaves(value)):
+        return True
+    prefixed = re.match(r'^"([^"]+)"\s*:\s*(.*)$', quote)
+    if not prefixed or prefixed.group(1) != key:
+        return False
+    body = normalised(prefixed.group(2))
+    if body == normalised(compact) or body == normalised(text):
+        return True
+    return isinstance(value, str) and body == normalised(json.dumps(value, ensure_ascii=False))
+
+
+def _matching_sibling(path, quote, observation):
+    """The one other index of the last list on path whose value contains quote."""
+    parts = path.split("/")
+    for index in range(len(parts) - 1, 0, -1):
+        if not parts[index].isdecimal():
+            continue
+        parent_path = "/".join(parts[:index])
+        try:
+            parent = observation if parent_path == "" else pointer(observation, parent_path)
+        except ValueError:
+            continue
+        if not isinstance(parent, list):
+            continue
+        found = None
+        for other in range(len(parent)):
+            if other == int(parts[index]):
+                continue
+            candidate = parts.copy()
+            candidate[index] = str(other)
+            candidate_path = "/".join(candidate)
+            try:
+                candidate_value = pointer(observation, candidate_path)
+            except ValueError:
+                continue
+            if quote_matches(quote, candidate_value, candidate_path.rsplit("/", 1)[-1]):
+                if found is not None:
+                    return None
+                found = (candidate_path, candidate_value)
+        return found
+    return None
+
+
 def grounded_evidence(references, context, location="evidence"):
     excerpts = []
     for index, ref in enumerate(references):
@@ -181,15 +228,19 @@ def grounded_evidence(references, context, location="evidence"):
                 value = pointer(context["observation"], ref["path"])
             except ValueError as exc:
                 raise ValueError(f"{exc} (at {location}.{index}.path)") from exc
+            key = ref["path"].rsplit("/", 1)[-1]
         else:
             if ref["path"]:
                 raise ValueError(f"Only observation evidence accepts a path (at {location}.{index}.path)")
             value = context["game_controls"] if ref["source"] == "controls" else context["goal"]
-        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-        compact = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+            key = ""
         quote = normalised(ref["quote"])
-        if quote not in normalised(text) and quote not in normalised(compact) and not any(quote in normalised(leaf) for leaf in string_leaves(value)):
-            raise ValueError(f"Planner evidence quote does not occur in its cited source (at {location}.{index}.quote)")
+        if not quote_matches(quote, value, key):
+            repaired = _matching_sibling(ref["path"], quote, context["observation"]) if ref["source"] == "observation" else None
+            if repaired is None:
+                raise ValueError(f"Planner evidence quote does not occur in its cited source (at {location}.{index}.quote)")
+            ref["path"], value = repaired
+        text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
         excerpts.append(text)
     if not any(ref["source"] == "observation" for ref in references):
         raise ValueError(f"Every proposed goal needs a current observation reference (at {location})")
@@ -289,7 +340,7 @@ def validate_condition(condition, references, context, previous=None, *, objecti
             raise ValueError("A quest completion target must have been observed, not invented from a walkthrough")
     for match in condition.get("matches", []):
         value = match["value"]
-        if isinstance(value, str) and value and value not in text:
+        if isinstance(value, str) and value and value not in text and not (match["field"] in {"text", "state.text"} and value in objective):
             raise ValueError("Expected state value is not supported by the cited evidence")
 
 
@@ -421,6 +472,8 @@ def reconcile(plan, observation, control_generation):
                 goal.update(actionable=False, status="pending", attempts=0, reviews=0)
                 goal.pop("blocked_reason", None)
                 goal.pop("progress_high_water", None)
+                goal.pop("recent_actions", None)
+                goal.pop("repeating", None)
         plan["reason"] = "Control or game binding changed; reassess from fresh observations."
     # Unloading emits an empty world ID. Keep the last actual world so A -> menu -> B cannot reuse A's proof.
     plan.update(world_id=world or previous_world, observation_generation=binding, control_generation=control_generation)
@@ -435,6 +488,8 @@ def reconcile(plan, observation, control_generation):
         previous_best = goal.get("progress_high_water")
         if value is not None and (previous_best is None or value > previous_best):
             goal.update(attempts=0, reviews=0, progress_at=now, progress_high_water=value)
+            goal.pop("recent_actions", None)
+            goal.pop("repeating", None)
         goal["measured"] = value
         if done:
             goal.update(status="completed", completion_evidence={**observation_ref(observation), "value": value})
@@ -443,6 +498,8 @@ def reconcile(plan, observation, control_generation):
     for goal_id in completed:
         for ancestor in goal_path(plan, goal_id)[:-1]:
             ancestor.update(reviews=0, attempts=0, progress_at=now)
+            ancestor.pop("recent_actions", None)
+            ancestor.pop("repeating", None)
     for goal in plan["goals"]:
         if goal["status"] != "completed" and any(g["status"] == "completed" for g in goal_path(plan, goal["id"])[:-1]):
             goal.update(retired=True, status="blocked", blocked_reason="No longer needed: the parent goal was verified directly.")
@@ -470,6 +527,9 @@ def needs_planning(plan):
     goal = active_goal(plan)
     if not goal or plan["status"] == "blocked":
         return False
+    if goal.get("repeating"):
+        goal["actionable"] = False
+        plan["reason"] = f"Repeating the same action without progress ({goal['repeating']}); choose a different target or approach, or report the blocker."
     if goal.get("attempts", 0) >= ACTION_REVIEW_INTERVAL:
         goal["actionable"] = False
         plan["reason"] = "Several actions have not verified this goal; revise prerequisites or approach."
@@ -547,6 +607,9 @@ def apply_decision(plan, raw, context):
     parent_condition = ancestors[-2]["completion"] if len(ancestors) > 1 else None
     validate_condition(decision["completion"], decision["evidence"], context, focus["completion"],
                        objective=focus["objective"], parent=parent_condition)
+    if (focus["completion"]["kind"] == "unknown" and decision["completion"]["kind"] != "unknown"
+            and check_completion(decision["completion"], context["observation"])[0]):
+        raise ValueError("New completion condition is already met in the current observation; retire the goal if its work is already done")
     # Discovery and expansion are atomic: child quantities depend on this newly validated condition.
     focus["completion"] = decision["completion"]
     if len(result["goals"]) + len(decision["subgoals"]) > MAX_GOALS:
@@ -563,6 +626,8 @@ def apply_decision(plan, raw, context):
         validate_condition(proposed["completion"], proposed["evidence"], context,
                            objective=proposed["objective"], parent=parent["completion"],
                            location=f"subgoals.{index}.evidence")
+        if proposed["completion"]["kind"] != "unknown" and check_completion(proposed["completion"], context["observation"])[0]:
+            raise ValueError(f"Proposed subgoal is already met in the current observation; leave it out (at subgoals.{index}.completion)")
         goal = {"id": f"goal-{result['revision'] + 1}-{index}", "parent_id": parent["id"],
                 "objective": proposed["objective"], "completion": proposed["completion"],
                 "evidence": proposed["evidence"], "source_observation": observation_ref(context["observation"]),
@@ -572,6 +637,8 @@ def apply_decision(plan, raw, context):
     focus.update(completion=decision["completion"], evidence=decision["evidence"],
                  source_observation=observation_ref(context["observation"]), actionable=decision["mode"] == "act",
                  attempts=0, reviews=focus.get("reviews", 0) + 1)
+    focus.pop("recent_actions", None)
+    focus.pop("repeating", None)
     result.update(reason=decision["reason"], revision=result["revision"] + 1)
     if decision["mode"] == "blocked" and focus["id"] != result["root_id"]:
         # Ask the parent before the operator: it replans with this reason; only a blocked root pauses the run.
@@ -597,10 +664,33 @@ def rejection_message(exc):
     return str(exc)
 
 
-def record_action(plan):
+def _rounded(value):
+    if isinstance(value, float):
+        return round(value)
+    if isinstance(value, list):
+        return [_rounded(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _rounded(item) for key, item in value.items()}
+    return value
+
+
+def record_action(plan, action=None):
     goal = active_goal(plan)
-    if goal:
-        goal["attempts"] = goal.get("attempts", 0) + 1
+    if not goal:
+        return
+    goal["attempts"] = goal.get("attempts", 0) + 1
+    if action is None:
+        return
+    fingerprint = json.dumps([action.get("verb"), action.get("target_id", ""), _rounded(action.get("parameters") or {})], sort_keys=True)
+    label = (action.get("parameters") or {}).get("name") or action.get("verb")
+    window = ((goal.get("recent_actions") or []) + [[fingerprint, label]])[-4:]
+    goal["recent_actions"] = window
+    fingerprints = [item[0] for item in window]
+    same = any(fingerprints.count(item) >= 3 for item in fingerprints)
+    alternating = (len(fingerprints) == 4 and fingerprints[0] == fingerprints[2]
+                   and fingerprints[1] == fingerprints[3] and fingerprints[0] != fingerprints[1])
+    if same or alternating:
+        goal["repeating"] = label
 
 
 def prompt_plan(plan):

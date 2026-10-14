@@ -1,5 +1,6 @@
 // Activity timeline (spec §10): event kinds, the bounded window and card markup. Pure; app.js owns fetching and the DOM.
 import { esc, icon, humanize } from '../core.js';
+import { rowTokens } from './usage.js';
 
 export const PAGE = 100;        // One page of history; "Load older" replaces the window with the previous page.
 export const MAX_EVENTS = 200;  // The live window grows to this and then drops its oldest events.
@@ -59,12 +60,13 @@ export function outcomeLabel(result) {
 // The structured observation an event retained, or null. Shared with the inspector.
 export const observationOf = event => event?.payload?.full_observation || event?.payload?.context?.observation || null;
 const count = value => (Array.isArray(value) ? value.length : null);
+export const realItems = list => (Array.isArray(list) ? list.filter(i => i && typeof i === 'object' && i.item_id !== 'filler' && !(Number(i.count) <= 0)) : []);
 export const short = id => { const text = String(id || ''); return text.length > 18 ? `…${text.slice(-14)}` : text; };
 const tokens = n => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 export const clip = (text, n = 160) => { const s = String(text ?? ''); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 const args = value => clip(Object.entries(value || {}).filter(([k]) => k !== 'reason').map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', '), 120);
 
-function summary(event, kind) {
+function summary(event, kind, finals) {
   const p = event.payload || {};
   const reasoned = text => (p.reason || p.error ? `${text}: ${p.reason || p.error}` : text);
   switch (kind) {
@@ -72,9 +74,10 @@ function summary(event, kind) {
       const o = observationOf(event);
       if (!o) return { text: 'Observation not retained' };
       const entities = count(o.entities);
-      const inventory = count(o.state?.player?.inventory);
+      const player = o.state?.player;
+      const items = Array.isArray(player?.inventory) || Array.isArray(player?.hotbar) ? realItems(player.inventory).length + realItems(player.hotbar).length : null;
       return { text: [short(o.observation_id) || 'no ID', `coverage ${o.complete === false ? 'partial' : 'complete'}`,
-        entities === null ? 'entities not observed' : `${entities} entities`, inventory === null ? 'inventory not observed' : `${inventory} inventory`].join(' · '), mono: true };
+        entities === null ? 'entities not observed' : `${entities} entities`, items === null ? 'inventory not observed' : `${items} item stack${items === 1 ? '' : 's'}`].join(' · '), mono: true };
     }
     case 'selected': {
       const a = p.action || {};
@@ -84,7 +87,11 @@ function summary(event, kind) {
       const input = p.input || {};
       return { call: `${input.verb || 'action'}(${input.target_id || ''})`, text: 'Action dispatched' };
     }
-    case 'outcome': { const o = outcomeLabel(p.result); return { text: o.text, tone: o.tone }; }
+    case 'outcome': {
+      const final = event.kind === 'action_result' && ['running', 'accepted'].includes(p.result?.status) ? finals?.get(p.action_id) : null;
+      const o = outcomeLabel(final || p.result);
+      return { text: o.text, tone: o.tone };
+    }
     case 'tool': return { text: `${p.tool || 'tool'} · ${p.result?.status || 'returned'}` };
     case 'problem': return { text: reasoned(humanize(event.kind)), tone: event.kind.endsWith('_failed') ? 'danger' : 'attention' };
     case 'plan':
@@ -105,7 +112,8 @@ function modelSummary(events) {
   let total = 0, known = false, seconds = 0;
   for (const e of events) {
     const usage = e.kind === 'inference_usage' ? e.payload?.usage : null;
-    if (usage && Number.isFinite(usage.total_tokens)) { total += usage.total_tokens; known = true; }
+    const n = usage ? rowTokens({ usage }) : null;
+    if (Number.isFinite(n)) { total += n; known = true; }
     if (e.kind === 'inference_usage' && Number.isFinite(e.payload?.latency_seconds)) seconds += e.payload.latency_seconds;
     if (e.kind === 'agent_turn_completed' && Number.isFinite(e.payload?.duration_seconds)) seconds = Math.max(seconds, e.payload.duration_seconds);
   }
@@ -159,6 +167,7 @@ export const newerCount = (tl, runTotal) => (tl.mode === 'history' ? tl.newer + 
 export function timelineCards(tl) {
   const allowed = FILTER_KINDS[tl.filter];
   const cards = [];
+  const finals = new Map(tl.events.filter(e => e.kind === 'structured_action_outcome' && e.payload?.result?.action_id).map(e => [e.payload.result.action_id, e.payload.result]));
   for (const event of tl.events) {
     const kind = eventKind(event.kind);
     if (allowed && !allowed.includes(kind)) continue;
@@ -166,13 +175,13 @@ export function timelineCards(tl) {
     if (kind === 'model' && last?.kind === 'model') { last.events.push(event); continue; }
     cards.push({ key: kind === 'model' ? `m${event.seq}` : String(event.seq), kind, events: [event] });
   }
-  return cards.reverse().map(card => ({ ...card, html: cardHTML(card) }));  // Newest first; model rows still group in time order.
+  return cards.reverse().map(card => ({ ...card, html: cardHTML(card, finals) }));  // Newest first; model rows still group in time order.
 }
 
 // The row only; the body is built when a card is first opened, so a page of heavy events stays small.
-function cardHTML(card) {
+function cardHTML(card, finals) {
   const first = card.events[0];
-  const s = card.kind === 'model' ? modelSummary(card.events) : summary(first, card.kind);
+  const s = card.kind === 'model' ? modelSummary(card.events) : summary(first, card.kind, finals);
   const k = KINDS[card.kind];
   const tone = s.tone ? ` tone-${s.tone}` : '';
   const iconName = card.kind !== 'outcome' ? k.icon : { live: 'circle-check', danger: 'circle-x' }[s.tone] || 'circle';  // Only a confirmed effect gets a check.

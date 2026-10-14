@@ -10,12 +10,16 @@ const NODE_STATUS = {
   completed: { label: 'Completed', icon: 'circle-check', tone: 'done' },
   blocked: { label: 'Blocked', icon: 'circle-x', tone: 'danger' },
   retired: { label: 'Not needed', icon: 'ban', tone: 'muted' },
+  skipped: { label: 'Skipped', icon: 'ban', tone: 'muted' },
   pending: { label: 'Pending', icon: 'circle', tone: 'muted' },
   rejected: { label: 'Rejected', icon: 'circle-x', tone: 'danger' },
   operator: { label: 'Operator', icon: 'hand', tone: 'operator' },
   earlier: { label: 'Earlier plan', icon: 'clock', tone: 'muted' },
 };
-const goalStatus = (goal, rootId) => (goal.id === rootId ? 'root' : goal.retired ? 'retired' : NODE_STATUS[goal.status] ? goal.status : 'pending');
+const skipPrefix = goal => `Skipped blocked goal "${goal.objective}": `;
+const goalStatus = (goal, rootId) => (goal.id === rootId ? 'root'
+  : goal.retired && String(goal.blocked_reason || '').startsWith(skipPrefix(goal)) ? 'skipped'
+  : goal.retired ? 'retired' : NODE_STATUS[goal.status] ? goal.status : 'pending');
 const REPLACED_PLAN = new Set(['subgoal_plan_recalculation_prepared', 'subgoal_plan_reset']);
 const OPERATOR_COMMANDS = { takeover_finish: 'Hand back', resume: 'Resume' };
 
@@ -23,7 +27,10 @@ const OPERATOR_COMMANDS = { takeover_finish: 'Hand back', resume: 'Resume' };
 // Annotation ids (rejected-<seq>, operator-<seq>, earlier-<seq>) never collide with goal ids.
 export function goalGraph(plan, events) {
   const rootId = plan.root_id || plan.goals.find(g => !g.parent_id)?.id;
-  const nodes = new Map(plan.goals.map(g => [g.id, { id: g.id, parentId: g.parent_id, status: goalStatus(g, rootId), title: g.objective, reason: g.blocked_reason, goal: g }]));
+  const nodes = new Map(plan.goals.map(g => {
+    const status = goalStatus(g, rootId);
+    return [g.id, { id: g.id, parentId: g.parent_id, status, title: g.objective, reason: status === 'skipped' ? g.blocked_reason.slice(skipPrefix(g).length) : g.blocked_reason, goal: g }];
+  }));
   if (plan.status === 'goal_reached' && nodes.has(rootId)) nodes.get(rootId).status = 'reached';
   const goalIds = new Set(nodes.keys());
   // A replaced plan's goal ids can repeat in the new plan (revisions restart at 0), so older annotations go under the root.
@@ -124,7 +131,7 @@ function historyHTML(events) {
     + `${items ? `<ol>${items}</ol>` : '<p class="hint">No planning activity is loaded. Older history is in Actions.</p>'}</section>`;
 }
 
-const REASON_SHOWN = new Set(['blocked', 'retired', 'rejected']);
+const REASON_SHOWN = new Set(['blocked', 'retired', 'rejected', 'skipped']);
 
 // One node button and its children; view = { currentId, selectedId, seenNodes }.
 function nodeHTML(graph, id, depth, view) {
@@ -155,7 +162,7 @@ function goalDetailHTML(node, graph, { plan, run, events, currentId }) {
   const rejected = (graph.children.get(node.id) || []).filter(k => graph.nodes.get(k).status === 'rejected').length;
   const quotes = (goal.evidence || []).map(e => `<li><span class="insp-dim">${esc(e.source)}${e.path ? ` ${esc(e.path)}` : ''}</span> “${esc(e.quote)}”</li>`).join('');
   const reason = !node.reason ? '' : node.status === 'blocked' ? `<p class="goal-node-reason">${esc(node.reason)}</p>`
-    : node.status === 'retired' ? `<p class="insp-dim">${esc(node.reason)}</p>` : '';
+    : node.status === 'retired' || node.status === 'skipped' ? `<p class="insp-dim">${esc(node.reason)}</p>` : '';
   const links = goalLinks(goal, events);
   return rootNow
     + `${goal.completion?.description ? `<p>${esc(goal.completion.description)}</p>` : ''}`
@@ -165,7 +172,7 @@ function goalDetailHTML(node, graph, { plan, run, events, currentId }) {
     + `${quotes ? `<p class="insp-dim">Planning evidence</p><ul class="insp-list">${quotes}</ul>` : claim ? '' : '<p class="insp-dim">No planning evidence recorded.</p>'}`
     + reason
     + `${links ? `<div class="goal-links">${links}</div>` : ''}`
-    + `${current && !isRoot && plan.reason ? `<p class="insp-dim">Why: ${esc(plan.reason)}</p>` : ''}`
+    + `${current && !isRoot && plan.reason && !plan.reason.startsWith('Skipped blocked goal "') ? `<p class="insp-dim">Why: ${esc(plan.reason)}</p>` : ''}`
     + `${current && run.recovery_instruction ? `<p class="insp-dim">Your instruction: ${esc(run.recovery_instruction)}</p>` : ''}`;
 }
 

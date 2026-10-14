@@ -78,3 +78,4 @@ Goal reached popup (goalReachedHTML): the planner's claim as a result slip on th
 - 2026-10-13: Goals tab becomes a goal graph: current, completed, blocked and rejected nodes, operator and earlier-plan nodes, a selected-node pane and animated replans; Working on now removed (feat/goals-graph).
 - 2026-10-13: Goal reached popup with evidence, Give another goal / Not done, keep going / End instance; False completions issue group; Goals root shows the claim (feat/goal-reached).
 - 2026-10-13: Grok provider: account card with the operator-run sign-in command; model rows show sign-in state (ashad-grok-subscription-backend).
+- 2026-10-13: Goals tab shows skipped goals as Skipped with the planner's own reason and drops the parent's stale Why line; Issues group heads show occurrences; timeline counts hotbar items, shows input+output tokens and folds final action outcomes into the dispatch row; inspector shows empty slots (fix/ashad-speedrun-run-bugs).

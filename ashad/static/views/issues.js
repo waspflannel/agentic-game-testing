@@ -48,9 +48,13 @@ export function boardRegions(m, board, now = Date.now() / 1000) {
     const groups = board?.error ? `<p class="note note-error" data-announce>${icon('alert')}<span>Issues are unavailable: ${esc(board.error)}. Refresh to try again.</span></p>` : loadingNote('Loading issues…');
     return { head, filter, groups };
   }
-  const groups = m.groups.map(({ type, heading, rows }) => `<section class="issue-group" aria-labelledby="ig-${type}"><h2 id="ig-${type}" class="issue-group-head">${heading} <span class="issue-count">${rows.length}</span></h2>`
-    + (rows.length ? `<ol class="issue-board-list">${rows.map(r => boardRow(m, r)).join('')}</ol>`
-      : `<p class="hint">${m.runFilter ? 'None in this instance.' : `No ${heading.toLowerCase()} recorded.`}</p>`) + `</section>`).join('');
+  const groups = m.groups.map(({ type, heading, rows }) => {
+    const total = rows.reduce((n, r) => n + (r.count || 1), 0);
+    const count = total === rows.length ? `${rows.length}` : `${rows.length} · ${total} times`;
+    return `<section class="issue-group" aria-labelledby="ig-${type}"><h2 id="ig-${type}" class="issue-group-head">${heading} <span class="issue-count">${count}</span></h2>`
+      + (rows.length ? `<ol class="issue-board-list">${rows.map(r => boardRow(m, r)).join('')}</ol>`
+        : `<p class="hint">${m.runFilter ? 'None in this instance.' : `No ${heading.toLowerCase()} recorded.`}</p>`) + `</section>`;
+  }).join('');
   return { head, filter, groups };
 }
 

@@ -9,7 +9,7 @@ import { settingsSkeleton, accountSkeleton, accountRegions, accountBlocker, sett
   limitsSkeleton, limitsRegions, limitsPayload, SECTIONS } from './views/settings.js';
 import { newUsageUi, usageSkeleton, usageRegions } from './views/usage.js';
 import { boardModel, boardSkeleton, boardRegions, issueSkeleton, issueViewRegions } from './views/issues.js';
-import { newOverview, readinessDue, overviewModel, overviewSkeleton, overviewRegions } from './views/project.js';
+import { newOverview, readinessDue, overviewModel, overviewSkeleton, overviewRegions, validatedProjectBuilds, defaultRegatherBuildId, regatherDialogHTML } from './views/project.js';
 import { PAGE, MAX_EVENTS, createTimeline, beginPage, applyPage, failPage, seedFromRun, applyLive, timelineCards, timelineRegions, syncCards, cardBody, rawJSON, eventIndex } from './views/timeline.js';
 
 const $ = selector => document.querySelector(selector);
@@ -770,31 +770,79 @@ function overviewFor(id) {
   return state.overviews.get(id);
 }
 
+function probeConfigurationBuilds(ov, projectId, agents) {
+  for (const buildId of new Set(agents.filter(a => a.status !== 'retired').map(a => a.build_id))) {
+    if (!buildId || ov.validation.has(buildId) || ov.validating?.has(buildId)) continue;
+    ov.validating ||= new Set();
+    ov.validating.add(buildId);
+    api(`/api/projects/${enc(projectId)}/readiness?build_id=${enc(buildId)}`).then(result => {
+      ov.validation.set(buildId, result.build_validation || { ready: false, reason: 'Build validation failed' });
+      ov.validating.delete(buildId);
+      renderView();
+    }).catch(error => {
+      ov.validation.set(buildId, { ready: false, reason: error.message });
+      ov.validating.delete(buildId);
+      renderView();
+    });
+  }
+}
+
 function renderOverview(view) {
   const ov = overviewFor(state.route.id);
   const m = overviewModel(state.data, ov);
   ov.buildId = m.build?.id || '';
+  probeConfigurationBuilds(ov, ov.projectId, m.agents);
   if (readinessDue(ov, ov.buildId)) probeReadiness(ov, ov.projectId, ov.buildId);
   mount(view, `overview:${ov.projectId}`, overviewSkeleton());
   patchRegions(view, overviewRegions(m, ov));
 }
 
+function updateRegatherDialog(buildId, buildName) {
+  const input = document.querySelector('#refresh-build-id');
+  if (input) input.value = buildId;
+  const desc = document.querySelector('#refresh-build-desc');
+  if (desc) desc.innerHTML = `ASHAD re-reads <strong>${esc(buildName)}</strong> with Claude Sonnet and updates this project configuration. This takes a few minutes and uses your Claude subscription.`;
+  const menu = document.querySelector('#ov-refresh-build-menu');
+  const trigger = document.querySelector('[popovertarget="ov-refresh-build-menu"] .chip-text');
+  if (trigger) trigger.textContent = buildName;
+  for (const option of menu?.querySelectorAll('[role="option"]') || []) {
+    const selected = option.dataset.value === buildId;
+    option.setAttribute('aria-selected', String(selected));
+    option.querySelector('.dropdown-check')?.remove();
+    if (selected) option.insertAdjacentHTML('beforeend', icon('check', 'icon dropdown-check'));
+  }
+}
+
 async function refreshControls(ov, agent) {
   const running = ov.refreshes.get(agent?.id);
   if (!agent || running?.status === 'busy' || running?.waiting) return;
-  const build = (state.data.builds || []).find(b => b.id === agent.build_id);
-  const name = agent.name || agent.id;
-  if (!await confirmDialog({ title: 'Get game controls again?', confirm: 'Get controls',
-    body: `ASHAD re-reads build ${build?.name || agent.build_id} with Claude Sonnet and saves a new project configuration named “${name}”. The current one stays as it is. This takes a few minutes and uses your Claude subscription.` })) return;
+  const validated = validatedProjectBuilds(state.data, ov.projectId, ov.validation);
+  if (!validated.length) {
+    toast('No validated build is registered for this project. Add or re-check a build first.', 'error');
+    return;
+  }
+  const buildName = id => (state.data.builds || []).find(b => b.id === id)?.name || id;
+  const selectedBuildId = defaultRegatherBuildId(agent, validated);
+  const form = await openDialog({ title: 'Get game controls again?', confirm: 'Get controls',
+    html: regatherDialogHTML({ validated, selectedBuildId, buildName, agentName: agent.name || agent.id }) });
+  if (!form) return;
+  const buildId = form.get('build_id') || selectedBuildId;
   const op = newOp();  // An explicit refresh is a new request with its own ID.
   ov.refreshes.set(agent.id, op);
-  const pending = getControls(op, { build_id: agent.build_id, project_id: ov.projectId, name }, api, ms => { renderView(); return sleep(ms); });
+  const pending = getControls(op, { build_id: buildId, project_id: ov.projectId, name: agent.name || agent.id,
+      configuration_id: agent.status === 'retired' ? undefined : agent.id },  // A retired configuration cannot be updated; regather saves a new one.
+    api, ms => { renderView(); return sleep(ms); });
   watchControls(op);
   renderView();
   await pending;
   if (op.status === 'done') {
-    state.data.configurations = [op.value, ...state.data.configurations.filter(a => a.id !== op.value.id)];
-    toast(`Saved game controls as ${op.value.name || op.value.id}.`, 'ok');
+    const configurations = state.data.configurations || [];
+    const index = configurations.findIndex(a => a.id === op.value.id);
+    if (index >= 0) configurations[index] = op.value;
+    else configurations.unshift(op.value);
+    state.data.configurations = configurations;
+    ov.validation.delete(buildId);
+    toast(`Updated game controls for ${op.value.name || op.value.id}.`, 'ok');
     poll();
   }
   renderView();
@@ -1284,6 +1332,11 @@ function chooseOption(field, value) {
   if (field === 'ov-build') {
     overviewFor(state.route.id).buildId = value;  // A chosen build is checked at once; that is the user's request, not a poll.
     renderView();
+    return;
+  }
+  if (field === 'ov-refresh-build') {
+    const label = (state.data?.builds || []).find(b => b.id === value)?.name || value;
+    updateRegatherDialog(value, label);
     return;
   }
   if (field === 'usage-model' || field === 'usage-purpose') {

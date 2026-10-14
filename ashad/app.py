@@ -380,15 +380,17 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             request_id = body.get("request_id")
             if isinstance(request_id, str) and store.command("tuning", request_id):
                 return await controls.gather(body.get("build_id"), project_id=body.get("project_id"),
-                                             name=body.get("name"), request_id=request_id)
+                                             name=body.get("name"), request_id=request_id,
+                                             configuration_id=body.get("configuration_id"))
             raise ValueError(BUSY)
-        if any(key in body for key in ("project_id", "name", "request_id")) and not body.get("request_id"):
+        if any(key in body for key in ("project_id", "name", "request_id", "configuration_id")) and not body.get("request_id"):
             raise ValueError("Use a stable Get game controls request_id; Get controls again uses a new ID")
         app.state.controls_task = asyncio.current_task()
         app.state.controls_request_id = body.get("request_id")
         try:
             return await controls.gather(body.get("build_id"), project_id=body.get("project_id"),
-                                         name=body.get("name"), request_id=body.get("request_id"))
+                                         name=body.get("name"), request_id=body.get("request_id"),
+                                         configuration_id=body.get("configuration_id"))
         except asyncio.CancelledError:
             # Only the owned quit drain (DesktopLifecycle) cancels Get game controls on purpose; server
             # shutdown or a dropped client must keep propagating cancellation.

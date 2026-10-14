@@ -12,6 +12,7 @@ from .models import CLAUDE_MODEL, provider_of
 from .repository import Repository, sha256_file
 from .projects import Projects, _identifier, _name
 from .store import uid
+from .workspace_environment import validate_build
 
 
 SOURCE_BUDGET = 96000
@@ -128,12 +129,34 @@ class GameControls:
         self.lock = asyncio.Lock()
         self.progress = None  # The running Get game controls stage and batches, for GET /api/configurations/controls/<id>.
 
-    async def gather(self, build_id, *, request_id=None, name=None, project_id=None):
+    def _validated_project_build(self, build_id, project_id):
+        assigned = Projects(self.store).project_for_build(build_id, project_id)
+        build = self.store.require("builds", build_id)
+        try:
+            validate_build(build)
+        except (OSError, TypeError, KeyError, ValueError) as exc:
+            raise ValueError(str(exc) or "Build is not validated for this project.") from None
+        return assigned, build
+
+    async def gather(self, build_id, *, request_id=None, name=None, project_id=None, configuration_id=None):
         if request_id is not None:
             _identifier(request_id, "Get game controls request ID")
+        if configuration_id is not None:
+            _identifier(configuration_id, "Project configuration ID")
         if name is not None:
             name = _name(name, "Configuration name")
-        payload = {"build_id": build_id, "name": name, "project_id": project_id}
+        existing = self.store.get("configurations", configuration_id) if configuration_id else None
+        if configuration_id:
+            if existing is None:
+                raise ValueError("Unknown project configuration.")
+            if existing.get("status") == "retired":
+                raise ValueError(CONFIGURATION_RETIRED)
+            if project_id is not None and existing.get("project_id") not in (None, project_id):
+                raise ValueError("Project configuration and build belong to different projects")
+            if not build_id:
+                build_id = existing["build_id"]
+            name = existing.get("name") or name
+        payload = {"build_id": build_id, "name": name, "project_id": project_id, "configuration_id": configuration_id}
         previous = self.store.command("tuning", request_id) if request_id else None
         if previous:
             if previous["request"] != payload:
@@ -147,9 +170,11 @@ class GameControls:
                 raise ValueError(CLAUDE_REQUIRED)
             self.progress = {"stage": "reading_source", "batch_count": 0, "batches_done": 0, "workers": 0, "started_at": time.time()}
             record = None
+            previous_file = None
             try:
-                assigned_project = Projects(self.store).project_for_build(build_id, project_id)
-                build = self.store.require("builds", build_id)
+                assigned_project, build = self._validated_project_build(build_id, project_id)
+                if configuration_id and existing and existing.get("project_id") not in (None, assigned_project):
+                    raise ValueError("Project configuration and build belong to different projects")
                 evidence, inventory_hash = await asyncio.to_thread(source_evidence, build)
                 batches = self._batches(evidence["sources"])
                 workers = min(SWARM_WORKERS, len(batches))
@@ -162,9 +187,15 @@ class GameControls:
                     self.progress["stage"] = "writing"
                     controls = await self.ai.write_controls({"build_id": build_id, "source_revision": build["source_revision"],
                         "source_notes": notes, "coverage": evidence["coverage"]})
-                record = {"id": uid("config_"), "name": name or f"{build.get('name', build_id)} controls",
-                    "project_id": assigned_project, "build_id": build_id, "source_revision": build["source_revision"],
-                    "status": "ready", "created_at": time.time(), "controls_version": CONTROLS_VERSION}
+                created = time.time()
+                if configuration_id and existing:
+                    record = {**existing, "name": name or existing.get("name") or f"{build.get('name', build_id)} controls",
+                        "project_id": assigned_project, "build_id": build_id, "source_revision": build["source_revision"],
+                        "status": "ready", "created_at": created, "controls_version": CONTROLS_VERSION}
+                else:
+                    record = {"id": uid("config_"), "name": name or f"{build.get('name', build_id)} controls",
+                        "project_id": assigned_project, "build_id": build_id, "source_revision": build["source_revision"],
+                        "status": "ready", "created_at": created, "controls_version": CONTROLS_VERSION}
                 artifact = {"format": CONTROLS_FORMAT, "version": CONTROLS_VERSION, "configuration_id": record["id"],
                     "project_id": assigned_project, "build_id": build_id, "source_revision": build["source_revision"],
                     "source_inventory_sha256": inventory_hash,
@@ -173,6 +204,11 @@ class GameControls:
                     "coverage": {**evidence["coverage"], "source_batches": len(batches), "workers": workers},
                     "generated_by": {"method": "swarm", "provider": "claude", "model": CLAUDE_MODEL, "prompt_version": TUNING_PROMPT_VERSION},
                     "created_at": record["created_at"], "limitations": list(LIMITATIONS), "controls": controls}
+                if configuration_id:
+                    try:
+                        previous_file = controls_file(self.store, record["id"]).read_bytes()
+                    except OSError:
+                        previous_file = None
                 _write_file(self.store, record, artifact)
                 self._validate(record)
                 with self.store.transaction():
@@ -181,7 +217,11 @@ class GameControls:
                         self.store.command("tuning", request_id, {"request": payload, "configuration_id": record["id"]})
                 return record
             except BaseException:
-                if record:
+                if record and not configuration_id:
+                    remove_controls_file(self.store, record["id"])
+                elif record and previous_file is not None:
+                    controls_file(self.store, record["id"]).write_bytes(previous_file)  # Keep the saved controls usable after a failed regather.
+                elif record:
                     remove_controls_file(self.store, record["id"])
                 raise
             finally:
@@ -263,18 +303,24 @@ class GameControls:
             raise ValueError(f"Game controls text is invalid. {again}")
         if (artifact["build_id"], artifact["source_revision"], artifact["configuration_id"]) != (record["build_id"], record.get("source_revision"), record["id"]):
             raise ValueError(f"Game controls file belongs to a different configuration. {again}")
-        build = self.store.require("builds", record["build_id"])
+        build = self.store.get("builds", record["build_id"])
+        if not build:
+            raise ValueError(f"Pinned build {record['build_id']} is no longer registered. Get controls again on a current build to continue.")
         if record.get("source_revision") != build.get("source_revision"):
-            raise ValueError("Game controls no longer match this build. Rebuild and get game controls again.")
+            raise ValueError("Game controls no longer match this build. Get controls again on a current build to continue.")
         repo = Repository(build)
+        try:
+            validate_build(build)
+        except (OSError, TypeError, KeyError, ValueError) as exc:
+            raise ValueError(str(exc) or "Pinned build is no longer valid. Get controls again on a current build to continue.") from None
         if not repo.hashes or sha256_file(repo.root.parent / "source-hashes.json") != artifact["source_inventory_sha256"]:
-            raise ValueError("Pinned source inventory changed. Rebuild and get game controls again.")
+            raise ValueError("Pinned source inventory changed. Get controls again on a current build to continue.")
         if not artifact["source_files"]:
             raise ValueError(f"Game controls have no verified source references. {again}")
         for source in artifact["source_files"]:
             file = repo.resolve(source["path"])
             if source["sha256"] != repo.hashes.get(source["path"]) or not file.is_file() or sha256_file(file) != source["sha256"]:
-                raise ValueError(f"Pinned source changed: {source['path']}. Rebuild and get game controls again.")
+                raise ValueError(f"Pinned source changed: {source['path']}. Get controls again on a current build to continue.")
         return artifact
 
 

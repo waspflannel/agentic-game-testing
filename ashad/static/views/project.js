@@ -36,6 +36,35 @@ export function overviewModel(data, ov, now = Date.now() / 1000) {
   };
 }
 
+export const validatedProjectBuilds = (data, projectId, validation) => projectBuilds(data, projectId)
+  .filter(b => validation.get(b.id)?.ready === true)
+  .sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+
+export const defaultRegatherBuildId = (agent, validated) => (
+  validated.some(b => b.id === agent.build_id) ? agent.build_id : validated[0]?.id || ''
+);
+
+export function configurationPinWarning(agent, builds, validation) {
+  if (!agent || agent.status === 'retired') return '';
+  const pinned = agent.build_id;
+  if (!builds.some(b => b.id === pinned)) {
+    return `Pinned build ${pinned} is no longer registered. Get controls again on a current build to continue.`;
+  }
+  const check = validation.get(pinned);
+  if (check?.ready === false) {
+    return `Pinned build ${pinned} is no longer valid. Get controls again on a current build to continue.`;
+  }
+  return '';
+}
+
+export function regatherDialogHTML({ validated, selectedBuildId, buildName, agentName }) {
+  const picker = dropdownHTML({ key: 'ov-refresh-build', field: 'ov-refresh-build', label: 'Build to regather on', iconName: 'file-text',
+    options: validated.map(b => ({ id: b.id, label: b.name || b.id })), selected: selectedBuildId });
+  const chosen = buildName(selectedBuildId);
+  return `<input type="hidden" name="build_id" id="refresh-build-id" value="${esc(selectedBuildId)}">${picker}`
+    + `<p id="refresh-build-desc">ASHAD re-reads <strong>${esc(chosen)}</strong> with Claude Sonnet and updates project configuration “${esc(agentName)}”. This takes a few minutes and uses your Claude subscription.</p>`;
+}
+
 export const overviewSkeleton = () => `<div class="page overview"><div class="page-head row-between" data-region="head"></div>`
   + `<div class="overview-grid"><section class="card" aria-labelledby="ov-builds"><h2 id="ov-builds" class="card-title">Builds</h2><div data-region="builds"></div></section>`
   + `<section class="card" aria-labelledby="ov-agents"><h2 id="ov-agents" class="card-title">Project configurations</h2><div data-region="agents"></div></section>`
@@ -67,17 +96,19 @@ export function overviewRegions(m, ov, now = Date.now() / 1000) {
 
   const agents = m.agents.length ? `<ul class="list">${m.agents.map(a => {
     const title = `<span class="list-title">${esc(a.name || a.id)}</span>`;
+    const pinWarning = configurationPinWarning(a, m.builds, ov.validation);
     const op = ov.refreshes.get(a.id);
     const busy = op && (op.status === 'busy' || op.waiting);
     const status = !op ? '' : op.waiting ? note('', 'Another Get game controls run is in progress; this one starts when it finishes.')
       : op.status === 'busy' ? `<div class="tuning">${controlsProgressHTML(op, now)}</div>`
-      : op.status === 'done' ? note('', `Saved as ${op.value?.name || op.value?.id || 'a new configuration'}.`) : op.error ? note('error', op.error) : '';
+      : op.status === 'done' ? note('', 'Game controls updated for this configuration.') : op.error ? note('error', op.error) : '';
     const refresh = `<button type="button" class="btn btn-ghost btn-sm" data-action="ov-refresh" data-id="${esc(a.id)}" data-key="ov-refresh-${esc(a.id)}"${busy ? ' aria-busy="true" aria-disabled="true"' : ''}>Get controls again…</button>`;
     if (a.status === 'retired') {
       return `<li class="list-row"><div class="list-main">${title}${note('error', `Retired: ${a.retired_reason || 'reason not recorded'}`)}${status}</div>`
         + `<div class="list-actions">${refresh}</div></li>`;
     }
     return `<li class="list-row"><div class="list-main">${title}`
+      + (pinWarning ? `<p class="note note-attention">${icon('alert')}<span>${esc(pinWarning)}</span></p>` : '')
       + `<span class="check-detail">build ${esc(m.buildName(a.build_id))} · controls gathered ${a.created_at ? esc(since(a.created_at, now)) : 'at an unrecorded time'}</span>${status}</div>`
       + `<div class="list-actions"><button type="button" class="btn btn-ghost btn-sm" data-action="ov-controls" data-id="${esc(a.id)}" data-key="ov-ctl-${esc(a.id)}">View controls</button>`
       + refresh

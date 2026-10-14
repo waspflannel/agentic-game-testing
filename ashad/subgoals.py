@@ -363,16 +363,16 @@ def tile_values(plan, observation):
 
 
 def held_counts(observation):
-    """{item_id: count} over inventory and hotbar, ignoring malformed counts; None when either list is missing."""
+    """{item_id: count} over inventory and hotbar, ignoring malformed counts and items without a string item_id; None when either list is missing."""
     player = observation.get("state", {}).get("player", {})
     inventory, hotbar = player.get("inventory"), player.get("hotbar")
     if not isinstance(inventory, list) or not isinstance(hotbar, list):
         return None
     counts = {}
     for item in inventory + hotbar:
-        count = item.get("count")
-        if type(count) in (int, float) and math.isfinite(count) and count >= 0:
-            counts[item.get("item_id")] = counts.get(item.get("item_id"), 0) + count
+        count, item_id = item.get("count"), item.get("item_id")
+        if isinstance(item_id, str) and type(count) in (int, float) and math.isfinite(count) and count >= 0:
+            counts[item_id] = counts.get(item_id, 0) + count
     return counts
 
 

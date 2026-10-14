@@ -179,6 +179,7 @@ class Coordinator:
         db.execute("DELETE FROM commands WHERE scope='launch' AND json_extract(result,'$.run_id')=?", (rid,))
         db.execute("DELETE FROM events WHERE run_id=?", (rid,))
         db.execute("DELETE FROM records WHERE kind IN ('incidents','repair_task_exports','observations') AND json_extract(data,'$.run_id')=?", (rid,))
+        db.execute("DELETE FROM records WHERE kind='run_game_controls' AND id=?", (rid,))
         db.execute("DELETE FROM records WHERE kind='runs' AND id=?", (rid,))
         scenario_id = run.get("scenario_id")
         if scenario_id and not db.execute("SELECT 1 FROM records WHERE kind='runs' AND json_extract(data,'$.scenario_id')=? LIMIT 1",

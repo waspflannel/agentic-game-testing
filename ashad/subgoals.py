@@ -125,6 +125,13 @@ def toward(check, old, new):
     return {">=": new > old, "<=": new < old, "==": abs(new - target) < abs(old - target)}[check["op"]]
 
 
+def credit_progress(goal, now):
+    """Progress clears the goal's no-progress counters and repeat tracking."""
+    goal.update(attempts=0, reviews=0, progress_at=now)
+    for key in ("recent_actions", "repeating", "repeats"):
+        goal.pop(key, None)
+
+
 def measure(check, observation):
     """Return (satisfied, measured value). Missing facts never count as success."""
     fact = check.get("fact", "unknown")
@@ -218,10 +225,7 @@ def reconcile(plan, observation, control_generation):
         done, value = measure(goal["completion"], observation)
         if toward(goal["completion"], goal.get("measured"), value):
             progressed.add(goal["id"])
-            goal.update(attempts=0, reviews=0, progress_at=now)
-            goal.pop("recent_actions", None)
-            goal.pop("repeating", None)
-            goal.pop("repeats", None)
+            credit_progress(goal, now)
         if value is not None:  # A loading screen reads nothing; keep the last value so progress is not erased.
             goal["measured"] = value
         if done:
@@ -231,15 +235,10 @@ def reconcile(plan, observation, control_generation):
     # Progress on a parent's fact (e.g. harvesting toward "10 wheat") is progress for the leaf pursuing it.
     current = active_goal(plan)
     if current and any(g["id"] in progressed for g in goal_path(plan, current["id"])[:-1]):
-        current.update(attempts=0, reviews=0, progress_at=now)
-        for key in ("recent_actions", "repeating", "repeats"):
-            current.pop(key, None)
+        credit_progress(current, now)
     for goal_id in completed:
         for ancestor in goal_path(plan, goal_id)[:-1]:
-            ancestor.update(reviews=0, attempts=0, progress_at=now)
-            ancestor.pop("recent_actions", None)
-            ancestor.pop("repeating", None)
-            ancestor.pop("repeats", None)
+            credit_progress(ancestor, now)
     for goal in plan["goals"]:
         if goal["status"] not in {"completed", "gave_up"} and any(g["status"] == "completed" for g in goal_path(plan, goal["id"])[:-1]):
             goal.update(retired=True, status="blocked", blocked_reason="No longer needed: the parent goal was verified directly.")

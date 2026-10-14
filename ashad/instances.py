@@ -55,7 +55,8 @@ class Instances:
             self.coordinator.require_instance_slot()
             record, _ = GameControls(self.store, self.coordinator.ai).validated(request.configuration_id)
             Projects(self.store).project_for_configuration(request.configuration_id, request.project_id)
-            model = request.model or default_model(self.coordinator.ai, self.store.require("settings", "main").get("last_model"))
+            settings = self.store.require("settings", "main")
+            model = request.model or default_model(self.coordinator.ai, settings.get("last_model"))
             build = self.coordinator.validated_build(record["build_id"])
             worker, accounts = await self._allocate_worker(build, request.transport)
             plan = Plan(configuration_id=record["id"], build_id=record["build_id"], model=model,
@@ -65,10 +66,9 @@ class Instances:
             plan["transport"].update(mode=request.transport, host_address=worker.get("host_address"),
                                       app_id=build.get("steam_app_id") if request.transport == "steam" else None)
             plan["success_criteria"].update(predicate="manual", target="")
-            plan["limits"]["duration_seconds"] = self.store.require("settings", "main").get("duration_seconds")
+            plan["limits"]["duration_seconds"] = settings.get("duration_seconds")
             scenario = self.coordinator.save_scenario(plan)
-            settings = self.store.require("settings", "main")
-            self.store.put("settings", {**settings, "last_model": model})
+            self.store.put("settings", {**self.store.require("settings", "main"), "last_model": model})
             self.store.command("instance", request.request_id, {"request": payload, "scenario_id": scenario["id"], "revision": scenario["revision"]})
             return await self._launch(scenario["id"], scenario["revision"], request.request_id)
 

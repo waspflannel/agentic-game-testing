@@ -211,11 +211,13 @@ def reconcile(plan, observation, control_generation):
     # Unloading emits an empty world ID. Keep the last actual world so A -> menu -> B cannot reuse A's proof.
     plan.update(world_id=world or previous_world, observation_generation=binding, control_generation=control_generation)
     completed = []
+    progressed = set()
     for goal in plan["goals"]:
         if goal["status"] == "completed" or goal.get("retired"):
             continue
         done, value = measure(goal["completion"], observation)
         if toward(goal["completion"], goal.get("measured"), value):
+            progressed.add(goal["id"])
             goal.update(attempts=0, reviews=0, progress_at=now)
             goal.pop("recent_actions", None)
             goal.pop("repeating", None)
@@ -226,6 +228,12 @@ def reconcile(plan, observation, control_generation):
             goal.update(status="completed", completion_evidence={**observation_ref(observation), "value": value})
             goal.pop("blocked_reason", None)
             completed.append(goal["id"])
+    # Progress on a parent's fact (e.g. harvesting toward "10 wheat") is progress for the leaf pursuing it.
+    current = active_goal(plan)
+    if current and any(g["id"] in progressed for g in goal_path(plan, current["id"])[:-1]):
+        current.update(attempts=0, reviews=0, progress_at=now)
+        for key in ("recent_actions", "repeating", "repeats"):
+            current.pop(key, None)
     for goal_id in completed:
         for ancestor in goal_path(plan, goal_id)[:-1]:
             ancestor.update(reviews=0, attempts=0, progress_at=now)

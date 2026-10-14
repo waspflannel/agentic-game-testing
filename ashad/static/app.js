@@ -438,11 +438,12 @@ function onSetupAction(action, target, event) {
 
 // While Get game controls runs, its progress is read every 3s from the recovery route: no probe, no inference.
 async function watchControls(op) {
+  op.progressAt = Date.now() / 1000;  // Starts the stale clock, so a progress route that never answers still shows the hint.
   while (op.status === 'busy' || op.waiting) {
     if (op.status === 'busy' && op.requestId && !document.hidden) {
       try {
-        const r = await api(`/api/configurations/controls/${enc(op.requestId)}`);
-        if (r?.status === 'in_progress') op.progress = r.progress || null;
+        const r = await api(`/api/configurations/controls/${enc(op.requestId)}`, { signal: AbortSignal.timeout(10000) });
+        if (r?.status === 'in_progress') Object.assign(op, { progress: r.progress || null, progressAt: Date.now() / 1000 });
       } catch { /* The next tick retries; the run itself is unaffected. */ }
       renderView();
     }
@@ -1344,6 +1345,7 @@ function chooseOption(field, value) {
     renderView();
     return;
   }
+  if (field === 'issues-run') { location.hash = href('p', state.route.id, 'issues') + (value ? `?run=${encodeURIComponent(value)}` : ''); return; }
   if (field === 'issue-example') { if (state.issue) state.issue.exampleId = value; renderView(); return; }
   const projectId = composerProject(state.route, state.data);
   if (!projectId) return;
@@ -1580,6 +1582,7 @@ $('#view').addEventListener('scroll', () => {
 setInterval(() => {
   if (document.hidden) return;
   for (const t of document.querySelectorAll('#view time[data-elapsed]')) t.textContent = elapsed(Date.now() / 1000 - Number(t.dataset.elapsed));
+  updateTimes($('#sidebar'));
   if (state.route.name !== 'instance') return;
   updateTimes(timelineList());
   const run = threadRun();

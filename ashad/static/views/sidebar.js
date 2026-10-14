@@ -14,7 +14,7 @@ export function sidebarModel(data, ui) {
   const projectIds = new Set(projects.map(p => p.id));
   const routeProject = ['project', 'composer', 'issues', 'issue'].includes(route.name) ? route.id : currentRun?.project_id;
 
-  const thread = run => ({ id: run.id, goal: runGoal(run), age: ago(runTime(run), ui.now), status: runStatus(run, ownerByRun.get(run.id)), current: run.id === currentRun?.id, deletable: !ownerByRun.has(run.id) });
+  const thread = run => ({ id: run.id, goal: runGoal(run), ts: runTime(run), age: ago(runTime(run), ui.now), status: runStatus(run, ownerByRun.get(run.id)), current: run.id === currentRun?.id, deletable: !ownerByRun.has(run.id) });
   const group = (id, groupRuns, extra) => {
     const holdsFocus = groupRuns.some(r => r.id === currentRun?.id || ownerByRun.has(r.id));
     const expanded = ui.expanded.has(id) ? ui.expanded.get(id) : holdsFocus || id === routeProject;
@@ -26,7 +26,7 @@ export function sidebarModel(data, ui) {
   const ownerRun = owners.length ? runs.find(r => r.id === owners[0].run_id) : undefined;
   const active = owners.length && !(route.name === 'instance' && route.id === owners[0].run_id)
     ? { runId: owners[0].run_id, linked: Boolean(ownerRun), goal: ownerRun ? runGoal(ownerRun) : 'Unresolved instance owner',
-        status: runStatus(ownerRun || { state: owners[0].state }, owners[0]), age: ago(runTime(ownerRun), ui.now) }
+        status: runStatus(ownerRun || { state: owners[0].state }, owners[0]), ts: runTime(ownerRun), age: ago(runTime(ownerRun), ui.now) }
     : null;
 
   const unassignedRuns = runs.filter(r => !projectIds.has(r.project_id));
@@ -46,7 +46,7 @@ const dot = status => `<span class="dot dot-${status.tone}" title="${esc(status.
 
 function threadRow(t) {
   return `<li class="thread-item"><a class="row thread${t.current ? ' is-current' : ''}" href="${href('i', t.id)}" data-key="r:${esc(t.id)}" title="${esc(t.goal)}"${t.current ? ' aria-current="page"' : ''}>`
-    + `${dot(t.status)}<span class="row-label">${esc(t.goal)}</span><span class="row-meta">${esc(t.age)}</span></a>`
+    + `${dot(t.status)}<span class="row-label">${esc(t.goal)}</span><time class="row-meta"${Number.isFinite(t.ts) ? ` data-ts="${t.ts}"` : ''}>${esc(t.age)}</time></a>`
     + `<button type="button" class="row-tool thread-tool" data-action="instance-delete" data-id="${esc(t.id)}" data-key="rd:${esc(t.id)}" aria-label="Delete instance: ${esc(t.goal)}" title="${t.deletable ? 'Delete instance' : 'Stop this instance before deleting it'}"${t.deletable ? '' : ' aria-disabled="true"'}>${icon('trash')}</button></li>`;
 }
 
@@ -74,7 +74,7 @@ export function sidebarHTML(m) {
     ? (m.active.linked
       ? `<a class="active-pill" href="${href('i', m.active.runId)}" data-key="active">`
       : `<div class="active-pill">`)
-      + `${dot(m.active.status)}<span class="active-text"><span class="active-state">${esc(m.active.status.label)}</span><span class="row-label">${esc(m.active.goal)}</span></span><span class="row-meta">${esc(m.active.age)}</span>`
+      + `${dot(m.active.status)}<span class="active-text"><span class="active-state">${esc(m.active.status.label)}</span><span class="row-label">${esc(m.active.goal)}</span></span><time class="row-meta"${Number.isFinite(m.active.ts) ? ` data-ts="${m.active.ts}"` : ''}>${esc(m.active.age)}</time>`
       + (m.active.linked ? '</a>' : '</div>')
     : '';
   const tree = m.projects.map(g => groupBlock(g, true)).join('') + (m.unassigned ? groupBlock(m.unassigned, false) : '');

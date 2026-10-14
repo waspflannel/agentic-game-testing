@@ -342,7 +342,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         if build_validation["ready"]:
             occupied = {lease["resource_id"] for lease in store.leases() if lease["kind"] == "worker"}
             accounts = {record["worker_id"]: record for record in store.list("accounts") if record.get("app_id") == build.get("steam_app_id")}
-            workers = store.list("workers")
+            workers = [worker for worker in store.list("workers") if worker.get("build_id") in (None, build_id)]
             checks = await asyncio.gather(*(inspect_fresh_environment(build, worker, credentials,
                 occupied=worker["id"] in occupied, account=accounts.get(worker["id"])) for worker in workers))
             environments = [{"id": worker["id"], "name": worker.get("name", worker["id"]), **check} for worker, check in zip(workers, checks)]

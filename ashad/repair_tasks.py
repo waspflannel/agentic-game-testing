@@ -345,10 +345,11 @@ def record_task(store, run_id, trigger, reason, *, key, category, event_id=None)
                 "pause": run.get("pause"), "progress": run.get("progress"),
                 "limitations": run.get("limitations", []),
                 "interventions": run.get("interventions", [])[-10:],
-                "players": {pid: {name: player.get(name) for name in (
+                "players": {pid: {**{name: player.get(name) for name in (
                     "worker_id", "phase", "activity", "agent_status", "pending_action",
-                    "invalid_actions", "last_observation", "structured_context", "telemetry",
-                    "last_state_change_at", "launched", "teardown_confirmed")}
+                    "invalid_actions", "last_observation", "telemetry",
+                    "last_state_change_at", "launched", "teardown_confirmed")},
+                    "structured_context": store.get("observations", f"{run_id}:{pid}")}
                     for pid, player in run.get("players", {}).items()},
                 "recent_events": store.events(run_id, after=max(0, store.count_events(run_id) - 40), limit=40),
                 "evidence": {"directory": str(root), "report": str(root / "report.md"),

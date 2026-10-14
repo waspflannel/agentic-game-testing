@@ -178,7 +178,7 @@ class Coordinator:
                    (rid, rid))
         db.execute("DELETE FROM commands WHERE scope='launch' AND json_extract(result,'$.run_id')=?", (rid,))
         db.execute("DELETE FROM events WHERE run_id=?", (rid,))
-        db.execute("DELETE FROM records WHERE kind IN ('incidents','repair_task_exports') AND json_extract(data,'$.run_id')=?", (rid,))
+        db.execute("DELETE FROM records WHERE kind IN ('incidents','repair_task_exports','observations') AND json_extract(data,'$.run_id')=?", (rid,))
         db.execute("DELETE FROM records WHERE kind='runs' AND id=?", (rid,))
         scenario_id = run.get("scenario_id")
         if scenario_id and not db.execute("SELECT 1 FROM records WHERE kind='runs' AND json_extract(data,'$.scenario_id')=? LIMIT 1",
@@ -210,7 +210,7 @@ class Coordinator:
                 if field in latest:
                     run[field] = copy.deepcopy(latest[field])
             for pid, ps in run["players"].items():
-                for key in ("last_observation", "activity", "invalid_actions", "structured_context", "agent_memory", "agent_status", "pending_action", "observation_signature", "last_state_change_at", "attempted_actions"):
+                for key in ("last_observation", "activity", "invalid_actions", "agent_memory", "agent_status", "pending_action", "observation_signature", "last_state_change_at", "attempted_actions"):
                     if key == "agent_status" and run["state"] not in {"Starting", "Running"}:
                         continue
                     ps[key] = latest["players"][pid].get(key, ps.get(key))
@@ -1326,10 +1326,10 @@ class Coordinator:
     async def _resume(self, run, reason, command_id, after):
         run_id = run["id"]
         await self.close_human_control(run)
-        for ps in run["players"].values():
+        for pid, ps in run["players"].items():
             ps["generation"] += 1
             ps["last_observation"] = None
-            ps["structured_context"] = None
+            self.store.delete("observations", f"{run_id}:{pid}")
         self.save_run(run)
         await self.cancel_players(run_id)
         try:

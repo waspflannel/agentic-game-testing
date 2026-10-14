@@ -566,7 +566,7 @@ class StructuredPlayers:
         configuration_id, snapshot = run_configuration(run)
         context = {"play_mode": run["plan"]["play_mode"], "player": player, "goal": player["goal"],
             "game_controls": (run.get("game_controls") or {}).get("controls") or (snapshot or {}).get("instructions", ""), "configuration_id": configuration_id,
-            "observation": prompt_observation(observation), "guidance": self.guidance(run, player, observation),
+            "observation": prompt_observation(observation, max_chars=48000), "guidance": self.guidance(run, player, observation),
             "memory": ps.get("agent_memory", ""), "recent_own_actions": own, "team_messages": team,
             "setup": run["plan"]["world_setup"], "transport": run["plan"]["transport"],
             "world_namespace": run.get("world_namespace"), "seed": run["plan"].get("seed")}
@@ -680,6 +680,20 @@ class StructuredPlayers:
         self._forget_turn((run_id, player_id))
         return True
 
+    def _failed_again(self, run_id, player_id):
+        skip = {None, "running", "accepted", "unknown"}
+        settled = []
+        for event in self._recent_events(run_id):
+            if event["kind"] not in {"action_result", "structured_action_outcome"}:
+                continue
+            if event["payload"].get("player_id") != player_id:
+                continue
+            status = (event["payload"].get("result") or {}).get("status")
+            if status in skip:
+                continue
+            settled.append(status)
+        return len(settled) >= 2 and settled[-2] in FAILED_STATUSES
+
     async def _reconcile_pending(self, run_id, player_id, ps, generation, observation):
         """Settle the last action's outcome; True when this turn must end."""
         key = (run_id, player_id)
@@ -704,7 +718,8 @@ class StructuredPlayers:
         if result.get("status") in FAILED_STATUSES:
             if await self._pause_if_stalled(run_id, player_id, generation, verb, observation, result):
                 return True
-            self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
+            if self._failed_again(run_id, player_id):
+                self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
         return False
 
     async def turn(self, run_id, player_id, tick_seconds=None):

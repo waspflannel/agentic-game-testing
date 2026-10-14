@@ -45,12 +45,17 @@ def issue_directory(store):
     return task_directory(store) / "issues"
 
 
+LABEL_KEYS = ("target_label", "focus_objective", "primary_goal")
+
+
 def target_label(label):
-    return re.sub(r"\s+", " ", re.sub(r"\d", "#", str(label or "").casefold())).strip()[:60]
+    return re.sub(r"\s+", " ", str(label or "").casefold()).strip()[:60]
 
 
 def issue_signature(issue_type, basis):
-    return hashlib.sha256(json.dumps([issue_type, basis], sort_keys=True).encode()).hexdigest()
+    """Labels keep their digits in titles; the dedupe signature masks them."""
+    masked = {k: re.sub(r"\d", "#", v) if k in LABEL_KEYS and isinstance(v, str) else v for k, v in basis.items()}
+    return hashlib.sha256(json.dumps([issue_type, masked], sort_keys=True).encode()).hexdigest()
 
 
 def _project_issue_count(store, project_id):

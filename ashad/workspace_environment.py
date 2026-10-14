@@ -271,7 +271,7 @@ async def _import_worker(store, credentials, entry, record, directory):
     if entry.get("id") != worker_id or entry.get("container") != record["container"] or entry.get("url") != record["url"] or entry.get("desktop_url") != record["desktop_url"]:
         raise PreparationError("Owned worker registration does not match the preparation request")
     previous = store.get("workers", worker_id)
-    if previous and (previous.get("environment_owner") != record["owner"] or previous.get("build_id") != record["build_id"]):
+    if previous and (previous.get("environment_owner") != record["owner"]):
         raise PreparationError("Worker registration is already bound to another environment")
     secrets = []
     for field, filename, reference in (("token_file", "worker_token", "worker:"), ("vnc_password_file", "vnc_password", "desktop:")):
@@ -412,10 +412,15 @@ async def prepare_environment(store, credentials, *, project_id, build, request_
     root = await asyncio.to_thread(validate_build, build)
     if not previous:
         for worker in store.list("workers"):
-            if worker.get("enabled", True) is not True:
+            if worker.get("enabled", True) is not True or worker.get("project_id") not in (None, project_id):
+                continue
+            if worker.get("project_id") is None and worker.get("build_id") not in (None, build["id"]):
                 continue
             environment = await inspect_fresh_environment(build, worker, credentials, client_factory=client_factory)
             if environment["ready"]:
+                if worker.get("project_id") == project_id and worker.get("build_id") not in (None, build["id"]):
+                    # Readiness only lists desktops bound to the selected build, so reuse must rebind.
+                    store.put("workers", {**worker, "build_id": build["id"]})
                 result = {"request_id": request_id, "project_id": project_id, "build_id": build["id"],
                           "status": "completed", "worker_id": worker["id"], "environment": environment}
                 store.put("environment_preparations", {"id": request_id, "request": payload,
@@ -455,7 +460,7 @@ async def prepare_environment(store, credentials, *, project_id, build, request_
     store.put("environment_preparations", record)
     try:
         registered = store.get("workers", record["worker_id"])
-        if registered and (registered.get("environment_owner") != owner or registered.get("build_id") != build["id"]):
+        if registered and (registered.get("environment_owner") != owner):
             raise PreparationError("Worker ID collision; unrelated registrations cannot be rebound")
         if await _run(runner, [docker, "info", "--format", "{{.OSType}}"], directory, env) != "linux":
             raise PreparationError("Docker Desktop must be reachable in Linux-container mode")

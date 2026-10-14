@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import time
+import traceback
 from datetime import datetime, timezone
 
 from .ai import GAME_VERBS, ProviderError, capability_summary, prompt_observation
@@ -75,6 +76,13 @@ def action_effect(before, observation):
     return "no_effect" if before == effect_basis(observation) else "changed"
 
 
+def settle_effect(result, before, observation):
+    """Record the effect on a completed result; an action that changed nothing is reported as no_effect, not completed."""
+    result["effect"] = action_effect(before, observation)
+    if result["effect"] == "no_effect":
+        result["status"] = "no_effect"
+
+
 def own_action_line(event):
     """One short line per own event for the decision context, keeping only keys with values."""
     payload = event["payload"]
@@ -95,6 +103,7 @@ def observed_entity(observation, target_id):
 
 GOAL_CONTEXT_KEYS = ("id", "parent_id", "objective", "completion", "status", "actionable", "measured", "attempts")
 FAILED_STATUSES = frozenset({"failed", "rejected", "expired", "cancelled"})
+DELIVERED_STATUSES = frozenset({"completed", "no_effect"})
 
 
 def repeated_failures(events):
@@ -258,7 +267,7 @@ class StructuredPlayers:
             if previous.get("status", "unknown") in {"unknown", "running", "accepted"}:
                 return {"status": "rejected", "reason": "Reconcile pending action first", "previous": previous}
             if previous.get("status") == "completed":
-                previous["effect"] = action_effect((ps.get("pending_action") or {}).get("before"), observation)
+                settle_effect(previous, (ps.get("pending_action") or {}).get("before"), observation)
             self.store.event(run_id, "structured_action_outcome", {"player_id": player_id, "result": previous})
             self.pending.pop(key, None)
             run, ps = self.binding(run_id, player_id)
@@ -472,9 +481,9 @@ class StructuredPlayers:
             recent = self._recent_events(run_id)
             intent = next((e for e in recent if e["kind"] == "structured_action_intent" and e["payload"].get("action_id") == action_id), None)
             result_event = next((e for e in reversed(recent) if e["kind"] == "action_result" and e["payload"].get("action_id") == action_id), None)
-            completed = (result_event and (result_event["payload"].get("result") or {}).get("status") == "completed") or any(
+            completed = (result_event and (result_event["payload"].get("result") or {}).get("status") in DELIVERED_STATUSES) or any(
                 e["kind"] == "structured_action_outcome" and (e["payload"].get("result") or {}).get("action_id") == action_id
-                and e["payload"]["result"].get("status") == "completed" for e in recent)
+                and e["payload"]["result"].get("status") in DELIVERED_STATUSES for e in recent)
             related = None
             if action_id and intent:
                 given = intent["payload"]["input"]
@@ -813,7 +822,7 @@ class StructuredPlayers:
             self.status(run_id, player_id, "waiting_action", "Waiting for the game to acknowledge the action outcome.", generation, action_id=self.pending[key], wait_until=deadline)
             return True
         if result.get("status") == "completed":
-            result["effect"] = action_effect((ps.get("pending_action") or {}).get("before"), observation)
+            settle_effect(result, (ps.get("pending_action") or {}).get("before"), observation)
         self.store.event(run_id, "structured_action_outcome", {"player_id": player_id, "result": result})
         if result.get("status", "unknown") == "unknown":
             self.status(run_id, player_id, "error", "The last action outcome is unknown; input is held for review.", generation, action_id=self.pending[key])
@@ -961,7 +970,9 @@ class StructuredPlayers:
                     timing["outcome"] = "startup_retry"
                     return
                 self.status(run_id, player_id, "error", reason, generation, last_error=reason, error_at=time.time())
-                self.store.event(run_id, "agent_turn_failed", {"player_id": player_id, "category": "structured_interface_failure", "error": reason})
+                trace = "".join(traceback.format_exception(exc)[-4:])[-1500:]
+                self.store.event(run_id, "agent_turn_failed", {"player_id": player_id, "category": "structured_interface_failure", "error": reason, "traceback": trace})
+                await self.report_crash(run_id, player_id, "agent_turn_failure", "structured_interface_failure", f"{reason}\n{trace}")
                 await self.coordinator.investigate(run_id, "structured_interface_failure", reason, [player_id])
         finally:
             self._record_turn_timing(run_id, player_id, timing, started, store_before)

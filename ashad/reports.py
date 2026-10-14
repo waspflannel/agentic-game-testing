@@ -134,7 +134,7 @@ def generate_report(store, run_id):
         index.append({"part": name, "first": first, "last": after})
     index_record = {"run_id": run_id, "ledger": "ledger.jsonl", "entries": count, "appendix": index, "incidents": incidents, "evidence": run.get("evidence", []), "retained_files": run.get("retained_files", []), "gaps": run.get("limitations", []), "status": run.get("evidence_status", "unknown")}
     (directory / "evidence-index.json").write_text(json.dumps(index_record, indent=2), encoding="utf-8")
-    (directory / "run.json").write_text(json.dumps(run, indent=2, ensure_ascii=False), encoding="utf-8")
+    (directory / "run.json").write_text(json.dumps({**run, "game_controls": store.get("run_game_controls", run_id) or run.get("game_controls")}, indent=2, ensure_ascii=False), encoding="utf-8")
     report = "\n".join(lines) + "\n"
     temporary = directory / "report.tmp"
     temporary.write_text(report, encoding="utf-8")

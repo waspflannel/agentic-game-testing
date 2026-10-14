@@ -82,9 +82,10 @@ def repeated_failures(events):
     failures = {}
     for event in events:
         result = event["payload"].get("result") or {}
-        action = intents.get(result.get("action_id"))
+        action_id = event["payload"].get("action_id") or result.get("action_id")
+        action = intents.get(action_id)
         if event["kind"] in {"action_result", "structured_action_outcome"} and action and result.get("status") in FAILED_STATUSES:
-            failures[result["action_id"]] = (action, str(result.get("reason") or result["status"])[:200])
+            failures[action_id] = (action, str(result.get("reason") or result["status"])[:200])
     grouped = {}
     for action, reason in failures.values():
         fingerprint = json.dumps([action.get("verb"), action.get("target_id", ""), action.get("parameters") or {}], sort_keys=True)
@@ -277,6 +278,8 @@ class StructuredPlayers:
             if latest["players"][player_id]["generation"] == generation:
                 latest["players"][player_id]["invalid_actions"] = latest["players"][player_id].get("invalid_actions", 0) + 1
                 self.store.put("runs", latest)
+            if await self._pause_if_stalled(run_id, player_id, generation, payload["verb"], observation, result):
+                return result
             self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
             self.status(run_id, player_id, "action_failed", str(result.get("reason") or result.get("status")), generation, action_id=action_id)
         return result
@@ -542,6 +545,18 @@ class StructuredPlayers:
         self.movement_stalls.pop(key, None)
         return True
 
+    async def _pause_if_stalled(self, run_id, player_id, generation, verb, observation, result):
+        """Pause for review when a failed move leaves the player stalled; True when paused."""
+        if verb != "move_to" or not self._movement_stalled((run_id, player_id), generation, observation):
+            return False
+        position = observation["state"]["player"]["position"]
+        reason = (f"The character has not moved from {position} after "
+                  f"{MOVEMENT_STALL_LIMIT} failed moves; game input is not reaching it. "
+                  f"Last result: {result.get('reason') or result.get('status')}")
+        self.status(run_id, player_id, "error", reason, generation, last_error=reason, error_at=time.time())
+        await self.coordinator.investigate(run_id, "movement_unavailable", reason, [player_id])
+        return True
+
     def decision_context(self, run, player, observation):
         ps = run["players"][player["id"]]
         recent = self.store.events(run["id"], after=max(0, self.store.count_events(run["id"])-120), limit=120)
@@ -687,13 +702,7 @@ class StructuredPlayers:
         self.clear_pending(run_id, player_id, generation)
         self.last_decisions.pop(key, None)
         if result.get("status") in FAILED_STATUSES:
-            if verb == "move_to" and self._movement_stalled(key, generation, observation):
-                position = observation["state"]["player"]["position"]
-                reason = (f"The character has not moved from {position} after "
-                          f"{MOVEMENT_STALL_LIMIT} failed moves; game input is not reaching it. "
-                          f"Last result: {result.get('reason') or result.get('status')}")
-                self.status(run_id, player_id, "error", reason, generation, last_error=reason, error_at=time.time())
-                await self.coordinator.investigate(run_id, "movement_unavailable", reason, [player_id])
+            if await self._pause_if_stalled(run_id, player_id, generation, verb, observation, result):
                 return True
             self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
         return False

@@ -2,7 +2,7 @@
 import { esc, icon, href, dropdownHTML, since, humanize, runGoal, runTime } from '../core.js';
 import { evidenceListHTML } from './goals.js';
 
-export const ISSUE_TYPES = [['unsupported_action', 'Unsupported action', 'Unsupported actions'], ['crash', 'Crash', 'Crashes'], ['game_bug', 'Game bug', 'Game bugs'], ['planner_rejected', 'Planner rejection', 'Planner rejections'], ['false_completion', 'False completion', 'False completions']];
+export const ISSUE_TYPES = [['unsupported_action', 'Unsupported action', 'Unsupported actions'], ['crash', 'Crash', 'Crashes'], ['game_bug', 'Game bug', 'Game bugs'], ['planner_rejected', 'Planner rejection', 'Planner rejections'], ['false_completion', 'False completion', 'False completions'], ['capability_gap', 'MCP or game needs updating', 'MCP or game needs updating']];
 export const typeLabel = type => ISSUE_TYPES.find(([t]) => t === type)?.[1] || humanize(type);
 export const statusWord = status => ({ open: 'Open', closed: 'Closed' })[status] || humanize(status);
 
@@ -62,7 +62,7 @@ export function boardRegions(m, board, now = Date.now() / 1000) {
     const count = total === rows.length ? `${rows.length}` : `${rows.length} · ${total} times`;
     return `<section class="issue-group" aria-labelledby="ig-${type}"><h2 id="ig-${type}" class="issue-group-head">${heading} <span class="issue-count">${count}</span></h2>`
       + (rows.length ? `<ol class="issue-board-list">${rows.map(r => boardRow(m, r)).join('')}</ol>`
-        : `<p class="hint">${m.runFilter ? 'None in this instance.' : `No ${heading.toLowerCase()} recorded.`}</p>`) + `</section>`;
+        : `<p class="hint">${m.runFilter ? 'None in this instance.' : 'None recorded.'}</p>`) + `</section>`;
   }).join('');
   return { head, filter, groups };
 }
@@ -106,7 +106,7 @@ const SHOT_NOTES = { pending: 'Saved when the instance ends.', deleted: 'Deleted
 
 export function issueInfoHTML(issue, example, { runIds }) {
   const type = issue.type;
-  const { wanted, outcome, capabilities, crash, report, planner, claim } = example;
+  const { wanted, outcome, capabilities, crash, report, planner, claim, gap } = example;
   const intent = example.intent || {};
   const sections = [];
 
@@ -122,6 +122,8 @@ export function issueInfoHTML(issue, example, { runIds }) {
   } else if (type === 'planner_rejected') {
     happened = fields([['Goal', intent.primary_goal], ['Planning for', planner?.goal?.focus?.objective], ['Rule', planner?.reason],
       ['Attempt', planner?.attempt], ['Mode', planner?.mode], ['Source', humanize(planner?.source)]]);
+  } else if (type === 'capability_gap') {
+    happened = fields([['Goal', intent.primary_goal], ['Subgoal', gap?.subgoal?.objective], ['Cause', gap?.cause === 'game_bug' ? 'Game bug' : 'MCP gap'], ['Kind', humanize(gap?.kind)], ['Missing', gap?.missing]]);
   } else if (type === 'false_completion') {
     happened = fields([['Goal', intent.primary_goal], ["Planner's reason", claim?.reason], ['Your note', claim?.operator_note],
       ['Verified goals', (claim?.verified_goals || []).map(g => g.objective)]]);
@@ -161,6 +163,7 @@ export function issueInfoHTML(issue, example, { runIds }) {
       + (report?.related_action ? json('Related action', report.related_action) : '')));
   }
   if (type === 'planner_rejected') sections.push(section('Rejected proposal', planner?.proposal ? json('Proposal', planner.proposal) : '<p class="hint">The proposal was trimmed from this example.</p>'));
+  if (type === 'capability_gap') sections.push(section('Tried', gap?.tried?.length ? json('Tried', gap.tried) : '<p class="hint">Nothing was tried.</p>'));
   if (type === 'false_completion') sections.push(section('Claimed evidence', evidenceListHTML(claim?.evidence)));
 
   const ev = example.evidence || {};

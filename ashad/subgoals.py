@@ -1,4 +1,4 @@
-"""Instance-owned backward planning. Model proposals are not completion evidence."""
+"""Instance-owned backward planning. Proposals are accepted unless they contradict observed state; only check_completion verifies success."""
 from __future__ import annotations
 
 import copy
@@ -14,18 +14,15 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 # ponytail: retain at most 64 goals; archive verified branches if live objectives outgrow this ceiling.
 MAX_GOALS = 64
 MAX_DEPTH = 8
-ACTION_REVIEW_INTERVAL = 8
-MAX_UNPRODUCTIVE_REVIEWS = 3
+STUCK_ACTIONS = 6
+STUCK_PLANS = 2
+STUCK_REPEATS = 2
 MAX_OBSERVATION_AGE = 5
 
 
 def stale(stamp, now=None):
     """One freshness rule. Callers pass controller receipt time when they have it; game clocks may be skewed."""
     return type(stamp) not in (int, float) or not math.isfinite(stamp) or (now or time.time()) - stamp > MAX_OBSERVATION_AGE
-
-
-def numbers(text):
-    return {int(n) for n in re.findall(r"\b[1-9][0-9]*\b", text)}
 
 
 class Contract(BaseModel):
@@ -220,30 +217,33 @@ def _matching_sibling(path, quote, observation):
     return None
 
 
-def grounded_evidence(references, context, location="evidence"):
+def check_evidence(references, context, warnings, location="evidence"):
     excerpts = []
     for index, ref in enumerate(references):
         if ref["source"] == "observation":
             try:
                 value = pointer(context["observation"], ref["path"])
             except ValueError as exc:
-                raise ValueError(f"{exc} (at {location}.{index}.path)") from exc
+                warnings.append(f"{exc} (at {location}.{index}.path)")
+                continue
             key = ref["path"].rsplit("/", 1)[-1]
         else:
             if ref["path"]:
-                raise ValueError(f"Only observation evidence accepts a path (at {location}.{index}.path)")
+                warnings.append(f"Only observation evidence accepts a path (at {location}.{index}.path)")
+                continue
             value = context["game_controls"] if ref["source"] == "controls" else context["goal"]
             key = ""
         quote = normalised(ref["quote"])
         if not quote_matches(quote, value, key):
             repaired = _matching_sibling(ref["path"], quote, context["observation"]) if ref["source"] == "observation" else None
             if repaired is None:
-                raise ValueError(f"Planner evidence quote does not occur in its cited source (at {location}.{index}.quote)")
+                warnings.append(f"Planner evidence quote does not occur in its cited source (at {location}.{index}.quote)")
+                continue
             ref["path"], value = repaired
         text = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
         excerpts.append(text)
     if not any(ref["source"] == "observation" for ref in references):
-        raise ValueError(f"Every proposed goal needs a current observation reference (at {location})")
+        warnings.append(f"Every proposed goal needs a current observation reference (at {location})")
     return "\n".join(excerpts)
 
 
@@ -259,43 +259,15 @@ def explicit_quantities(objective, condition):
     return found
 
 
-def validate_quantity(condition, references, context, objective, parent):
+def validate_quantity(condition, context, objective, parent):
     if condition["kind"] not in {"inventory_quantity", "observed_count"}:
         return
     quantity, target = condition["quantity"], condition["target"]
     explicit = explicit_quantities(objective, condition)
     if explicit and quantity < max(explicit):
         raise ValueError("Completion threshold is below the goal's explicit quantity")
-    supported = {1} | numbers(context["goal"])
-    if parent and parent["kind"] in {"inventory_quantity", "observed_count"}:
-        supported.add(parent["quantity"])
-    recipes = []
-    def collect(value):
-        if isinstance(value, list):
-            for item in value:
-                collect(item)
-        elif isinstance(value, dict):
-            if "ingredients" in value and "output" in value:
-                recipes.append(value)
-            if target and (value.get("item_id") == target or value.get("output") == target):
-                count = value.get("count")
-                if type(count) is int and count > 0:
-                    supported.add(count)
-            for key, item in value.items():
-                if key in {"description", "requirements"} and isinstance(item, str):
-                    supported.update(numbers(item))
-                elif isinstance(item, (dict, list)):
-                    collect(item)
-    for ref in references:
-        if ref["source"] == "observation":
-            value = pointer(context["observation"], ref["path"])
-            collect(value)
-            if isinstance(value, str):
-                supported.update(numbers(value))
-            elif ref["path"].endswith("/count") and type(value) is int and value > 0:
-                supported.add(value)
-        supported.update(numbers(ref["quote"]))
     # Scale a cited recipe's ingredient requirement to its parent's still-missing output.
+    recipes = [r for r in records(context["observation"], "recipes") or [] if isinstance(r, dict) and "ingredients" in r and "output" in r]
     if target and parent and parent["kind"] == "inventory_quantity":
         _, held = check_completion(parent, context["observation"])
         required_quantities = []
@@ -310,16 +282,13 @@ def validate_quantity(condition, references, context, objective, parent):
                     continue
                 count = ingredient.get("count")
                 if ingredient.get("item_id") == target and type(count) is int and count > 0:
-                    supported.add(batches * count)
                     required_quantities.append(batches * count)
         if required_quantities and quantity < min(required_quantities):
             raise ValueError("Ingredient goal is below the cited recipe's requirement for its parent")
-    if quantity not in supported:
-        raise ValueError("Completion quantity lacks cited requirement, recipe, parent, or primary-objective support")
 
 
-def validate_condition(condition, references, context, previous=None, *, objective="", parent=None, location="evidence"):
-    text = grounded_evidence(references, context, location)
+def validate_condition(condition, references, context, warnings, previous=None, *, objective="", parent=None, location="evidence"):
+    text = check_evidence(references, context, warnings, location)
     # Do not let a revision quietly lower ten wheat to one, or replace a quest with a button click.
     if previous and previous["kind"] != "unknown":
         old_check = json.dumps({k: v for k, v in previous.items() if k != "description"}, sort_keys=True)
@@ -329,10 +298,10 @@ def validate_condition(condition, references, context, previous=None, *, objecti
         return
     if condition["kind"] == "world_ready" and context["observation"].get("ready") is True:
         raise ValueError("World readiness is only a setup goal while the world is not yet ready")
-    validate_quantity(condition, references, context, objective, parent)
+    validate_quantity(condition, context, objective, parent)
     target = condition.get("target")
     if target and target not in text:
-        raise ValueError("Completion target is not supported by the cited evidence")
+        warnings.append(f"Completion target '{target}' is not in the cited evidence (at {location})")
     if condition["kind"] == "quest_completed":
         state = context["observation"].get("state", {})
         known = {q.get("id") for q in state.get("objectives", [])} | set(state.get("completed_quests", []))
@@ -340,8 +309,8 @@ def validate_condition(condition, references, context, previous=None, *, objecti
             raise ValueError("A quest completion target must have been observed, not invented from a walkthrough")
     for match in condition.get("matches", []):
         value = match["value"]
-        if isinstance(value, str) and value and value not in text and not (match["field"] in {"text", "state.text"} and value in objective):
-            raise ValueError("Expected state value is not supported by the cited evidence")
+        if isinstance(value, str) and value and value not in text:
+            warnings.append(f"Expected value '{value}' is not in the cited evidence (at {location})")
 
 
 def records(observation, collection):
@@ -427,7 +396,7 @@ def select_active(plan):
         if goal["status"] == "active":
             goal["status"] = "pending"
     def descend(goal):
-        if goal["status"] == "completed":
+        if goal["status"] in {"completed", "gave_up"}:
             return None
         if goal["status"] == "blocked":
             return goal
@@ -468,12 +437,13 @@ def reconcile(plan, observation, control_generation):
     resumed = plan.get("control_generation") not in (None, control_generation)
     if rebound or resumed:
         for goal in plan["goals"]:
-            if goal["status"] != "completed" and not goal.get("retired"):
+            if goal["status"] not in {"completed", "gave_up"} and not goal.get("retired"):
                 goal.update(actionable=False, status="pending", attempts=0, reviews=0)
                 goal.pop("blocked_reason", None)
                 goal.pop("progress_high_water", None)
                 goal.pop("recent_actions", None)
                 goal.pop("repeating", None)
+                goal.pop("repeats", None)
         plan["reason"] = "Control or game binding changed; reassess from fresh observations."
     # Unloading emits an empty world ID. Keep the last actual world so A -> menu -> B cannot reuse A's proof.
     plan.update(world_id=world or previous_world, observation_generation=binding, control_generation=control_generation)
@@ -490,6 +460,7 @@ def reconcile(plan, observation, control_generation):
             goal.update(attempts=0, reviews=0, progress_at=now, progress_high_water=value)
             goal.pop("recent_actions", None)
             goal.pop("repeating", None)
+            goal.pop("repeats", None)
         goal["measured"] = value
         if done:
             goal.update(status="completed", completion_evidence={**observation_ref(observation), "value": value})
@@ -500,12 +471,14 @@ def reconcile(plan, observation, control_generation):
             ancestor.update(reviews=0, attempts=0, progress_at=now)
             ancestor.pop("recent_actions", None)
             ancestor.pop("repeating", None)
+            ancestor.pop("repeats", None)
     for goal in plan["goals"]:
         if goal["status"] != "completed" and any(g["status"] == "completed" for g in goal_path(plan, goal["id"])[:-1]):
             goal.update(retired=True, status="blocked", blocked_reason="No longer needed: the parent goal was verified directly.")
     previous_active = plan.get("active_goal_id")
-    # A claim waits for the operator; re-selecting would move the active goal away from the root.
-    selected = active_goal(plan) if plan["status"] == "goal_reached" else select_active(plan)
+    # A claim or hand-back waits for the operator; re-selecting would move the active goal away from the root.
+    waiting = plan["status"] == "goal_reached" or (plan["status"] == "handed_back" and not (rebound or resumed))
+    selected = active_goal(plan) if waiting else select_active(plan)
     if selected and selected["id"] != previous_active:
         selected["activated_at"] = now
         # A sibling may have lost its prerequisites while another goal was being pursued.
@@ -530,10 +503,20 @@ def needs_planning(plan):
     if goal.get("repeating"):
         goal["actionable"] = False
         plan["reason"] = f"Repeating the same action without progress ({goal['repeating']}); choose a different target or approach, or report the blocker."
-    if goal.get("attempts", 0) >= ACTION_REVIEW_INTERVAL:
-        goal["actionable"] = False
-        plan["reason"] = "Several actions have not verified this goal; revise prerequisites or approach."
     return not goal.get("actionable")
+
+
+def stuck(plan, needs_plan) -> str | None:
+    goal = active_goal(plan)
+    if not goal or plan["status"] != "active":
+        return None
+    if goal.get("attempts", 0) >= STUCK_ACTIONS:
+        return f"{STUCK_ACTIONS} actions without measured progress"
+    if goal.get("repeats", 0) >= STUCK_REPEATS:
+        return "The same action kept repeating without progress after a replan"
+    if needs_plan and goal.get("reviews", 0) >= STUCK_PLANS:
+        return f"{STUCK_PLANS} plans without measured progress"
+    return None
 
 
 def block(plan, reason):
@@ -541,6 +524,22 @@ def block(plan, reason):
     if goal:
         goal.update(status="blocked", actionable=False, blocked_reason=reason)
     plan.update(status="blocked", reason=reason, revision=plan["revision"] + 1)
+
+
+def give_up(plan, goal_id, reason):
+    if goal_id != plan["root_id"]:
+        given = {goal_id}
+        for goal in plan["goals"]:
+            if goal.get("parent_id") in given:
+                given.add(goal["id"])
+            if goal["id"] in given and goal["status"] != "completed" and not goal.get("retired"):
+                goal.update(status="gave_up", actionable=False, blocked_reason=reason)
+    selected = select_active(plan)
+    if selected["id"] == plan["root_id"]:
+        plan.update(status="handed_back", reason=reason)
+    else:
+        plan["reason"] = reason
+    plan["revision"] += 1
 
 
 def reopen_after_rejected_claim(plan, note):
@@ -568,8 +567,21 @@ def retire(plan, focus, decision, context):
         selected["actionable"] = False
 
 
-def apply_decision(plan, raw, context):
+def apply_decision(plan, raw, context, warnings=None):
     """Validate fully before editing a copy; callers commit only while their run is current."""
+    warnings = [] if warnings is None else warnings
+    if isinstance(raw, dict):
+        raw = copy.deepcopy(raw)
+        mode = raw.get("mode")
+        if mode == "expand" and not raw.get("subgoals") and raw.get("goal_id") != plan["root_id"]:
+            raw["mode"] = "act"
+            warnings.append("expand without subgoals applied as act")
+        if mode == "act" and raw.get("subgoals"):
+            raw["mode"] = "expand"
+            warnings.append("act with subgoals applied as expand")
+        if mode in {"blocked", "retire", "complete"} and raw.get("subgoals"):
+            raw["subgoals"] = []
+            warnings.append(f"{mode} subgoals dropped")
     decision = PlanningDecision.model_validate(raw).model_dump()
     result = copy.deepcopy(plan)
     focus = active_goal(result)
@@ -583,7 +595,7 @@ def apply_decision(plan, raw, context):
     if decision["mode"] == "complete":
         if focus["id"] != result["root_id"]:
             raise ValueError("Only the primary objective can be claimed complete; use act or retire for other goals")
-        grounded_evidence(decision["evidence"], context)
+        check_evidence(decision["evidence"], context, warnings)
         verified = [g["id"] for g in result["goals"] if g.get("parent_id") == focus["id"]
                     and not g.get("retired") and g["status"] == "completed"]
         if not verified:
@@ -597,7 +609,7 @@ def apply_decision(plan, raw, context):
         return result
     if decision["mode"] == "retire":
         # Retirement is not success: keep the original predicate and evidence intact.
-        grounded_evidence(decision["evidence"], context)
+        check_evidence(decision["evidence"], context, warnings)
         if any(decision["completion"][k] != focus["completion"][k] for k in ("kind", "target", "quantity", "collection", "matches")):
             raise ValueError("Retirement must preserve the original completion condition")
         result.update(reason=decision["reason"], revision=result["revision"] + 1)
@@ -605,11 +617,8 @@ def apply_decision(plan, raw, context):
         return result
     ancestors = goal_path(result)
     parent_condition = ancestors[-2]["completion"] if len(ancestors) > 1 else None
-    validate_condition(decision["completion"], decision["evidence"], context, focus["completion"],
+    validate_condition(decision["completion"], decision["evidence"], context, warnings, focus["completion"],
                        objective=focus["objective"], parent=parent_condition)
-    if (focus["completion"]["kind"] == "unknown" and decision["completion"]["kind"] != "unknown"
-            and check_completion(decision["completion"], context["observation"])[0]):
-        raise ValueError("New completion condition is already met in the current observation; retire the goal if its work is already done")
     # Discovery and expansion are atomic: child quantities depend on this newly validated condition.
     focus["completion"] = decision["completion"]
     if len(result["goals"]) + len(decision["subgoals"]) > MAX_GOALS:
@@ -623,11 +632,9 @@ def apply_decision(plan, raw, context):
             raise ValueError(f"Goal decomposition is too deep; choose an executable goal or report the blocker (at subgoals.{index})")
         if proposed["objective"].strip().casefold() in {g["objective"].strip().casefold() for g in ancestors}:
             raise ValueError(f"Recursive goal repeats an ancestor instead of making progress (at subgoals.{index})")
-        validate_condition(proposed["completion"], proposed["evidence"], context,
+        validate_condition(proposed["completion"], proposed["evidence"], context, warnings,
                            objective=proposed["objective"], parent=parent["completion"],
                            location=f"subgoals.{index}.evidence")
-        if proposed["completion"]["kind"] != "unknown" and check_completion(proposed["completion"], context["observation"])[0]:
-            raise ValueError(f"Proposed subgoal is already met in the current observation; leave it out (at subgoals.{index}.completion)")
         goal = {"id": f"goal-{result['revision'] + 1}-{index}", "parent_id": parent["id"],
                 "objective": proposed["objective"], "completion": proposed["completion"],
                 "evidence": proposed["evidence"], "source_observation": observation_ref(context["observation"]),
@@ -640,15 +647,8 @@ def apply_decision(plan, raw, context):
     focus.pop("recent_actions", None)
     focus.pop("repeating", None)
     result.update(reason=decision["reason"], revision=result["revision"] + 1)
-    if decision["mode"] == "blocked" and focus["id"] != result["root_id"]:
-        # Ask the parent before the operator: it replans with this reason; only a blocked root pauses the run.
-        # Parent review caps bound repeated skips.
-        result["reason"] = f"Skipped blocked goal \"{focus['objective']}\": {decision['reason']}"
-        retire(result, focus, {**decision, "reason": result["reason"]}, context)
-    elif decision["mode"] == "blocked":
-        block(result, decision["reason"])
-    elif focus["reviews"] > MAX_UNPRODUCTIVE_REVIEWS:
-        block(result, "Repeated planning has not produced observable progress. " + decision["reason"])
+    if decision["mode"] == "blocked":
+        give_up(result, focus["id"], decision["reason"])
     else:
         select_active(result)
     return result
@@ -690,6 +690,8 @@ def record_action(plan, action=None):
     alternating = (len(fingerprints) == 4 and fingerprints[0] == fingerprints[2]
                    and fingerprints[1] == fingerprints[3] and fingerprints[0] != fingerprints[1])
     if same or alternating:
+        if not goal.get("repeating"):
+            goal["repeats"] = goal.get("repeats", 0) + 1
         goal["repeating"] = label
 
 

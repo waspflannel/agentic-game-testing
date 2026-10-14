@@ -216,6 +216,13 @@ def _action_status(payload):
     return "unknown"
 
 
+def _usage_known(usage):
+    """Mirrors usage.js rowTokens: total_tokens, or both input and output tokens."""
+    usage = usage if isinstance(usage, dict) else {}
+    number = lambda value: type(value) in (int, float)
+    return number(usage.get("total_tokens")) or (number(usage.get("input_tokens")) and number(usage.get("output_tokens")))
+
+
 def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
     decided = sum(1 for row in timings if row.get("outcome") == "decided")
     player = [event["payload"] for event in events if event["kind"] == "provider_request_finished" and event["payload"].get("purpose") == "player"]
@@ -238,6 +245,8 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
             "model_calls_per_decided_turn": _ratio(len(player), decided),
             "model_seconds_per_decided_turn": _ratio(player_seconds, decided),
             "max_concurrent": calls["max_concurrent"],
+            "fallbacks": dict(Counter(event["payload"]["fallback"] for event in events if event["kind"] == "decision_selected" and event["payload"].get("fallback"))),
+            "usage_missing": sum(1 for event in events if event["kind"] == "inference_usage" and not _usage_known(event["payload"].get("usage"))),
         },
         "observation_payloads": {
             "observation": _ends(_present(timings, "bytes", "observation")),
@@ -259,6 +268,7 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
             "rejected_events": sum(1 for event in events if event["kind"] == "subgoal_plan_rejected"),
             "plan_seconds_share": _ratio(plan_seconds, turn_total),
             "action_results": action_results,
+            "action_outcomes": dict(Counter((event["payload"].get("result") or {}).get("status", "unknown") for event in events if event["kind"] == "structured_action_outcome")),
             "turn_failures": sum(1 for event in events if event["kind"] == "agent_turn_failed"),
         },
         "polling_waits": {

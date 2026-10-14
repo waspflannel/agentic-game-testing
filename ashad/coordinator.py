@@ -179,6 +179,7 @@ class Coordinator:
         db.execute("DELETE FROM commands WHERE scope='launch' AND json_extract(result,'$.run_id')=?", (rid,))
         db.execute("DELETE FROM events WHERE run_id=?", (rid,))
         db.execute("DELETE FROM records WHERE kind IN ('incidents','repair_task_exports','observations') AND json_extract(data,'$.run_id')=?", (rid,))
+        db.execute("DELETE FROM records WHERE kind='run_game_controls' AND id=?", (rid,))
         db.execute("DELETE FROM records WHERE kind='runs' AND id=?", (rid,))
         scenario_id = run.get("scenario_id")
         if scenario_id and not db.execute("SELECT 1 FROM records WHERE kind='runs' AND json_extract(data,'$.scenario_id')=? LIMIT 1",
@@ -381,7 +382,7 @@ class Coordinator:
             run = {"id": run_id, "session_id": run_id, "scenario_id": scenario_id, "scenario_revision": revision, "state": "Queued", "created_at": time.time(), "plan": copy.deepcopy(plan), "build": copy.deepcopy(build), "players": players, "events": {e["id"]: {"status": "pending", "attempts": 0} for e in plan["events"]}, "model": plan["model"], "controller_version": CONTROLLER_VERSION, "world_namespace": run_id, "progress": {"completed_quests": [], "handler": None, "disagreement": [], "world_simulating": "unknown"}, "starting_milestones": [], "investigation_deadline": None, "goal_complete": False, "demo_complete": False, "validity": "unknown", "evidence_status": "collecting", "limitations": [], "interventions": [], "evidence": [], "launch_record": {"explicit": True, "timestamp": time.time(), "scenario_revision": revision, "idempotency_key": idempotency_key}}
             run["approved_plan"] = copy.deepcopy(plan)
             if record:
-                run.update(configuration_id=record["id"], configuration=copy.deepcopy(record), game_controls=copy.deepcopy(controls))
+                run.update(configuration_id=record["id"], configuration=copy.deepcopy(record))
                 if len(plan["players"]) == 1:
                     run["subgoal_plan"] = new_plan(plan["players"][0]["goal"], plan["players"][0]["id"], run_id)
             run.update(api=PROVIDERS[provider_of(plan["model"])]["pricing"]["api"], billing="subscription")
@@ -395,6 +396,8 @@ class Coordinator:
                 db.execute("INSERT INTO leases VALUES (?,?,?)", ("instance", "global", run_id))
                 self.save_run(run)
                 self.store.command("launch", idempotency_key, {"run_id": run_id})
+            if controls:
+                self.store.put("run_game_controls", {"id": run_id, **copy.deepcopy(controls)})
             self.store.event(run_id, "launch_approved", {"scenario_id": scenario_id, "revision": revision, "plan": plan, "identities": {k: v["identity"] for k, v in players.items()}})
             generate_report(self.store, run_id)
             return run
@@ -537,6 +540,7 @@ class Coordinator:
     async def tick(self, run):
         tick_started = time.perf_counter()
         now = time.time()
+        monotonic_started = time.monotonic()
         if run["state"] == "Stopping":
             # A control command may have cancelled a tick-owned finish after it persisted Stopping.
             owner = self.finishing.get(run["id"])
@@ -559,9 +563,13 @@ class Coordinator:
             except Exception as exc:
                 self.save_run(run)
                 reason = f"{player['name']} while {exc.monitoring_step}: {type(exc).__name__}: {exc}"
+                suspended = (time.time() - now) - (time.monotonic() - monotonic_started)
+                if suspended > 30:
+                    self.store.event(run["id"], "host_suspended", {"player_id": player["id"], "seconds": round(suspended)})
+                    reason = f"{player['name']}: the host was suspended for {round(suspended)} s; the worker paused its inputs ({type(exc).__name__}: {exc})"
                 await self.investigate(run["id"], "infrastructure_failure", reason, players=[player["id"]])
                 # Report after investigate: its input hold bumps the generation once, so later ticks dedupe on the new one.
-                if crash := crash_of(exc, ps.get("worker_status") or {}):
+                if suspended <= 30 and (crash := crash_of(exc, ps.get("worker_status") or {})):
                     await self.structured.report_crash(run["id"], player["id"], *crash, reason)
                 return
         host = next(p for p in run["plan"]["players"] if p["role"] == "host")
@@ -596,7 +604,17 @@ class Coordinator:
         """Heartbeat, status, build pin, telemetry and readiness for one launched player; failures carry the step they hit."""
         monitoring_step = "sending worker heartbeat"
         try:
-            await self.request(ps["worker_id"], "POST", "/heartbeat", {"epoch": ps["epoch"], "deadline": run.get("investigation_deadline")})
+            heartbeat = {"epoch": ps["epoch"], "deadline": run.get("investigation_deadline")}
+            try:
+                await self.request(ps["worker_id"], "POST", "/heartbeat", heartbeat)
+            except WorkerError as exc:
+                if exc.status_code is not None:
+                    raise
+                key = (run["id"], player["id"])
+                agent = ps.get("agent_status") or {}
+                self.store.event(run["id"], "worker_heartbeat_retry", {"player_id": player["id"], "error": f"{type(exc).__name__}: {exc}", "agent_phase": agent.get("phase"), "agent_detail": agent.get("detail"), "turn_running": key in self.tasks and not self.tasks[key].done()})
+                await asyncio.sleep(1)
+                await self.request(ps["worker_id"], "POST", "/heartbeat", heartbeat)
             monitoring_step = "reading worker status"
             status = await self.request(ps["worker_id"], "GET", "/status")
             ps["worker_status"] = status

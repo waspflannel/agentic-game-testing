@@ -94,7 +94,8 @@ def issue_title(issue_type, basis):
     if issue_type == "false_completion":
         return f"False completion: the planner claimed “{basis['primary_goal']}” was reached"
     if issue_type == "capability_gap":
-        return f"MCP or game needs updating ({'game bug' if basis['cause'] == 'game_bug' else 'MCP gap'}): {basis['missing']} while working on “{basis['focus_objective']}”"
+        label = {"game_bug": "game bug", "mcp_gap": "MCP gap", "planner_gap": "planner gap"}[basis["cause"]]
+        return f"MCP or game needs updating ({label}): {basis['missing']} while working on “{basis['focus_objective']}”"
     if issue_type == "planner_rejected":
         return f"Planner rejected: {basis['reason']} while planning “{basis['focus_objective']}”"
     verb = basis["verb"] if basis["verb"] not in (None, "other") else "perform an action this interface does not offer"

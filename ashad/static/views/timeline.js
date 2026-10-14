@@ -48,7 +48,11 @@ const FILTER_KINDS = { actions: ['selected', 'sent', 'outcome', 'tool'], plan: [
 export const SELECTED_LABEL = 'selected, not yet sent';
 export function outcomeLabel(result) {
   const status = result?.status || 'unknown';
-  if (status === 'completed') return { tone: 'live', text: 'Effect confirmed' };
+  if (status === 'completed') {
+    if (result.effect === 'changed') return { tone: 'live', text: 'Input delivered · game state changed' };
+    if (result.effect === 'no_effect') return { tone: 'attention', text: 'Input delivered · no visible effect' };
+    return { tone: 'muted', text: 'Input delivered · effect not confirmed' };
+  }
   if (status === 'accepted' || status === 'running') return { tone: 'muted', text: 'Input delivered · effect not confirmed' };
   if (['failed', 'rejected', 'expired', 'cancelled'].includes(status)) {
     const reason = result.reason || result.error || result.message;

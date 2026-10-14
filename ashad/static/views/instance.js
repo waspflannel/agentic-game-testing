@@ -9,7 +9,7 @@ export const isActiveRun = run => run?.state === 'Queued' || LIVE_STATES.has(run
 export const playerIds = run => Object.keys(run?.players || {});
 
 // The four views of one instance. Status and controls stay outside them.
-export const THREAD_TABS = [['bot', 'Bot view', 'monitor'], ['goals', 'Goals', 'list-checks'], ['world', 'World state', 'eye'], ['actions', 'Actions', 'send']];
+export const THREAD_TABS = [['bot', 'Bot view', 'monitor'], ['goals', 'Goals', 'list-checks'], ['issues', 'Issues', 'flag'], ['world', 'World state', 'eye'], ['actions', 'Actions', 'send']];
 // An ended run has no camera, so it opens on its record.
 export const defaultTab = run => (isActiveRun(run) ? 'bot' : 'actions');
 
@@ -148,8 +148,8 @@ export const threadSkeleton = () => `<div class="thread">`
   + panel('bot', `<div data-region="players"></div><div class="camera"><div class="camera-media" data-camera></div><div class="camera-overlay" data-region="overlay"></div></div>`)
   + panel('goals', `<div class="insp-body" data-region="goals"></div>`)
   + panel('world', `<div class="insp-body" data-region="world"></div>`)
-  + panel('actions', `<details class="insp-section" open><summary class="insp-head">${icon('chevron-right', 'icon chevron')}<span data-region="issues-head">Issues</span></summary><div class="insp-body" data-region="issues"></div></details>`
-    + `<details class="insp-section"><summary class="insp-head">${icon('chevron-right', 'icon chevron')}Model usage</summary><div class="insp-body" data-region="usage"></div></details>`
+  + panel('issues', `<h2 class="section-title" data-region="issues-head">Issues</h2><div class="insp-body" data-region="issues"></div>`)
+  + panel('actions', `<details class="insp-section"><summary class="insp-head">${icon('chevron-right', 'icon chevron')}Model usage</summary><div class="insp-body" data-region="usage"></div></details>`
     + `<section class="activity" aria-labelledby="activity-heading"><div class="activity-head"><h2 id="activity-heading" class="section-title">Activity</h2><div class="tl-tools" data-region="tl-tools"></div></div>`
     + `<div class="tl-top" data-region="tl-top"></div><div class="tl-pill-wrap" data-region="tl-pill"></div><ol class="timeline" data-timeline></ol><div class="tl-foot" data-region="tl-foot"></div></section>`)
   + `</div></div>`;

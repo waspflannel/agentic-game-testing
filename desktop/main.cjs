@@ -265,7 +265,7 @@ function createWindow() {
   window = new BrowserWindow({ width: 1440, height: 960, minWidth: 800, minHeight: 600, title: 'ASHAD', show: false,
     backgroundColor: '#141414', titleBarStyle: 'hidden', titleBarOverlay: { color: '#1a1a1a', symbolColor: '#a8a8a8', height: 40 },
     webPreferences: { session: applicationSession, preload: path.join(__dirname, 'preload.cjs'),
-      contextIsolation: true, sandbox: true, nodeIntegration: false, webviewTag: false },
+      contextIsolation: true, sandbox: true, nodeIntegration: false, webviewTag: false, backgroundThrottling: false },
   });
   window.on('ready-to-show', () => window.show());
   window.on('close', event => { if (!quitApproved) { event.preventDefault(); void requestQuit(); } });

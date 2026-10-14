@@ -123,7 +123,7 @@ export function issueInfoHTML(issue, example, { runIds }) {
     happened = fields([['Goal', intent.primary_goal], ['Planning for', planner?.goal?.focus?.objective], ['Rule', planner?.reason],
       ['Attempt', planner?.attempt], ['Mode', planner?.mode], ['Source', humanize(planner?.source)]]);
   } else if (type === 'capability_gap') {
-    happened = fields([['Goal', intent.primary_goal], ['Subgoal', gap?.subgoal?.objective], ['Cause', gap?.cause === 'game_bug' ? 'Game bug' : 'MCP gap'], ['Kind', humanize(gap?.kind)], ['Missing', gap?.missing]]);
+    happened = fields([['Goal', intent.primary_goal], ['Subgoal', gap?.subgoal?.objective], ['Cause', { game_bug: 'Game bug', mcp_gap: 'MCP gap', planner_gap: 'Planner gap' }[gap?.cause] || 'Unknown'], ['Kind', humanize(gap?.kind)], ['Missing', gap?.missing]]);
   } else if (type === 'false_completion') {
     happened = fields([['Goal', intent.primary_goal], ["Planner's reason", claim?.reason], ['Your note', claim?.operator_note],
       ['Verified goals', (claim?.verified_goals || []).map(g => g.objective)]]);

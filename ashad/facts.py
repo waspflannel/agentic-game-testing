@@ -17,6 +17,7 @@ FACTS = {
     "delivered_to": (("target", "item_id"), "int"),
 }
 ZERO_DEFAULT = {"item_count", "delivered_to", "crops_planted", "crops_harvestable"}
+PLANT_FACTS = ("crops_planted", "crops_harvestable", "crop_growth_stage_min")
 BRIDGE_SCHEMA = 2
 
 
@@ -77,8 +78,8 @@ def catalog(observation, item_ids):
     delivered = current.get("delivered_to", {})
     ids = {
         "item_id": sorted(set(item_ids) | set(current.get("item_count", {})) | {i for items in delivered.values() for i in items}),
-        "quest_id": list(current.get("quest_completed", {})),
-        "plant_id": list(current.get("crops_planted", {})),
+        "quest_id": sorted(set(current.get("quest_completed", {})) | set(current.get("quest_requirement_progress", {}))),
+        "plant_id": sorted({p for fact in PLANT_FACTS for p in current.get(fact, {})}),
         "target": list(delivered),
         "index": "integer index into the quest's requirements",
     }

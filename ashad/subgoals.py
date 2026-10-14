@@ -220,7 +220,8 @@ def reconcile(plan, observation, control_generation):
             goal.pop("recent_actions", None)
             goal.pop("repeating", None)
             goal.pop("repeats", None)
-        goal["measured"] = value
+        if value is not None:  # A loading screen reads nothing; keep the last value so progress is not erased.
+            goal["measured"] = value
         if done:
             goal.update(status="completed", completion_evidence={**observation_ref(observation), "value": value})
             goal.pop("blocked_reason", None)

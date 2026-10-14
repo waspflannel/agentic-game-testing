@@ -24,7 +24,8 @@ ISSUE_PREFIXES = {"unsupported_action": "uae_", "crash": "crash_", "game_bug": "
 PLAN_TRIGGERS = (("The last action failed", "action_failed"), ("Several actions have not verified", "review_interval"),
                  ("Observed objectives or recipes changed", "knowledge_changed"), ("Control or game binding changed", "rebound"),
                  ("No supported direct action fits", "needs_instructions"), ("The game state did not change across", "loop_backstop"),
-                 ("You said the primary goal is not done", "completion_rejected"))
+                 ("You said the primary goal is not done", "completion_rejected"),
+                 ("Repeating the same action", "action_repeat"))
 
 
 def meaningful_signature(observation):
@@ -209,6 +210,7 @@ class StructuredPlayers:
             previous = await self.call_game(run_id, player_id, "get_action_status", {"action_id": self.pending[key]})
             if previous.get("status", "unknown") in {"unknown", "running", "accepted"}:
                 return {"status": "rejected", "reason": "Reconcile pending action first", "previous": previous}
+            self.store.event(run_id, "structured_action_outcome", {"player_id": player_id, "result": previous})
             self.pending.pop(key, None)
             run, ps = self.binding(run_id, player_id)
             if run["state"] not in {"Starting", "Running"} or ps["generation"] != generation or self.control_owners.get(key, "agent") != owner:
@@ -224,7 +226,7 @@ class StructuredPlayers:
         self.pending[key] = action_id
         ps["pending_action"] = {"action_id": action_id, "expires_at": payload["expires_at"]}
         if owner == "agent" and run.get("subgoal_plan", {}).get("player_id") == player_id:
-            subgoals.record_action(run["subgoal_plan"])
+            subgoals.record_action(run["subgoal_plan"], payload)
         self.store.put("runs", run)
         self.status(run_id, player_id, "acting", str(args.get("reason") or f"Performing {args['verb']}"), generation, action_id=action_id)
         self.last_decisions.pop(key, None)
@@ -584,7 +586,7 @@ class StructuredPlayers:
                 self.store.event(run_id, "subgoal_plan_rejected", {"player_id": player_id, "reason": reason, "attempt": attempt + 1,
                                  "goal_id": focus["id"], "objective": focus["objective"], "revision": revision, "proposal": proposal})
                 with timed(timing, "plan_rejection_report"):
-                    await self.report_planner_rejection(run_id, player_id, "turn_planning", latest_plan, proposal, reason, attempt + 1, fresh)
+                    await self.report_planner_rejection(run_id, player_id, "turn_planning", latest_plan, proposal, reason, attempt + 1, context["observation"])
                 if attempt:
                     message = f"The planner proposed a plan for “{focus['objective']}” that ASHAD could not verify: {reason}"
                     self.status(run_id, player_id, "error", message, generation, last_error=message, error_at=time.time())

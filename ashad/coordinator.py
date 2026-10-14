@@ -247,7 +247,7 @@ class Coordinator:
             "coordinator_restarted": "Review the current game state, then Resume to continue with fresh observations.",
             "manual_pause": "Choose Resume when ready. Recovery instructions are optional.",
             "planner_blocked": "If the focused goal is obsolete, choose Recalculate goals to plan from current game state. Review the new goal, then Resume.",
-            "planner_rejected": "Your AI settings are not the problem: the model answered, but its plan failed ASHAD's checks twice. Choose Resume to plan again from fresh game state, or Recalculate goals to start the plan over. The rejected proposals are in Actions and on the project Issues board.",
+            "handed_back": "Every subgoal the agent could plan is verified or logged as “MCP or game needs updating” on the project Issues board. Resume to ask the planner once for new subgoals (add an instruction to steer it), or end the instance.",
             "goal_recalculation": "Review the recalculated goal, then Resume. If recalculation failed, correct the reported problem and retry Recalculate goals; no bot input has resumed.",
             "human_control": "Use the remote desktop to play, then choose Hand back to bots, with an instruction if the bots should change course. Closing the viewer leaves bots paused.",
             "goal_reached": "Review the planner's evidence. Give another goal to continue from the current game state, end the instance, or choose Not done, keep going to log a false completion and resume.",
@@ -1048,13 +1048,15 @@ class Coordinator:
             player = next(p for p in live["plan"]["players"] if p["id"] == player_id)
             context = self.structured.decision_context({**live, "subgoal_plan": plan}, player, observation)
             context["replanning_reason"] = "The operator requested a new plan from current state. Old setup goals may be obsolete; keep the primary objective unchanged."
+            warnings = []
+            self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": plan["revision"], "context": context})
             for attempt in range(2):
-                self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": plan["revision"], "context": context})
+                warnings = []
                 proposal = await self.ai.plan_subgoals(context, run_id)
                 if not current():
                     raise asyncio.CancelledError()
                 try:
-                    revised = subgoals.apply_decision(plan, proposal, context)  # Pure: validates on a copy.
+                    revised = subgoals.apply_decision(plan, proposal, context, warnings)  # Pure: validates on a copy.
                     break
                 except ValueError as exc:
                     reason = subgoals.rejection_message(exc)
@@ -1077,12 +1079,12 @@ class Coordinator:
                 live["subgoal_plan"] = revised
                 live["goal_recalculation"].update(status="completed", finished_at=time.time())
                 live["pause"] = self.pause_details("goal_recalculation", "Goals recalculated. Review the current goal, then Resume when ready.", [player_id])
-                if revised["status"] == "blocked":
+                if revised["status"] in {"blocked", "handed_back"}:
                     live["pause"]["reason"] = "Goals recalculated but still need review: " + revised["reason"]
                 # Retain the old plan before replacement. Metadata and retry acknowledgement commit together.
                 archive = self.store.event(run_id, "subgoal_plan_recalculation_prepared", {"player_id": player_id, "command_id": command_id,
                     "previous_plan": previous, "retired_goal_ids": [g["id"] for g in previous["goals"] if g["id"] != previous["root_id"] and g["status"] != "completed"],
-                    "plan": revised, "observation": fresh, "verified_goal_ids": verified})
+                    "plan": revised, "observation": fresh, "verified_goal_ids": verified, "warnings": warnings})
                 live["goal_recalculation"].update(archive_event_id=archive["id"], revision=revised["revision"])
                 live["players"][player_id]["agent_status"].update(detail=live["pause"]["reason"], updated_at=time.time())
                 with self.store.transaction():

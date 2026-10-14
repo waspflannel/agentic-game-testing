@@ -20,9 +20,9 @@ from . import repair_tasks, subgoals
 LOG = logging.getLogger(__name__)
 LOOP_BACKSTOP_DECISIONS = 6
 MOVEMENT_STALL_LIMIT = 2  # Failed moves from one unchanged position: input is not reaching the character.
-ISSUE_PREFIXES = {"unsupported_action": "uae_", "crash": "crash_", "game_bug": "bug_", "planner_rejected": "plan_", "false_completion": "done_"}
+ISSUE_PREFIXES = {"unsupported_action": "uae_", "crash": "crash_", "game_bug": "bug_", "planner_rejected": "plan_", "false_completion": "done_", "capability_gap": "gap_"}
 # Controller replan reasons, by prefix, as category labels; planner prose never reaches the timing row.
-PLAN_TRIGGERS = (("The last action failed", "action_failed"), ("Several actions have not verified", "review_interval"),
+PLAN_TRIGGERS = (("The last action failed", "action_failed"),
                  ("Observed objectives or recipes changed", "knowledge_changed"), ("Control or game binding changed", "rebound"),
                  ("No supported direct action fits", "needs_instructions"), ("The game state did not change across", "loop_backstop"),
                  ("You said the primary goal is not done", "completion_rejected"),
@@ -488,6 +488,33 @@ class StructuredPlayers:
         except Exception:
             LOG.exception("Could not record planner rejection for %s/%s", run_id, player_id)
 
+    async def report_capability_gap(self, run_id, player_id, plan, focus, *, kind, tried, missing, observation):
+        """Record one given-up goal; never raises or blocks the turn."""
+        try:
+            run, ps = self.binding(run_id, player_id)
+            skip = {None, "running", "accepted", "unknown"}
+            settled = []
+            for event in self._recent_events(run_id):
+                if event["kind"] not in {"action_result", "structured_action_outcome"} or event["payload"].get("player_id") != player_id:
+                    continue
+                status = (event["payload"].get("result") or {}).get("status")
+                if status not in skip:
+                    settled.append(status)
+            cause = "game_bug" if kind == "stuck" and settled[-1:] == ["completed"] else "mcp_gap"
+            basis = {"kind": kind, "cause": cause, "focus_objective": repair_tasks.target_label(focus["objective"]),
+                     "missing": re.sub(r"(?<=\.)\d+(?=[.)])", "#", missing)[:200]}
+            bounded = []
+            for item in tried:
+                text = json.dumps(item, ensure_ascii=False)
+                bounded.append(item if len(text) <= 2000 else text[:2000])
+            sections = {"gap": {"kind": kind, "cause": cause, "missing": missing, "tried": bounded,
+                "subgoal": {"id": focus["id"], "objective": focus["objective"], "completion": focus["completion"],
+                            "goal_path": [g["objective"] for g in subgoals.goal_path(plan, focus["id"])]}},
+                "capabilities": capability_summary(observation)}
+            await self._record(run, ps, player_id, "capability_gap", basis, "agent", observation, sections, skip_pin=kind != "stuck")
+        except Exception:
+            LOG.exception("Could not record capability gap for %s/%s", run_id, player_id)
+
     async def report_false_completion(self, run_id, player_id, plan, note):
         """Record a completion claim the operator rejected; never raises."""
         try:
@@ -581,6 +608,27 @@ class StructuredPlayers:
                            goal_path=[{"id": g["id"], "objective": g["objective"], "completion": g["completion"]} for g in subgoals.goal_path(plan)])
         return context
 
+    async def _give_up(self, run_id, player_id, generation, observation, *, kind, tried, missing):
+        run, _ = self.binding(run_id, player_id)
+        plan = run["subgoal_plan"]
+        focus = subgoals.active_goal(plan)
+        await self.report_capability_gap(run_id, player_id, plan, focus, kind=kind, tried=tried, missing=missing, observation=observation)
+        run, _ = self.binding(run_id, player_id)
+        plan = run["subgoal_plan"]
+        subgoals.give_up(plan, focus["id"], missing)
+        self.store.put("runs", run)
+        self.store.event(run_id, "subgoal_plan_updated", {"player_id": player_id, "plan": plan, "warnings": [], "outcome": "gave_up"})
+        self._forget_turn((run_id, player_id))
+        await self._after_give_up(run_id, player_id, generation, plan, focus)
+        return False
+
+    async def _after_give_up(self, run_id, player_id, generation, plan, focus):
+        if plan["status"] == "handed_back":
+            self.status(run_id, player_id, "handed_back", plan["reason"], generation)
+            await self.coordinator.investigate(run_id, "handed_back", plan["reason"], [player_id])
+        else:
+            self.status(run_id, player_id, "ready", f"Skipped “{focus['objective']}”: logged as MCP or game needs updating.", generation)
+
     async def advance_plan(self, run_id, player_id, observation, generation, current, timing):
         """Verify on observations; infer only on expansion, changed knowledge, or failed progress."""
         run, _ = self.binding(run_id, player_id)
@@ -604,8 +652,18 @@ class StructuredPlayers:
         if plan["status"] == "goal_reached":
             await self.coordinator.goal_reached(run_id, player_id, subgoals.completion_claim(plan)["reason"])
             return False
+        stuck = subgoals.stuck(plan, needs_plan)
+        if stuck:
+            tried = [label for _, label in subgoals.active_goal(plan).get("recent_actions") or []]
+            return await self._give_up(run_id, player_id, generation, observation, kind="stuck", tried=tried, missing=stuck)
         if not needs_plan:
             return True
+        planning_key = hashlib.sha256(json.dumps([plan["active_goal_id"], generation, wait_signature(observation)]).encode()).hexdigest()
+        if planning_key == plan.get("last_planning_key"):
+            return await self._give_up(run_id, player_id, generation, observation, kind="stuck", tried=[],
+                                       missing="Planning was needed again on unchanged game state")
+        plan["last_planning_key"] = planning_key
+        self.store.put("runs", run)
         player = next(p for p in run["plan"]["players"] if p["id"] == player_id)
         reason = plan.get("reason") or ""
         timing["plan_trigger"] = "new_active_goal" if plan.get("active_goal_id") != previous_active else next(
@@ -613,8 +671,10 @@ class StructuredPlayers:
         context = self.decision_context(run, player, observation)
         revision = plan["revision"]
         self.status(run_id, player_id, "planning", "Finding the next achievable prerequisite for: " + context["current_goal"]["objective"], generation)
+        warnings = []
+        self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": revision, "context": context})
         for attempt in range(2):
-            self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": revision, "context": context})
+            warnings = []
             with timed(timing, "plan_model"):
                 proposal = await self.coordinator.ai.plan_subgoals(context, run_id)
             if not current():
@@ -632,7 +692,7 @@ class StructuredPlayers:
                 return False
             try:
                 with timed(timing, "plan_validate"):
-                    revised = subgoals.apply_decision(latest_plan, proposal, context)
+                    revised = subgoals.apply_decision(latest_plan, proposal, context, warnings)
                     verified = subgoals.reconcile(revised, fresh, generation)
                 break
             except ValueError as exc:
@@ -644,20 +704,23 @@ class StructuredPlayers:
                 with timed(timing, "plan_rejection_report"):
                     await self.report_planner_rejection(run_id, player_id, "turn_planning", latest_plan, proposal, reason, attempt + 1, context["observation"])
                 if attempt:
-                    message = f"The planner proposed a plan for “{focus['objective']}” that ASHAD could not verify: {reason}"
-                    self.status(run_id, player_id, "error", message, generation, last_error=message, error_at=time.time())
-                    self.store.event(run_id, "agent_turn_failed", {"player_id": player_id, "category": "planner_rejected", "error": message, "attempts": 2})
-                    await self.coordinator.investigate(run_id, "planner_rejected", message, [player_id])
-                    return False
+                    tried = [context["previous_attempt_rejected"]["rejected_answer"], proposal]
+                    return await self._give_up(run_id, player_id, generation, fresh, kind="planner", tried=tried,
+                                               missing=f"The planner could not produce an acceptable plan: {reason}")
                 # One corrective retry: show the planner its rejected answer and the validator's reason.
                 context = {**context, "previous_attempt_rejected": {"reason": reason, "rejected_answer": proposal}}
         live["subgoal_plan"] = revised
         self.store.put("runs", live)
-        self.store.event(run_id, "subgoal_plan_updated", {"player_id": player_id, "plan": revised})
+        self.store.event(run_id, "subgoal_plan_updated", {"player_id": player_id, "plan": revised, "warnings": warnings})
         if verified:
             self.store.event(run_id, "subgoals_verified", {"player_id": player_id, "goal_ids": verified,
                              "evidence": subgoals.observation_ref(fresh), "full_observation": fresh})
         self._forget_turn((run_id, player_id))
+        if proposal.get("mode") == "blocked":
+            await self.report_capability_gap(run_id, player_id, latest_plan, subgoals.active_goal(latest_plan), kind="blocked",
+                                             tried=[proposal], missing=proposal.get("reason") or "The planner reported the goal as blocked", observation=fresh)
+            await self._after_give_up(run_id, player_id, generation, revised, subgoals.active_goal(latest_plan))
+            return False
         if revised["status"] == "goal_reached":
             claim = subgoals.completion_claim(revised)
             self.store.event(run_id, "goal_reached", {"player_id": player_id, "revision": revised["revision"], "claim": claim})

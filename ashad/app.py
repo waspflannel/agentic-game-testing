@@ -339,6 +339,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             providers = sorted((provider_of(check["model"]) for check in ready), key=order.__getitem__)  # fixed order: claude, codex, grok
             provider = {**(ready[0] if ready else {**checks[0], "message": "Set up AI in Settings › Account."}), "providers": providers}
         environments = []
+        other_build_desktops = sum(1 for w in store.list("workers") if w.get("build_id") not in (None, build_id))
         if build_validation["ready"]:
             occupied = {lease["resource_id"] for lease in store.leases() if lease["kind"] == "worker"}
             accounts = {record["worker_id"]: record for record in store.list("accounts") if record.get("app_id") == build.get("steam_app_id")}
@@ -349,7 +350,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         slot = instance_slot()
         steam_ready = any(environment["steam"]["ready"] for environment in environments)
         return {"project_id": project_id, "build_id": build_id, "provider": provider,
-                "build_validation": build_validation, "environments": environments, "slot": slot,
+                "build_validation": build_validation, "environments": environments, "other_build_desktops": other_build_desktops, "slot": slot,
                 "steam": {"ready": steam_ready, "reason": "Fresh matching licensed identity verified" if steam_ready else "No fresh matching licensed Steam identity is proven; no App ID 480 or ENet fallback"},
                 "ready": provider["ready"] and build_validation["ready"] and slot["available"] and any(environment["ready"] for environment in environments)}
 

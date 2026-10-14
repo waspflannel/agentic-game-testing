@@ -114,8 +114,8 @@ export function controlsProgressHTML(op, now) {
   const bar = steps ? `<progress class="progress" max="${steps}" value="${done}" aria-label="Get controls progress, step ${done + 1} of ${steps}"></progress>`
     : `<progress class="progress" aria-label="Get controls in progress"></progress>`;
   const started = op.startedAt || p?.started_at || now;
-  const lastAt = p?.last_call_at || p?.started_at;
-  const calls = !p ? '' : `${p.model_calls} model ${p.model_calls === 1 ? 'reply' : 'replies'}${p.rejected_replies ? ` (${p.rejected_replies} rejected and retried)` : ''}`
+  const lastAt = p?.last_call_at || p?.started_at || started;
+  const calls = !p ? '' : `${p.model_calls ?? 0} model ${(p.model_calls ?? 0) === 1 ? 'reply' : 'replies'}${p.rejected_replies ? ` (${p.rejected_replies} rejected and retried)` : ''}`
     + ` · ${p.last_call_at ? 'last reply' : 'started'} <time data-elapsed="${lastAt}">${elapsed(now - lastAt)}</time> ago`;
   const stalled = p && now - lastAt > STALL_SECONDS
     ? `<p class="note note-attention">${icon('clock')}<span>No model reply for ${Math.floor((now - lastAt) / 60)} minutes. A call usually takes under 2 minutes; the provider may be slow or rate limited. Getting game controls is still running.</span></p>` : '';
@@ -143,7 +143,7 @@ export function readinessHTML(record, now) {
     row(r.provider?.ready === true, 'AI provider', r.provider?.ready ? providersSetText(r.provider.providers) : r.provider?.message || 'Not available'),
     row(r.build_validation?.ready === true, 'Build validation', r.build_validation?.reason || 'Not validated'),
     ...(envs.length ? envs.map(e => row(e.ready === true, e.name || e.id, e.ready ? 'Ready' : e.reason || 'Not ready'))
-      : [row(false, 'Desktops', r.build_validation?.ready ? 'No desktop is registered. Prepare one, or add one under Settings › Desktops.' : 'Checked once the build validates')]),
+      : [row(false, 'Desktops', r.build_validation?.ready ? (r.other_build_desktops ? `No desktop is registered for this build (${r.other_build_desktops} registered for other builds). Remove them under Settings › Desktops, or Prepare one.` : 'No desktop is registered. Prepare one, or add one under Settings › Desktops.') : 'Checked once the build validates')]),
     row(r.slot?.available !== false, 'Instance slot', r.slot?.available === false ? r.slot.blocked_reason || 'Taken' : 'Free'),
     row(r.steam?.ready ? true : null, 'Steam (optional)', r.steam?.reason || 'Unknown'),
   ];

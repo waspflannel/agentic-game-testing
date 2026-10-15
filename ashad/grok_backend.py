@@ -169,8 +169,8 @@ class GrokBackend:
             if status["status"] != "ready":
                 raise GrokError(status["status"], status["message"])
         env = self._environment()
-        prefix = self._argv_prefix()
-        if not prefix:
+        cli = self._argv_prefix()
+        if not cli:
             self.ready_until.pop(model, None)
             raise GrokError("cli_missing", "Grok Build is no longer installed. Install it yourself, then Refresh status.")
         fd, prompt_path = tempfile.mkstemp(suffix=".txt", dir=self.home / "tmp")
@@ -178,7 +178,7 @@ class GrokBackend:
             with os.fdopen(fd, "w", encoding="utf-8") as prompt:
                 # The stable prefix leads the prompt file, not argv: it can exceed the Windows command-line limit.
                 prompt.write(json.dumps({"reference": prefix, **payload} if prefix else payload, ensure_ascii=False))
-            argv = [*prefix, "-m", model, "--prompt-file", prompt_path, "--output-format", "json",
+            argv = [*cli, "-m", model, "--prompt-file", prompt_path, "--output-format", "json",
                 "--json-schema", json.dumps(schema), "--system-prompt-override", instructions + SYSTEM_SUFFIX,
                 "--tools", "", "--disable-web-search", "--no-subagents", "--max-turns", "1"]
             try:

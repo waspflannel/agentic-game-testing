@@ -942,6 +942,7 @@ class Coordinator:
         event = self.store.event(run_id, "investigation_started", {"category": category, "reason": reason, "players": run["pause"]["players"], "deadline": run["investigation_deadline"], "world_may_continue": True})
         key = json.dumps([run["investigation_started_at"], category, reason, sorted(players or run["players"])])
         record_task(self.store, run_id, "investigation", reason, key=key, category=category, event_id=event["id"])
+        await self.structured.report_crash(run_id, (players or list(run["players"]))[0], "investigation", category, reason)
         await self.hold_inputs(run)
         if run.get("human_control"):
             try:

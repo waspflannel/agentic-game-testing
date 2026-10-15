@@ -127,6 +127,23 @@ def _max_concurrent(payloads):
     return peak
 
 
+def _code_wait(events):
+    """Code waits: seconds_used is cumulative per goal, so a goal's largest value is its wait."""
+    per_goal = {}
+    for event in events:
+        if event["kind"] == "code_wait":
+            payload = event["payload"]
+            per_goal[payload.get("goal_id")] = max(per_goal.get(payload.get("goal_id"), 0), payload.get("seconds_used") or 0)
+    return {"count": sum(1 for event in events if event["kind"] == "code_wait"), "total_seconds": sum(per_goal.values()),
+            "max_seconds_per_goal": max(per_goal.values(), default=0)}
+
+
+def _repeat_breakdown(events):
+    stops = [event["payload"] for event in events if event["kind"] == "repeat_stopped" and (event["payload"].get("actions") or 0) > 1]
+    return {"stops": len(stops), "actions": sum(stop["actions"] for stop in stops),
+            "by_control_reason": dict(Counter(f"{stop.get('control')}/{stop.get('reason', 'unknown')}" for stop in stops))}
+
+
 CACHE_TOKENS = ("cache_read_input_tokens", "cache_creation_input_tokens", "input_tokens")
 
 
@@ -280,6 +297,8 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
             "planner_attempts": sum((row.get("calls") or {}).get("plan_model", 0) for row in timings),
             "repeat_actions": sum((row.get("counts") or {}).get("repeat_actions", 0) + (row.get("counts") or {}).get("macro_actions", 0) for row in timings),
             "repeat_stops": dict(Counter(event["payload"].get("reason", "unknown") for event in events if event["kind"] in ("repeat_stopped", "macro_stopped"))),
+            "code_wait": _code_wait(events),
+            "repeat_breakdown": _repeat_breakdown(events),
             "skill_replays": sum(1 for event in events if event["kind"] in ("skill_replayed", "recipe_replayed")),
             "skill_failures": sum(1 for event in events if event["kind"] in ("skill_failed", "recipe_failed")),
             "decision_replays": sum(1 for event in events if event["kind"] == "decision_replayed"),

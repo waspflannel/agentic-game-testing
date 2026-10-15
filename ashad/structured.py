@@ -362,6 +362,7 @@ class StructuredPlayers:
                 "controller": "agent" if owner == "agent" else "mcp"}, observation,
                 outcome=result, event_ids=(outcome_event["id"],))
         if settled:
+            self._count_invalid(run_id, player_id, generation, result)
             if result.get("status") == "completed":
                 settle_effect(result, ps["pending_action"]["before"], fresh)
             self.store.event(run_id, "structured_action_outcome", {"player_id": player_id, "result": result})
@@ -373,16 +374,24 @@ class StructuredPlayers:
             result["observation"] = fresh
         if result.get("status", "unknown") not in {"running", "accepted", "unknown"}:
             self.clear_pending(run_id, player_id, generation)
+        self._count_invalid(run_id, player_id, generation, result)
         if result.get("status") in FAILED_STATUSES:
-            latest = self.store.require("runs", run_id)
-            if latest["players"][player_id]["generation"] == generation:
-                latest["players"][player_id]["invalid_actions"] = latest["players"][player_id].get("invalid_actions", 0) + 1
-                self.store.put("runs", latest)
             if await self._pause_if_stalled(run_id, player_id, generation, payload["verb"], observation, result):
                 return result
             self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
             self.status(run_id, player_id, "action_failed", str(result.get("reason") or result.get("status")), generation, action_id=action_id)
         return result
+
+    def _count_invalid(self, run_id, player_id, generation, result):
+        """The pause counts consecutive failures: a non-failed result resets it, and a stale-target rejection delivered no input so it is skipped."""
+        failed = result.get("status") in FAILED_STATUSES
+        if failed and result.get("status") == "rejected" and "Target changed" in str(result.get("reason")):
+            return
+        latest = self.store.require("runs", run_id)
+        ps = latest["players"][player_id]
+        if ps["generation"] == generation:
+            ps["invalid_actions"] = ps.get("invalid_actions", 0) + 1 if failed else 0
+            self.store.put("runs", latest)
 
     async def report_unsupported(self, run_id, player_id, source, wanted, observation, *, outcome=None, event_ids=()):
         """Record one unsupported-action hit; never blocks or fails the turn."""

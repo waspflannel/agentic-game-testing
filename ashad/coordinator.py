@@ -1078,6 +1078,7 @@ class Coordinator:
             for attempt in range(2):
                 warnings = []
                 proposal = await self.ai.plan_subgoals(context, run_id)
+                proposal.pop("first_actions", None)  # No action_options here, so nothing to act on: recalculation only replans.
                 if not current():
                     raise asyncio.CancelledError()
                 try:

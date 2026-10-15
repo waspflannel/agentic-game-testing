@@ -992,10 +992,10 @@ class StructuredPlayers:
                     return "pending", ran  # Still running after the settle wait; the next turn reconciles it.
                 if last.get("effect") == "changed":
                     missed = False
+                elif ran and str(ran[-1]["args"].get("parameters", {}).get("name", "")).startswith("slot_"):
+                    pass  # Re-selecting the equipped slot is already satisfied; it is neither a stop nor a missed tile.
                 elif tried is None or missed or not ran or ran[-1]["args"].get("verb") == "move_to":
                     return "no_effect", ran
-                elif str(ran[-1]["args"].get("parameters", {}).get("name", "")).startswith("slot_"):
-                    pass  # Re-selecting the equipped tool changes nothing; that is not a missed tile.
                 else:
                     position = ran[-1]["args"].get("parameters", {}).get("world_position")
                     if position:
@@ -1191,7 +1191,7 @@ class StructuredPlayers:
                 self._start_lookahead(run_id, player_id, run, player, plan, observation)
                 stop, ran = await self._run_macro(run_id, player_id, generation, current, context, observation, step, timing)
                 after = subgoals.measure(check, self.store.get("observations", f"{run_id}:{player_id}") or {})[1]
-                finished = stop == "goal_met" or bool(step["count"] and before is not None and after is not None and abs(after - before) >= step["count"])
+                finished = stop in ("goal_met", "done") or bool(step["count"] and before is not None and after is not None and abs(after - before) >= step["count"])
                 self.step_index[key] = (goal["id"], index + finished, not finished and bool(ran))
             elif decider_turn:
                 self.step_index[key] = (goal["id"], index, False)

@@ -52,7 +52,8 @@ def save(store, configuration_id, check, steps, won):
     """Count a win (replacing the steps when given) or a failure for the check's shape; returns the record."""
     key = f"{configuration_id}:{shape(check)}"
     record = store.get("recipes", key) or {"shape": shape(check), "steps": [], "wins": 0, "fails": 0}
-    if steps is not None:
+    # A win by hand-picked actions never replaces steps that run a macro: the macro replays in one turn, the hand steps do not.
+    if steps is not None and (any(s["control"] in macros.MACROS for s in steps) or not any(s["control"] in macros.MACROS for s in record["steps"])):
         record["steps"] = bind(steps, check)
     record["wins" if won else "fails"] += 1
     record["updated"] = time.time()

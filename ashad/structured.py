@@ -10,7 +10,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 
-from .ai import GAME_VERBS, ProviderError, capability_summary, prompt_observation
+from .ai import GAME_VERBS, SNAPSHOT_CHARS, ProviderError, capability_summary, observation_delta, prompt_observation, resolve
 from .game_controls import run_configuration
 from .models import MODEL, PROVIDERS, provider_of
 from .repository import Repository
@@ -20,6 +20,11 @@ from . import facts, repair_tasks, subgoals
 LOG = logging.getLogger(__name__)
 LOOP_BACKSTOP_DECISIONS = 6
 MOVEMENT_STALL_LIMIT = 2  # Failed moves from one unchanged position: input is not reaching the character.
+BATCH_LIMIT = 5  # Actions per turn from one batch decide.
+SNAPSHOT_RESET_CHARS = 12000  # A delta this large costs more than a fresh snapshot (one cache write).
+TIMER_FACTS = ("crops_harvestable", "crop_growth_stage_min")  # Growth facts the code waits on after the model chose to wait.
+CODE_WAIT_STEP = 10
+CODE_WAIT_LIMIT = 120  # Seconds of code waits per goal before the model decides again.
 ISSUE_PREFIXES = {"unsupported_action": "uae_", "crash": "crash_", "game_bug": "bug_", "false_completion": "done_", "capability_gap": "gap_"}
 # Controller replan reasons, by prefix, as category labels; planner prose never reaches the timing row.
 PLAN_TRIGGERS = (("The last action failed", "action_failed"),
@@ -139,11 +144,18 @@ class StructuredPlayers:
         self.movement_stalls = {}
         self.bug_reports = {}
         self.turn_ended_at = {}
+        self.snapshots = {}  # (run_id, player_id) -> (goal_id, generation, prompt observation at subgoal start)
+        self.code_waits = {}  # (run_id, player_id) -> (goal_id, seconds of code waits used)
         self.crashes_recorded = set()
 
     def _forget_turn(self, key):
         self.waits.pop(key, None)
         self.last_decisions.pop(key, None)
+        # The snapshot and code-wait budget belong to one goal; a replan of the same goal keeps them.
+        plan = self.store.require("runs", key[0]).get("subgoal_plan") or {}
+        for kept in (self.snapshots, self.code_waits):
+            if key in kept and kept[key][0] != plan.get("active_goal_id"):
+                del kept[key]
 
     def claim_control(self, key, owner):
         if key in self.control_owners:
@@ -579,7 +591,7 @@ class StructuredPlayers:
             LOG.exception("Could not record false completion for %s/%s", run_id, player_id)
 
     def forget_run(self, run_id):
-        for counters in (self.loop_counts, self.movement_stalls, self.bug_reports, self.turn_ended_at):
+        for counters in (self.loop_counts, self.movement_stalls, self.bug_reports, self.turn_ended_at, self.snapshots, self.code_waits):
             for key in [k for k in counters if k[0] == run_id]:
                 del counters[key]
         self.crashes_recorded -= {e for e in self.crashes_recorded if e[0] == run_id}
@@ -645,9 +657,10 @@ class StructuredPlayers:
         context = {"play_mode": run["plan"]["play_mode"], "player": player, "goal": player["goal"],
             "game_controls": controls or (snapshot or {}).get("instructions", ""), "configuration_id": configuration_id,
             "observation": prompt_observation(observation, max_chars=48000), "guidance": self.guidance(run, player, observation),
-            "memory": ps.get("agent_memory", ""), "recent_own_actions": [own_action_line(e) for e in own], "team_messages": team,
+            "memory": ps.get("agent_memory", ""), "recent_own_actions": [own_action_line(e) for e in own[-5:]], "team_messages": team,
             "setup": run["plan"]["world_setup"], "transport": run["plan"]["transport"],
-            "world_namespace": run.get("world_namespace"), "seed": run["plan"].get("seed")}
+            "world_namespace": run.get("world_namespace"), "seed": run["plan"].get("seed"),
+            "item_ids": self.item_ids(run), "known_locations": observation.get("known_locations")}
         if failures:
             context["repeated_failures"] = failures
         if run.get("recovery_instruction"):
@@ -655,7 +668,8 @@ class StructuredPlayers:
         plan = run.get("subgoal_plan")
         if plan and plan["player_id"] == player["id"]:
             context.update(subgoal_plan=subgoals.prompt_plan(plan), current_goal={k: v for k, v in subgoals.active_goal(plan).items() if k in GOAL_CONTEXT_KEYS},
-                           goal_path=[{"id": g["id"], "objective": g["objective"], "completion": g["completion"]} for g in subgoals.goal_path(plan)])
+                           goal_path=[{"id": g["id"], "objective": g["objective"], "completion": g["completion"], "measured": g.get("measured")}
+                                      for g in subgoals.goal_path(plan)])
         return context
 
     async def _give_up(self, run_id, player_id, generation, observation, *, kind, tried, missing):
@@ -843,6 +857,48 @@ class StructuredPlayers:
                 self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
         return False
 
+    async def _run_batch(self, run_id, player_id, generation, current, context, start, fresh, last, keys, timing):
+        """Run queued option keys back to back, each re-resolved on the observation the previous action left.
+
+        `start` is the observation the batch was chosen on. `last` is the result of the batch action already run (its
+        post-action observation is `fresh`), or None when the batch starts here on `fresh`. Returns the stop reason and
+        the actions dispatched here."""
+        key = (run_id, player_id)
+        run = self.store.require("runs", run_id)
+        plan = run.get("subgoal_plan")
+        checks = [g["completion"] for g in subgoals.goal_path(plan)] if plan and plan["player_id"] == player_id else []
+        facts_before = [subgoals.measure(check, start)[1] for check in checks]
+        scene = subgoals.planning_scene(start)
+        queue, done, ran = list(keys), int(last is not None), []
+        while True:
+            if not current():
+                return "cancelled", ran
+            if last is not None:
+                status = last.get("status")
+                if status in FAILED_STATUSES:
+                    return ("cancelled" if status == "cancelled" else "failed"), ran
+                if fresh is None or key in self.pending:
+                    return "pending", ran  # Still running after the settle wait; the next turn reconciles it.
+                if last.get("effect") != "changed":
+                    return "no_effect", ran
+            if [subgoals.measure(check, fresh)[1] for check in checks] != facts_before:
+                return "fact_changed", ran
+            if subgoals.planning_scene(fresh) != scene:
+                return "scene_changed", ran
+            if not queue:
+                return "done", ran
+            if done >= BATCH_LIMIT:
+                return "limit", ran
+            action = resolve({**context, "observation": fresh}, queue.pop(0))
+            if action is None:
+                return "not_offered", ran
+            with timed(timing, "tool:perform_action"):
+                last = await self.dispatch(run_id, player_id, "perform_action",
+                                           {**action["args"], "reason": "Batch: " + action["description"]}, fresh, generation)
+            fresh = last.pop("observation", None)
+            ran.append(action)
+            done += 1
+
     async def turn(self, run_id, player_id, tick_seconds=None):
         key = (run_id, player_id)
         run, ps = self.binding(run_id, player_id)
@@ -856,6 +912,8 @@ class StructuredPlayers:
             self.movement_stalls.pop(key, None)
             self.turn_ended_at.pop(key, None)
             self.bug_reports.pop(key, None)
+            self.snapshots.pop(key, None)
+            self.code_waits.pop(key, None)
             self.generations[key] = generation
         def current():
             live = self.store.require("runs", run_id)
@@ -903,6 +961,19 @@ class StructuredPlayers:
                 timing["outcome"] = "unchanged"
                 return timing["outcome"]
             run, ps = self.binding(run_id, player_id)
+            # After the model chose to wait on a growth fact, keep waiting in code instead of asking it again.
+            plan = run.get("subgoal_plan")
+            goal = subgoals.active_goal(plan) if plan and plan["player_id"] == player_id else None
+            code_wait = self.code_waits.get(key)
+            if (goal and code_wait and code_wait[0] == goal["id"] and code_wait[1] < CODE_WAIT_LIMIT
+                    and goal["completion"].get("fact") in TIMER_FACTS and not subgoals.measure(goal["completion"], observation)[0]):
+                until = time.time() + CODE_WAIT_STEP
+                self.waits[key] = (until, wait_signature(observation), generation)
+                self.code_waits[key] = (goal["id"], code_wait[1] + CODE_WAIT_STEP)
+                self.status(run_id, player_id, "waiting", "Waiting for crops to grow.", generation, wait_until=until)
+                self.store.event(run_id, "code_wait", {"player_id": player_id, "goal_id": goal["id"], "seconds_used": code_wait[1] + CODE_WAIT_STEP})
+                timing["outcome"] = "code_wait"
+                return timing["outcome"]
             player = next(p for p in run["plan"]["players"] if p["id"] == player_id)
             with timed(timing, "decision_context"):
                 context = self.decision_context(run, player, observation)
@@ -911,27 +982,58 @@ class StructuredPlayers:
                     "observation_ref": subgoals.observation_ref(observation), "source_revision": run["build"].get("source_revision")})
             timing["bytes"].update(prompt_observation=json_bytes(context["observation"]), decision_context=json_bytes(context))
             timing["context_truncated"] = bool(context["observation"].get("context_truncated"))
+            # One snapshot per subgoal sits in the cached prefix; each call sends only the delta against it.
+            goal_id = (context.get("current_goal") or {}).get("id")
+            view = prompt_observation(context["observation"], max_chars=SNAPSHOT_CHARS)
+            kept = self.snapshots.get(key)
+            if (not kept or kept[:2] != (goal_id, generation)
+                    or len(json.dumps(observation_delta(kept[2], view))) > SNAPSHOT_RESET_CHARS):
+                kept = self.snapshots[key] = (goal_id, generation, view)
             self.last_decisions[key] = (signature, time.time(), generation)
             label = PROVIDERS[provider_of(run.get("model") or run["plan"].get("model", MODEL))]["label"]
             self.status(run_id, player_id, "thinking", f"Waiting for {label} to choose the next action.", generation)
             decision_started_at = time.time()
+            fresh = None  # The post-action observation of the batch's first action.
             async def dispatch(name, args):
-                nonlocal observation
+                nonlocal observation, fresh
                 if not current():
                     return {"status": "cancelled"}
                 self.status(run_id, player_id, "tool", f"Using {name}.", generation)
                 with timed(timing, "tool:" + name):
                     result = await self.dispatch(run_id, player_id, name, args, observation, generation)
                 if name == "perform_action":
-                    result.pop("observation", None)  # Stored already as the latest observation; keep it out of the ledger.
+                    fresh = result.pop("observation", None)  # Stored already as the latest observation; keep it out of the ledger.
                 if name == "observe" and result.get("observation_id"):
                     observation = result
                     result = prompt_observation(result)
                 self.store.event(run_id, "structured_tool_result", {"player_id": player_id, "tool": name, "result": result})
                 return result
             with timed(timing, "decide"):
-                result = await self.coordinator.ai.player_turn(context, dispatch, current, run_id)
+                result = await self.coordinator.ai.batch_turn(context, kept[2], dispatch, current, run_id)
             timing["outcome"] = "decided"
+            first = (result or {}).get("action") or {}
+            ran = []
+            if result is None:
+                stop = "cancelled"
+            elif first.get("tool") == "wait_for_change":
+                stop = "wait"
+            elif first.get("tool") != "perform_action":
+                stop = "done"  # A game bug report: nothing was dispatched.
+            else:
+                stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, fresh,
+                                                  result["result"], result["queued"], timing)
+            timing["counts"]["batch_actions"] = len(ran) + (first.get("tool") == "perform_action")
+            timing["batch_stop"] = stop
+            if result:
+                timing["bytes"].update(result["bytes"])
+            self.store.event(run_id, "batch_stopped", {"player_id": player_id, "reason": stop, "actions": timing["counts"]["batch_actions"]})
+            # Code waits start only after the model itself chose to wait on a growth goal; any other batch ends them.
+            current_goal = context.get("current_goal") or {}
+            if stop == "wait" and current_goal.get("completion", {}).get("fact") in TIMER_FACTS:
+                if self.code_waits.get(key, (None,))[0] != current_goal["id"]:
+                    self.code_waits[key] = (current_goal["id"], 0)
+            else:
+                self.code_waits.pop(key, None)
             self.store.event(run_id, "agent_turn_completed", {"player_id": player_id, "duration_seconds": round(time.time() - decision_started_at, 3), "result": result})
             if current():
                 latest = self.store.require("runs", run_id)
@@ -943,7 +1045,9 @@ class StructuredPlayers:
                 if phase in {"thinking", "tool"}:
                     self.status(run_id, player_id, "ready", "Decision finished; checking the next observation.", generation, completed_at=time.time())
                 with timed(timing, "issue_reports"):
-                    await self._loop_backstop(run_id, player_id, generation, signature, observation, result)
+                    # Once per turn, on the batch's last action.
+                    backstop = {**result, "action": ran[-1]} if ran else result
+                    await self._loop_backstop(run_id, player_id, generation, signature, observation, backstop)
                     if isinstance(result, dict) and result.get("status") == "bug_reported":
                         self.bug_reports[key] = signature
                         await self.report_bug(run_id, player_id, result.get("report") or {}, observation)

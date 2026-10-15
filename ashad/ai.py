@@ -552,10 +552,6 @@ class OpenAI:
                 "related_action_id": None if related == "none" else related, "target_id": None if target == "none" else target}
 
 
-    async def player_turn(self, context, dispatch, can_continue, run_id):
-        """Until the structured turn keeps a subgoal snapshot and runs the queue: decide with no snapshot and run the first action."""
-        return await self.batch_turn(context, None, dispatch, can_continue, run_id)
-
     async def batch_turn(self, context, snapshot, dispatch, can_continue, run_id):
         """One batch-decide call. Runs the first chosen action here; returns the rest as option keys that the caller re-resolves on fresh observations."""
         if not can_continue():

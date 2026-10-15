@@ -612,7 +612,7 @@ class StructuredPlayers:
         try:
             run, ps = self.binding(run_id, player_id)
             build_id = run["build"].get("id")
-            basis = {"skill": record["name"][:160], "kind": kind, "build_id": build_id, "good_build": record["won_builds"][-1]}
+            basis = {"skill": record["name"][:160], "kind": kind, "build_id": build_id, "good_build": record["won_builds"][0]}  # First win: stable, so one issue per (skill, failed build).
             sections = {"regression": {"skill": record["name"], "kind": kind, "good_build": basis["good_build"], "build_id": build_id,
                                        "won_builds": record["won_builds"], "reason": reason, "wins": record["wins"], "fails": record["fails"]}}
             await self._record(run, ps, player_id, "skill_regression", basis, "agent",

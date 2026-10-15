@@ -798,13 +798,18 @@ async function deleteSkill(id) {
   if (!await confirmDialog({ title: 'Delete skill?', body: `"${skill.name}" is forgotten for this project. ASHAD plans that step with the model again and may save it anew. This cannot be undone.`, confirm: 'Delete', danger: true })) return;
   page.deleting = id;
   renderView();
+  let deleted = false;
   try {
     await api(`/api/projects/${enc(page.key)}/skills/${enc(id)}`, { method: 'DELETE' });
-    page.rows = page.rows.filter(s => s.id !== id);
+    deleted = true;
     toast('Skill deleted.', 'ok');
   } catch (error) { toast(`Could not delete the skill: ${error.message}`, 'error'); }
-  page.deleting = null;
-  if (state.skills === page) renderView();
+  // A Refresh or reopen during the delete replaces state.skills, so settle the current record of this project.
+  const current = state.skills?.key === page.key ? state.skills : null;
+  if (!current) return;
+  if (deleted && current.rows) current.rows = current.rows.filter(s => s.id !== id);
+  current.deleting = null;
+  renderView();
 }
 
 // ── Project overview (C7) ───────────────────────────────────────────────────

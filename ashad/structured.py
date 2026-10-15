@@ -165,14 +165,16 @@ class StructuredPlayers:
         # (run_id, player_id) -> (next leaf's goal_id, plan revision once the current leaf completes, planning_scene at start, planner task).
         # At most one per player, started while a repeat step runs; advance_plan uses or cancels it.
         self.lookahead = {}
+        self.held = {}  # (run_id, player_id) -> item_id of the hotbar slot the controller last pressed; the game does not report it
+        self.decision_failed = {}  # (run_id, player_id) -> (goal_id, decision key) whose one replay failed while that goal is active
         self.crashes_recorded = set()
 
     def _forget_turn(self, key):
         self.waits.pop(key, None)
         self.last_decisions.pop(key, None)
-        # The snapshot, code-wait budget, step index and intents belong to one goal; a replan of the same goal keeps them.
+        # The snapshot, code-wait budget, step index, intents and failed decision belong to one goal; a replan of the same goal keeps them.
         plan = self.store.require("runs", key[0]).get("subgoal_plan") or {}
-        for kept in (self.snapshots, self.code_waits, self.step_index, self.goal_intents):
+        for kept in (self.snapshots, self.code_waits, self.step_index, self.goal_intents, self.decision_failed):
             if key in kept and kept[key][0] != plan.get("active_goal_id"):
                 del kept[key]
 
@@ -327,6 +329,11 @@ class StructuredPlayers:
             if self.goal_intents.get(key, (None,))[0] != goal_id:
                 self.goal_intents[key] = (goal_id, [])
             self.goal_intents[key][1].append(repeat.step_for(payload, observation))
+            name = str(payload["parameters"].get("name", ""))
+            if payload["verb"] == "input" and name.startswith("slot_"):
+                # The press is assumed to land, because a failed slot press is rare and the next press corrects it.
+                hotbar = observation.get("state", {}).get("player", {}).get("hotbar") or []
+                self.held[key] = next((e.get("item_id") or "" for e in hotbar if isinstance(e, dict) and e.get("input") == name), "")
         self.store.put("runs", run)
         self.status(run_id, player_id, "acting", str(args.get("reason") or f"Performing {args['verb']}"), generation, action_id=action_id)
         self.last_decisions.pop(key, None)
@@ -614,7 +621,7 @@ class StructuredPlayers:
 
     def forget_run(self, run_id):
         for counters in (self.loop_counts, self.movement_stalls, self.bug_reports, self.turn_ended_at, self.snapshots, self.code_waits, self.step_index,
-                         self.goal_intents):
+                         self.goal_intents, self.held, self.decision_failed):
             for key in [k for k in counters if k[0] == run_id]:
                 del counters[key]
         for key in [k for k in self.lookahead if k[0] == run_id]:
@@ -877,8 +884,21 @@ class StructuredPlayers:
         check = goal["completion"] if first in (goal["completion"]["fact"], "unknown") else {"fact": first, "args": []}
         if subgoals.measure({**check, "op": ">=", "value": 0}, observation)[1] is None:
             return False
-        goal.update(steps=skills.bind(skill["steps"], goal["completion"], replay=True, measured=goal.get("measured")),
-                    actionable=True, skill=skill["name"])
+        steps = skills.bind(skill["steps"], goal["completion"], replay=True, measured=goal.get("measured"))
+        # A skill whose first action is not offered here is not tried; the planner takes the leaf, and nothing is counted against the skill.
+        step = next((s for s in steps if s.get("targets") or s["control"] != "select"), None)
+        player = next(p for p in run["plan"]["players"] if p["id"] == player_id)
+        context = {**self.decision_context(run, player, observation), "observation": observation}
+        if step is None:
+            action = None
+        elif step.get("targets"):
+            action, _ = repeat.next_action(step, context, {"select": "", "tried": set(), "skipped": False, "held": self.held.get((run_id, player_id), "")})
+        else:
+            action = repeat.ordinary(step, context)
+        if action is None:
+            self.store.event(run_id, "skill_skipped", {"player_id": player_id, "goal_id": goal["id"], "skill": skill["name"], "why": "not_offered"})
+            return False
+        goal.update(steps=steps, actionable=True, skill=skill["name"])
         self.store.put("runs", run)
         self.step_index.pop((run_id, player_id), None)  # Replay starts at the skill's first step.
         ahead = self.lookahead.pop((run_id, player_id), None)
@@ -1055,7 +1075,7 @@ class StructuredPlayers:
 
         Stops once `check` has moved by `step["count"]` (`count` uses when the step verifies nothing), or on the batch
         stops. Returns the stop reason and the actions dispatched."""
-        state = {"select": "", "tried": set(), "skipped": False}
+        state = {"select": "", "tried": set(), "skipped": False, "held": self.held.get((run_id, player_id), "")}
         before = subgoals.measure(check, observation)[1]
         uses = 0
         def next_action(fresh):
@@ -1071,10 +1091,64 @@ class StructuredPlayers:
             return action, why
         stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None,
                                           next_action, timing, REPEAT_LIMIT, state["tried"])
+        if state["held"]:
+            self.held[(run_id, player_id)] = state["held"]
         timing["counts"]["repeat_actions"] = timing["counts"].get("repeat_actions", 0) + len(ran)
         self.store.event(run_id, "repeat_stopped", {"player_id": player_id, "control": step["control"], "targets": step["targets"], "item": step.get("item", ""),
                                                     "select": state["select"], "reason": stop, "actions": len(ran)})
         return stop, ran
+
+    async def _run_decision(self, run_id, player_id, generation, current, context, observation, goal, timing):
+        """Replay the decision skill saved for this situation in code, with no model call; one try per goal, and only when its first action is offered here.
+
+        Returns the stop reason, the actions dispatched and the replayed record, or (None, [], None) when nothing was replayed."""
+        key = (run_id, player_id)
+        project_id = self.store.require("runs", run_id).get("project_id")
+        if not project_id or not goal:
+            return None, [], None
+        sig = skills.signature(goal["completion"], observation, self.held.get(key, ""))
+        decision_key = skills.decision_key(project_id, sig)
+        record = skills.find_decision(self.store, project_id, sig)
+        if not record or self.decision_failed.get(key) == (goal["id"], decision_key):
+            return None, [], None
+        steps = skills.bind(record["steps"], goal["completion"], replay=True)
+
+        def replay():
+            """A next_action over the steps in order: one use (or its select, or its ordinary input) finishes a step."""
+            index, state = 0, None
+            def next_action(fresh):
+                nonlocal index, state
+                while index < len(steps):
+                    step = steps[index]
+                    state = state or {"select": "", "tried": set(), "skipped": False, "held": self.held.get(key, "")}
+                    step_context = {**context, "observation": fresh}
+                    if step.get("targets") or step["control"] == "select":
+                        action, why = repeat.next_action(step, step_context, state)
+                    else:
+                        action = repeat.ordinary(step, step_context)
+                        why = "use" if action else "not_offered"
+                    if action is None and state["select"] == "held" and not step.get("targets"):
+                        index, state = index + 1, None  # A select of the item already held needs no press.
+                        continue
+                    if action is None:
+                        return None, "not_offered"
+                    if why == "use" or step["control"] == "select":
+                        index, state = index + 1, None
+                    return action, why
+                return None, "done"
+            return next_action
+
+        if replay()(observation)[0] is None:
+            self.store.event(run_id, "decision_skipped", {"player_id": player_id, "goal_id": goal["id"], "key": decision_key, "why": "not_offered"})
+            return None, [], None
+        stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None, replay(), timing)
+        self.store.event(run_id, "decision_replayed", {"player_id": player_id, "goal_id": goal["id"], "key": decision_key,
+                                                       "name": record["name"], "reason": stop, "actions": len(ran)})
+        if stop in ("failed", "no_effect", "fact_moved_away", "not_offered"):
+            skills.save_decision(self.store, project_id, sig, goal["completion"], None, False)
+            self.decision_failed[key] = (goal["id"], decision_key)
+            self.store.event(run_id, "decision_failed", {"player_id": player_id, "goal_id": goal["id"], "key": decision_key, "reason": stop})
+        return stop, ran, record
 
     async def turn(self, run_id, player_id, tick_seconds=None):
         key = (run_id, player_id)
@@ -1175,7 +1249,7 @@ class StructuredPlayers:
                 kept = self.snapshots[key] = (goal_id, generation, view)
             self.last_decisions[key] = (signature, time.time(), generation)
             decision_started_at = time.time()
-            result, first, stop, ran, finished = None, {}, None, [], False
+            result, first, stop, ran, finished, replayed = None, {}, None, [], False, None
             # The leaf's next unfinished step runs in code when it is a repeat step. A repeat stop that leaves the step
             # unfinished after dispatching actions hands the next turn to the decider; then the repeat step is tried again.
             steps = (goal or {}).get("steps") or []
@@ -1204,8 +1278,12 @@ class StructuredPlayers:
                 self.step_index[key] = (goal["id"], index + finished, not finished and bool(ran))
             elif decider_turn:
                 self.step_index[key] = (goal["id"], index, False)
+            if stop is None and not planned_keys and goal:
+                # Cache first: a decision this project's model already made in this situation replays without a decide call.
+                stop, ran, replayed = await self._run_decision(run_id, player_id, generation, current, context, observation, goal, timing)
             # A replayed skill whose step stops unfinished hands the leaf to the planner on the next turn, with no decide call now.
-            replanned = bool(goal and goal.get("skill") and not finished and stop in ("failed", "no_effect", "not_offered")
+            # A failed decision replay is not the subgoal skill's failure: the next turn decides.
+            replanned = bool(goal and goal.get("skill") and not replayed and not finished and stop in ("failed", "no_effect", "not_offered")
                              and self._skill_failed(run_id, player_id, generation, goal["id"], stop))
             if not replanned and (stop is None or (stop == "not_offered" and not ran)):
                 # No planner batch, or its first option is gone: the model decides in this same turn.
@@ -1226,6 +1304,8 @@ class StructuredPlayers:
                         result = prompt_observation(result)
                     self.store.event(run_id, "structured_tool_result", {"player_id": player_id, "tool": name, "result": result})
                     return result
+                # Keyed by the observation and held item the model decides on, before its first action changes them.
+                sig = skills.signature(goal["completion"], observation, self.held.get(key, "")) if goal else None
                 with timed(timing, "decide"):
                     result = await self.coordinator.ai.batch_turn(context, kept[2], dispatch, current, run_id)
                 first = (result or {}).get("action") or {}
@@ -1238,6 +1318,13 @@ class StructuredPlayers:
                 else:
                     stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, fresh,
                                                       result["result"], queued_actions(context, result["queued"]), timing)
+                    if run.get("project_id") and goal and stop in ("done", "goal_met", "scene_changed", "limit"):
+                        # The model's batch becomes this situation's decision skill: non-move actions only, read against the observation it was chosen on.
+                        steps = [s for s in (repeat.step_for(a["args"], observation) for a in [first] + ran) if s["control"] != "move_to"]
+                        if steps:
+                            saved = skills.save_decision(self.store, run["project_id"], sig, goal["completion"], steps, True)
+                            self.store.event(run_id, "decision_saved", {"player_id": player_id, "goal_id": goal["id"],
+                                                                        "key": skills.decision_key(run["project_id"], sig), "name": saved["name"]})
             timing["outcome"] = "decided"
             timing["counts"]["batch_actions"] = len(ran) + (first.get("tool") == "perform_action")
             timing["batch_stop"] = stop

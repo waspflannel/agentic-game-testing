@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import math
 import re
@@ -267,16 +268,12 @@ def observation_delta(snapshot, observation):
             "entities_changed": {id: changed(before[id], entity) for id, entity in after.items() if id in before and before[id] != entity}}
 
 
-PREFIX_KEYS = ("game_controls", "player", "setup", "transport", "world_namespace", "seed", "configuration_id", "item_ids", "known_locations")
+PREFIX_KEYS = ("game_controls", "player", "setup", "transport", "world_namespace", "seed", "configuration_id", "item_ids")
 
 
 def static_prefix(context, snapshot):
-    """Everything that stays the same within a subgoal, so the provider can cache it ahead of the per-call evidence."""
+    """Everything that stays the same for a player generation, so the provider can cache it ahead of the per-call evidence."""
     static = {k: context.get(k) for k in PREFIX_KEYS}
-    # last_seen_revision changes on every observation and would break the cache on every call.
-    places = [{k: v for k, v in place.items() if k != "last_seen_revision"} if isinstance(place, dict) else place
-              for place in static["known_locations"] or []]
-    static["known_locations"] = sorted(places, key=lambda place: json.dumps(place, sort_keys=True))  # Discovery order must not change the bytes.
     return json.dumps({**static, "subgoal_snapshot": snapshot}, sort_keys=True, ensure_ascii=False)
 
 
@@ -632,6 +629,9 @@ class OpenAI:
         base = {"current_goal": context.get("current_goal"), "goal_path": context.get("goal_path", []),
                 "recent_own_actions": context.get("recent_own_actions", [])[-5:], "repeated_failures": context.get("repeated_failures"),
                 "operator_instruction": context.get("operator_instruction"), "bug_already_reported": bool(context.get("bug_already_reported")),
+                # last_seen_revision changes on every observation, and discovery order must not change the bytes.
+                "known_locations": sorted(({k: v for k, v in p.items() if k != "last_seen_revision"} if isinstance(p, dict) else p
+                                           for p in context.get("known_locations") or []), key=lambda p: json.dumps(p, sort_keys=True)),
                 # Compared in the snapshot's own view, so targets beyond its cap never show as added on every call.
                 "delta": observation_delta(snapshot, prompt_observation(context["observation"], max_chars=SNAPSHOT_CHARS))}
 
@@ -705,7 +705,8 @@ class OpenAI:
                     "target": group["description"], "action": action, "candidate_count": len(candidates), "target_count": len(groups),
                     "evidence_truncated": bool(context["observation"].get("context_truncated")), "calls": calls, "fallback": fallback,
                     "batch": [option_id for option_id, _, _ in picked], "reason": answers.get("reason"),
-                    "bytes": {"batch_evidence": len(evidence.encode("utf-8")), "prefix": len(prefix.encode("utf-8"))}}
+                    "bytes": {"batch_evidence": len(evidence.encode("utf-8")), "prefix": len(prefix.encode("utf-8")),
+                              "prefix_sha": hashlib.sha256(prefix.encode()).hexdigest()[:12]}}
         self.store.event(run_id, "decision_selected", decision)
         if action["tool"] == "needs_instructions":
             report = await self._stuck_report(evidence, context["observation"], run_id)

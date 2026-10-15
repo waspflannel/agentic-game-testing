@@ -99,9 +99,9 @@ def _step_summary(timings):
         entry["calls"] = sum((row.get("calls") or {}).get(step, 0) for row in timings)
         entry["share"] = _ratio(entry["total"] or 0, turn_total)
         if step.startswith("tool:"):
-            entry["nested_in"] = "decide"
+            entry["nested_in"] = "decide or act"
         steps[step] = entry
-    # tool: time sits inside decide, so it is not added again.
+    # tool: time sits inside decide or act, so it is not added again.
     accounted = sum(entry["total"] or 0 for step, entry in steps.items() if not step.startswith("tool:"))
     steps["unaccounted"] = round(turn_total - accounted, 6)
     store_rows = [row["store"] for row in timings if isinstance(row.get("store"), dict)]
@@ -252,6 +252,7 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
     turns = len(timings) or None
     gap_total = gaps["gap_seconds"]["total"] or 0
     tick_values = _column(timings, "tick_seconds")
+    outcomes = [event for event in events if event["kind"] == "structured_action_outcome"]
     action_results = dict(Counter(_action_status(event["payload"]) for event in events if event["kind"] == "action_result"))
     return {
         "serial_model_calls": {
@@ -284,9 +285,8 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
             "decision_replays": sum(1 for event in events if event["kind"] == "decision_replayed"),
             "decision_failures": sum(1 for event in events if event["kind"] == "decision_failed"),
             "decision_saves": sum(1 for event in events if event["kind"] == "decision_saved"),
+            "batch_prefixes": len({(e["payload"].get("bytes") or {}).get("prefix_sha") for e in events if e["kind"] == "decision_selected"} - {None}),
             "decision_skips": sum(1 for event in events if event["kind"] in ("decision_skipped", "skill_skipped")),
-            "lookahead_used": sum(1 for event in events if event["kind"] == "lookahead_used"),
-            "lookahead_discarded": sum(1 for event in events if event["kind"] == "lookahead_discarded"),
             "plan_triggers": dict(Counter(row["plan_trigger"] for row in timings if row.get("plan_trigger"))),
             "goals_by_fact": dict(Counter(g["completion"]["fact"] for g in next(
                 (e["payload"]["plan"]["goals"] for e in reversed(events) if e["kind"] == "subgoal_plan_updated"), []))),
@@ -296,6 +296,8 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
             "action_results": action_results,
             "action_outcomes": dict(Counter((event["payload"].get("result") or {}).get("status", "unknown") for event in events if event["kind"] == "structured_action_outcome")),
             "action_effects": dict(Counter((event["payload"].get("result") or {}).get("effect") or "none" for event in events if event["kind"] == "structured_action_outcome")),
+            "settle_poll_seconds": round(sum(((e["payload"].get("result") or {}).get("settle") or {}).get("poll_seconds", 0) for e in outcomes), 6),
+            "settle_observe_seconds": round(sum(((e["payload"].get("result") or {}).get("settle") or {}).get("observe_seconds", 0) for e in outcomes), 6),
             "turn_failures": dict(Counter(event["payload"].get("category", "unknown") for event in events if event["kind"] == "agent_turn_failed")),
         },
         "polling_waits": {

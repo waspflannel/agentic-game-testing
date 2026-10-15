@@ -579,26 +579,33 @@ class Runtime:
     async def _settle_action(self, status, action_id, captured_epoch, settle_seconds) -> tuple[dict, dict | None]:
         """Poll a running action for up to settle_seconds (none when it already completed), then observe once.
 
-        Returns the last known status and the registered observation, or None for the observation
+        Returns the last known status with its poll and observe seconds under "settle", and the registered observation, or None for the observation
         when the epoch changed or the bridge failed. Never raises: the action may already have run.
         """
-        deadline = time.monotonic() + settle_seconds
+        started = time.monotonic()
+        deadline = started + settle_seconds
+        polled = True
         while status.get("status") in {"running", "accepted"} and time.monotonic() < deadline:
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.05)
             if captured_epoch != self.game_control_epoch:
-                return status, None
+                polled = False
+                break
             try:
                 status = await self.game_bridge.request(
                     "get_action_status", {"action_id": action_id, "epoch": captured_epoch})
             except (OSError, ValueError, asyncio.TimeoutError):
-                return status, None
-        if captured_epoch != self.game_control_epoch:
-            return status, None
-        try:
-            observation = await self.game_bridge.request("observe", {"epoch": captured_epoch})
-            return status, self._register_observation(observation, captured_epoch)
-        except (OSError, ValueError, asyncio.TimeoutError, HTTPException):
-            return status, None
+                polled = False
+                break
+        poll_seconds = time.monotonic() - started
+        observation = None
+        if polled and captured_epoch == self.game_control_epoch:
+            try:
+                observation = self._register_observation(
+                    await self.game_bridge.request("observe", {"epoch": captured_epoch}), captured_epoch)
+            except (OSError, ValueError, asyncio.TimeoutError, HTTPException):
+                pass
+        settle = {"poll_seconds": round(poll_seconds, 6), "observe_seconds": round(time.monotonic() - started - poll_seconds, 6)}
+        return {**status, "settle": settle}, observation
 
 
 

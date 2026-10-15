@@ -878,7 +878,10 @@ class Coordinator:
         try:
             outcome = await self.structured.turn(run_id, player_id, tick_seconds=tick_seconds)
             if outcome in {"decided", "planning"}:
-                self.wake.set()  # Waiting, unchanged and pending turns keep the 1 s poll so they never busy-loop.
+                self.wake.set()
+            elif outcome == "pending_action":
+                asyncio.get_running_loop().call_later(0.25, self.wake.set)
+            # Pending turns re-check after 0.25 s; waiting and unchanged turns keep the 1 s poll so they never busy-loop.
             return outcome
         except asyncio.CancelledError:
             self.store.event(run_id, "agent_task_cancelled", {"player_id": player_id, "reason": "Run control or controller shutdown cancelled the agent task."})

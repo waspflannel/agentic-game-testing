@@ -8,12 +8,13 @@ import logging
 import re
 import time
 import traceback
+from collections import Counter
 from datetime import datetime, timezone
 
-from .ai import EXCERPT_CHARS, OPTION_CHARS, ProviderError, picked_options, static_prefix
+from .ai import DELTA_CHARS, EXCERPT_CHARS, OPTION_CHARS, STUCK_DELTAS, ProviderError, band, jev_triage, picked_options, static_prefix
 from .game_controls import run_configuration
 from .menu import GAME_VERBS, SNAPSHOT_CHARS, batch_options, capability_summary, observation_delta, option_key, prompt_observation, resolve
-from .models import MODEL, PROVIDERS, provider_of
+from .models import JEV_MODEL, MODEL, PROVIDERS, provider_of
 from .repository import Repository
 from .store import uid
 from . import facts, repair_tasks, repeat, skills, subgoals
@@ -167,22 +168,24 @@ class StructuredPlayers:
         self.held = {}  # (run_id, player_id) -> item_id of the hotbar slot the controller last pressed; the game does not report it
         self.decision_failed = {}  # (run_id, player_id) -> (goal_id, decision key) whose one replay failed while that goal is active
         self.jev_missed = {}  # (run_id, player_id) -> (goal_id,): a Jev batch or skill on this goal missed, so Sonnet takes the next turn
+        self.deltas = {}  # (run_id, player_id) -> (goal_id, last prompt view, [(time, delta_json), ...]): Jev hybrid only, the last STUCK_DELTAS changes on this goal
+        self.judged = {}  # (run_id, player_id) -> the own-action line whose effect Jev already judged
         self.crashes_recorded = set()
 
     def snapshot(self, key, generation, context):
-        """The prompt observation the cached prefix holds for this player generation; replaced only when the delta outgrows it."""
+        """(the prompt observation the cached prefix holds for this player generation, this turn's view); replaced only when the delta outgrows it."""
         view = prompt_observation(context["observation"], max_chars=SNAPSHOT_CHARS)
         kept = self.snapshots.get(key)
         if not kept or kept[0] != generation or len(json.dumps(observation_delta(kept[1], view))) > SNAPSHOT_RESET_CHARS:
             kept = self.snapshots[key] = (generation, view)
-        return kept[1]
+        return kept[1], view
 
     def _forget_turn(self, key):
         self.waits.pop(key, None)
         self.last_decisions.pop(key, None)
         # The code-wait budget, step index, intents and failed decision belong to one goal; a replan of the same goal keeps them.
         plan = self.store.require("runs", key[0]).get("subgoal_plan") or {}
-        for kept in (self.code_waits, self.step_index, self.goal_intents, self.decision_failed, self.jev_missed):
+        for kept in (self.code_waits, self.step_index, self.goal_intents, self.decision_failed, self.jev_missed, self.deltas):
             if key in kept and kept[key][0] != plan.get("active_goal_id"):
                 del kept[key]
 
@@ -621,7 +624,18 @@ class StructuredPlayers:
             known = check.get("fact", "unknown") != "unknown"
             value = facts.read(facts.values(observation), check["fact"], facts.args_of(check)) if known else None
             cause = ("planner_gap" if not known else "mcp_gap" if value is None
-                     else "game_bug" if effects and all(e == "no_effect" for e in effects) else "planner_gap")
+                     else "game_bug" if effects and all(e == "no_effect" for e in effects) else None)
+            source = "rule"
+            if cause is None:
+                cause = "planner_gap"  # The rule's default when it can't decide.
+                if run["plan"].get("decision_engine") == "jev_hybrid":
+                    gap = {"objective": focus["objective"], "completion": check, "measured": focus.get("measured"), "missing": missing[:500],
+                           "tried": [str(t)[:200] for t in tried][:10], "effects": dict(Counter(effects))}
+                    label, confidence = await jev_triage(gap, run["plan"].get("jev_model") or JEV_MODEL)
+                    self.store.event(run_id, "jev_check", {"player_id": player_id, "goal_id": focus["id"], "check": "triage",
+                                                           "choice": label, "confidence": confidence, "applied": label is not None})
+                    if label:
+                        cause, source = label, "jev"
             basis = {"kind": kind, "cause": cause, "focus_objective": repair_tasks.target_label(focus["objective"]),
                      "missing": re.sub(r"(?<=\.)\d+(?=[.)])", "#", missing)[:200]}
             bounded = []
@@ -631,7 +645,7 @@ class StructuredPlayers:
             shown = missing
             if known:
                 shown += f" (measured {focus.get('measured')}, target {check['op']} {check['value']})"
-            sections = {"gap": {"kind": kind, "cause": cause, "missing": shown, "tried": bounded,
+            sections = {"gap": {"kind": kind, "cause": cause, "cause_source": source, "missing": shown, "tried": bounded,
                 "subgoal": {"id": focus["id"], "objective": focus["objective"], "completion": focus["completion"],
                             "goal_path": [g["objective"] for g in subgoals.goal_path(plan, focus["id"])]}},
                 "capabilities": capability_summary(observation)}
@@ -669,7 +683,7 @@ class StructuredPlayers:
 
     def forget_run(self, run_id):
         for counters in (self.loop_counts, self.movement_stalls, self.bug_reports, self.turn_ended_at, self.snapshots, self.code_waits, self.step_index,
-                         self.goal_intents, self.held, self.decision_failed, self.jev_missed):
+                         self.goal_intents, self.held, self.decision_failed, self.jev_missed, self.deltas, self.judged):
             for key in [k for k in counters if k[0] == run_id]:
                 del counters[key]
         self.crashes_recorded -= {e for e in self.crashes_recorded if e[0] == run_id}
@@ -823,7 +837,7 @@ class StructuredPlayers:
         self.status(run_id, player_id, "planning", "Finding the next achievable prerequisite for: " + context["current_goal"]["objective"], generation)
         warnings = []
         # The same snapshot as the batch, so planning and batch share one cached prefix.
-        prefix = static_prefix(context, self.snapshot((run_id, player_id), generation, context))
+        prefix = static_prefix(context, self.snapshot((run_id, player_id), generation, context)[0])
         self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": revision, "context": context,
                          "prefix_sha": hashlib.sha256(prefix.encode()).hexdigest()[:12]})
         for attempt in range(2):
@@ -1193,6 +1207,8 @@ class StructuredPlayers:
         started = time.monotonic()
         with timed(timing, "decide"):
             res = await self.coordinator.ai.jev_turn(context, library, dispatch, current, run_id)
+        if res:
+            self._apply_checks(run_id, player_id, goal, context, res["checks"])
         if res and res["status"] == "skill":
             with timed(timing, "act"):
                 stop, ran = await self._run_jev_skill(run_id, player_id, generation, current, context, observation, goal, res["key"], timing)
@@ -1209,8 +1225,29 @@ class StructuredPlayers:
         if res["status"] == "fallback":
             routing["fallback"] = res["reason"]
             return None, None, []
-        routing.update(route="jev", pick="action", model=res["model"])
+        routing.update(route="jev", pick=res["pick"], model=res["model"])
         return res, None, []
+
+    def _apply_checks(self, run_id, player_id, goal, context, checks):
+        """Logs each Jev quick check; only a stuck yes acts, as one more attempt, and never against a fact that moved in the window."""
+        key = (run_id, player_id)
+        for check, noul in checks.items():
+            b = band(noul)
+            payload = {"player_id": player_id, "goal_id": goal["id"], "check": check, "noul": noul, "band": b, "applied": False}
+            if check == "stuck" and b == "yes":
+                if goal.get("progress_at", 0) >= self.deltas[key][2][0][0]:
+                    payload["reason"] = "fact_progress"
+                else:
+                    run = self.store.require("runs", run_id)
+                    subgoals.record_action(run["subgoal_plan"])
+                    self.store.put("runs", run)
+                    payload["applied"] = True
+            elif check == "effect":
+                fact = "done" if context["recent_own_actions"][-1]["effect"] == "changed" else "not_done"
+                payload.update(fact=fact, disagree=(fact == "done" and b == "no") or (fact == "not_done" and b == "yes"))
+            elif check == "blocker":
+                payload["applied"] = b == "yes"
+            self.store.event(run_id, "jev_check", payload)
 
     async def turn(self, run_id, player_id, tick_seconds=None):
         key = (run_id, player_id)
@@ -1226,6 +1263,8 @@ class StructuredPlayers:
             self.turn_ended_at.pop(key, None)
             self.bug_reports.pop(key, None)
             self.snapshots.pop(key, None)
+            self.deltas.pop(key, None)
+            self.judged.pop(key, None)
             self.code_waits.pop(key, None)
             self.step_index.pop(key, None)
             self.generations[key] = generation
@@ -1304,7 +1343,20 @@ class StructuredPlayers:
                     "observation_ref": subgoals.observation_ref(observation), "source_revision": run["build"].get("source_revision")})
             timing["bytes"].update(prompt_observation=json_bytes(context["observation"]), decision_context=json_bytes(context))
             timing["context_truncated"] = bool(context["observation"].get("context_truncated"))
-            snapshot = self.snapshot(key, generation, context)
+            snapshot, view = self.snapshot(key, generation, context)
+            if run["plan"].get("decision_engine") == "jev_hybrid" and goal:
+                # Jev's stuck and effect checks read this goal's last few observation changes.
+                kept = self.deltas.get(key)
+                entries = []
+                if kept and kept[0] == goal["id"]:
+                    delta = json.dumps(observation_delta(kept[1], view), ensure_ascii=False)[:DELTA_CHARS]
+                    entries = (kept[2] + [(time.time(), delta)])[-STUCK_DELTAS:]
+                self.deltas[key] = (goal["id"], view, entries)
+                context["recent_changes"] = [d for _, d in entries]
+                line = (context.get("recent_own_actions") or [{}])[-1]
+                if line.get("effect") and line != self.judged.get(key):
+                    context["judge_effect"] = True
+                    self.judged[key] = line
             self.last_decisions[key] = (signature, time.time(), generation)
             decision_started_at = time.time()
             result, first, stop, ran, finished, replayed = None, {}, None, [], False, None

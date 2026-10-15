@@ -62,6 +62,28 @@ def json_bytes(value):
     return len(json.dumps(value, ensure_ascii=False, default=str).encode())
 
 
+def capped_delta(snapshot, view, cap=SNAPSHOT_RESET_CHARS):
+    """observation_delta with its JSON at most cap chars: in delta order, tiles and entities past the cap are dropped and truncated is set."""
+    delta = observation_delta(snapshot, view)
+    if len(json.dumps(delta)) <= cap:
+        return delta
+    kept = {k: type(v)() for k, v in delta.items()} | {"state": delta["state"], "truncated": True}
+    room = cap - len(json.dumps(kept))
+    for name, items in delta.items():
+        if name == "state":
+            continue
+        for item in items.items() if isinstance(items, dict) else items:
+            cost = len(json.dumps(dict([item]) if isinstance(items, dict) else item)) + 2  # The item plus its separator.
+            if cost > room:
+                return kept
+            room -= cost
+            if isinstance(items, dict):
+                kept[name][item[0]] = item[1]
+            else:
+                kept[name].append(item)
+    return kept
+
+
 def wait_signature(observation):
     state = observation.get("state", {})
     player = state.get("player", {})
@@ -837,13 +859,16 @@ class StructuredPlayers:
         self.status(run_id, player_id, "planning", "Finding the next achievable prerequisite for: " + context["current_goal"]["objective"], generation)
         warnings = []
         # The same snapshot as the batch, so planning and batch share one cached prefix.
-        prefix = static_prefix(context, self.snapshot((run_id, player_id), generation, context)[0])
-        self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": revision, "context": context,
+        snapshot, view = self.snapshot((run_id, player_id), generation, context)
+        prefix = static_prefix(context, snapshot)
+        # The prefix holds the snapshot, so the planner gets only what changed since; validation keeps the full context.
+        sent = {k: v for k, v in context.items() if k != "observation"} | {"observation_delta": capped_delta(snapshot, view)}
+        self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": revision, "context": sent,
                          "prefix_sha": hashlib.sha256(prefix.encode()).hexdigest()[:12]})
         for attempt in range(2):
             warnings = []
             with timed(timing, "plan_model"):
-                proposal = await self.coordinator.ai.plan_subgoals(context, run_id, prefix=prefix)
+                proposal = await self.coordinator.ai.plan_subgoals(sent, run_id, prefix=prefix)
             if not current():
                 self.store.event(run_id, "subgoal_planning_cancelled", {"player_id": player_id, "reason": "Run control changed during planning"})
                 return None
@@ -874,6 +899,7 @@ class StructuredPlayers:
                                                missing=f"The planner's completion check did not match fact_catalog: {reason}")
                 # One corrective retry: show the planner its rejected answer and the validator's reason.
                 context = {**context, "previous_attempt_rejected": {"reason": reason, "rejected_answer": proposal}}
+                sent = {**sent, "previous_attempt_rejected": context["previous_attempt_rejected"]}
         revised["last_planning_key"] = planning_key  # Only an applied plan counts; cancelled or rejected planning may retry.
         live["subgoal_plan"] = revised
         self.store.put("runs", live)

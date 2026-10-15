@@ -183,14 +183,17 @@ class StructuredPlayers:
             run["players"][player_id]["pending_action"] = None
             self.store.put("runs", run)
 
-    async def call_game(self, run_id, player_id, operation, arguments=None):
+    async def call_game(self, run_id, player_id, operation, arguments=None, *, settle_seconds=0):
         run, ps = self.binding(run_id, player_id)
         return await self.coordinator.request(ps["worker_id"], "POST", "/game", {
             "run_id": run_id, "player_id": player_id, "epoch": ps["epoch"],
-            "operation": operation, "arguments": arguments or {}})
+            "operation": operation, "arguments": arguments or {}, "settle_seconds": settle_seconds})
 
     async def observe(self, run_id, player_id):
-        result = await self.call_game(run_id, player_id, "observe")
+        return self._accept_observation(run_id, player_id, await self.call_game(run_id, player_id, "observe"))
+
+    def _accept_observation(self, run_id, player_id, result):
+        """Check a worker observation's identity and freshness, then store it as the player's latest."""
         if result.get("schema_version") != 1 or result.get("run_id") != run_id or result.get("player_id") != player_id:
             raise ValueError("Structured game observation identity/schema mismatch")
         if not result.get("observation_id"):
@@ -260,9 +263,9 @@ class StructuredPlayers:
             return {"status": "waiting", "until": self.waits[key][0]}
         if name != "perform_action":
             return {"error": "Unsupported structured tool"}
-        return await self._perform_action(run_id, player_id, args, observation, generation, owner)
+        return await self._perform_action(run_id, player_id, args, observation, generation, owner, settle=owner == "agent")
 
-    async def _perform_action(self, run_id, player_id, args, observation, generation, owner):
+    async def _perform_action(self, run_id, player_id, args, observation, generation, owner, *, settle=False):
         run, ps = self.binding(run_id, player_id)
         key = (run_id, player_id)
         if key in self.pending:
@@ -293,7 +296,7 @@ class StructuredPlayers:
         self.status(run_id, player_id, "acting", str(args.get("reason") or f"Performing {args['verb']}"), generation, action_id=action_id)
         self.last_decisions.pop(key, None)
         try:
-            result = await self.call_game(run_id, player_id, "perform_action", payload)
+            result = await self.call_game(run_id, player_id, "perform_action", payload, settle_seconds=1 if settle else 0)
         except Exception as exc:
             # A worker HTTP 4xx is a definitive pre-execution rejection; only transport/5xx outcomes are unknown.
             rejected = 400 <= (getattr(exc, "status_code", None) or 0) < 500 and getattr(exc, "ambiguous", True) is False
@@ -301,13 +304,31 @@ class StructuredPlayers:
                       "reason": str(exc) if rejected else "Acknowledgement lost; reconcile status",
                       "error": f"{type(exc).__name__}: {exc}", "error_code": getattr(exc, "code", None),
                       "http_status": getattr(exc, "status_code", None)}
+        # A settling worker returns the final status plus the post-action observation.
+        fresh = result.pop("observation", None)
+        if fresh is not None:
+            fresh = self._accept_observation(run_id, player_id, fresh)
+        settled = (fresh is not None and result.get("acknowledged_status") in {"running", "accepted"}
+                   and result.get("status", "unknown") not in {"running", "accepted", "unknown"})
+        # The ledger keeps the acknowledgement as action_result and the final status as structured_action_outcome.
+        ack = {**result, "status": result["acknowledged_status"]} if settled else result
         outcome_event = self.store.event(run_id, "action_result", {"player_id": player_id, "action_id": action_id,
-            "intent_event_id": event["id"], "result": result, "mode": "structured", "retries": 0})
-        if result.get("status") == "rejected" and result.get("http_status") not in {None, 409}:
+            "intent_event_id": event["id"], "result": ack, "mode": "structured", "retries": 0})
+        if ack.get("status") == "rejected" and ack.get("http_status") not in {None, 409}:
             await self.report_unsupported(run_id, player_id, "worker_rejected", {"tool": "perform_action",
                 "verb": payload["verb"], "target_id": payload["target_id"] or None, "parameters": payload["parameters"],
                 "controller": "agent" if owner == "agent" else "mcp"}, observation,
                 outcome=result, event_ids=(outcome_event["id"],))
+        if settled:
+            if result.get("status") == "completed":
+                settle_effect(result, ps["pending_action"]["before"], fresh)
+            self.store.event(run_id, "structured_action_outcome", {"player_id": player_id, "result": result})
+            self.clear_pending(run_id, player_id, generation)
+            await self._after_outcome(run_id, player_id, generation, payload["verb"], fresh, result)
+            result["observation"] = fresh
+            return result
+        if fresh is not None:
+            result["observation"] = fresh
         if result.get("status", "unknown") not in {"running", "accepted", "unknown"}:
             self.clear_pending(run_id, player_id, generation)
         if result.get("status") in FAILED_STATUSES:
@@ -811,6 +832,10 @@ class StructuredPlayers:
         verb = (ps.get("pending_action") or {}).get("verb")
         self.clear_pending(run_id, player_id, generation)
         self.last_decisions.pop(key, None)
+        return await self._after_outcome(run_id, player_id, generation, verb, observation, result)
+
+    async def _after_outcome(self, run_id, player_id, generation, verb, observation, result):
+        """Apply the settled-outcome rules: stalled-move pause, replan on the second failure; True when the turn must end."""
         if result.get("status") in FAILED_STATUSES:
             if await self._pause_if_stalled(run_id, player_id, generation, verb, observation, result):
                 return True
@@ -897,6 +922,8 @@ class StructuredPlayers:
                 self.status(run_id, player_id, "tool", f"Using {name}.", generation)
                 with timed(timing, "tool:" + name):
                     result = await self.dispatch(run_id, player_id, name, args, observation, generation)
+                if name == "perform_action":
+                    result.pop("observation", None)  # Stored already as the latest observation; keep it out of the ledger.
                 if name == "observe" and result.get("observation_id"):
                     observation = result
                     result = prompt_observation(result)

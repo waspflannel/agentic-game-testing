@@ -383,9 +383,9 @@ class StructuredPlayers:
         return result
 
     def _count_invalid(self, run_id, player_id, generation, result):
-        """The pause counts consecutive failures: a non-failed result resets it, and a stale-target rejection delivered no input so it is skipped."""
+        """The pause counts consecutive failures: a settled non-failed result resets it; in-progress results and stale-target rejections (no input delivered) are skipped."""
         failed = result.get("status") in FAILED_STATUSES
-        if failed and result.get("status") == "rejected" and "Target changed" in str(result.get("reason")):
+        if result.get("status", "unknown") in {"running", "accepted", "unknown"} or (failed and result.get("status") == "rejected" and "Target changed" in str(result.get("reason"))):
             return
         latest = self.store.require("runs", run_id)
         ps = latest["players"][player_id]
@@ -974,6 +974,7 @@ class StructuredPlayers:
             await self.coordinator.investigate(run_id, "unknown_execution", "Structured action acknowledgement could not be reconciled; fresh review required", [player_id])
             return True
         verb = (ps.get("pending_action") or {}).get("verb")
+        self._count_invalid(run_id, player_id, generation, result)
         self.clear_pending(run_id, player_id, generation)
         self.last_decisions.pop(key, None)
         return await self._after_outcome(run_id, player_id, generation, verb, observation, result)

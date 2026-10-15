@@ -284,6 +284,8 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
             "lookahead_used": sum(1 for event in events if event["kind"] == "lookahead_used"),
             "lookahead_discarded": sum(1 for event in events if event["kind"] == "lookahead_discarded"),
             "plan_triggers": dict(Counter(row["plan_trigger"] for row in timings if row.get("plan_trigger"))),
+            "goals_by_fact": dict(Counter(g["completion"]["fact"] for g in next(
+                (e["payload"]["plan"]["goals"] for e in reversed(events) if e["kind"] == "subgoal_plan_updated"), []))),
             "plan_rejected": sum((row.get("counts") or {}).get("plan_rejected", 0) for row in timings),
             "rejected_events": sum(1 for event in events if event["kind"] == "subgoal_plan_rejected"),
             "plan_seconds_share": _ratio(plan_seconds, turn_total),

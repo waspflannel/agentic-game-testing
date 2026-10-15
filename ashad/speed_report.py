@@ -277,8 +277,8 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
         "validator_retries": {
             "planning_turns": sum(1 for row in timings if row.get("outcome") == "planning"),
             "planner_attempts": sum((row.get("calls") or {}).get("plan_model", 0) for row in timings),
-            "macro_actions": sum((row.get("counts") or {}).get("macro_actions", 0) for row in timings),
-            "macro_stops": dict(Counter(event["payload"].get("reason", "unknown") for event in events if event["kind"] == "macro_stopped")),
+            "repeat_actions": sum((row.get("counts") or {}).get("repeat_actions", 0) + (row.get("counts") or {}).get("macro_actions", 0) for row in timings),
+            "repeat_stops": dict(Counter(event["payload"].get("reason", "unknown") for event in events if event["kind"] in ("repeat_stopped", "macro_stopped"))),
             "skill_replays": sum(1 for event in events if event["kind"] in ("skill_replayed", "recipe_replayed")),
             "skill_failures": sum(1 for event in events if event["kind"] in ("skill_failed", "recipe_failed")),
             "lookahead_used": sum(1 for event in events if event["kind"] == "lookahead_used"),

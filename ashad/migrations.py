@@ -104,3 +104,10 @@ def drop_recipes(store):
     """Per-configuration recipes were replaced by the project skill library; their configuration-bound steps are not migrated."""
     with store.transaction() as db:
         db.execute("DELETE FROM records WHERE kind='recipes'")
+
+
+def drop_macro_skills(store):
+    """Farming macros became general repeat steps; skills that name a removed macro are dropped and rebuild on the next win."""
+    with store.transaction() as db:
+        db.execute("DELETE FROM records WHERE kind='skills' AND EXISTS (SELECT 1 FROM json_each(data, '$.steps') "
+                   "WHERE json_extract(value, '$.control') IN ('till_area', 'plant_all', 'water_all', 'harvest_all'))")

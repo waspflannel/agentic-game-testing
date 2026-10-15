@@ -17,13 +17,13 @@ from .game_controls import run_configuration
 from .models import MODEL, PROVIDERS, provider_of
 from .repository import Repository
 from .store import uid
-from . import facts, macros, repair_tasks, skills, subgoals
+from . import facts, repair_tasks, repeat, skills, subgoals
 
 LOG = logging.getLogger(__name__)
 LOOP_BACKSTOP_DECISIONS = 6
 MOVEMENT_STALL_LIMIT = 2  # Failed moves from one unchanged position: input is not reaching the character.
 BATCH_LIMIT = 5  # Actions per turn from one batch decide.
-MACRO_LIMIT = 30  # Actions per turn from one code macro.
+REPEAT_LIMIT = 30  # Actions per turn from one repeat step.
 SNAPSHOT_RESET_CHARS = 12000  # A delta this large costs more than a fresh snapshot (one cache write).
 TIMER_FACTS = ("crops_harvestable", "crop_growth_stage_min")  # Growth facts the code waits on after the model chose to wait.
 CODE_WAIT_STEP = 10
@@ -161,9 +161,9 @@ class StructuredPlayers:
         self.snapshots = {}  # (run_id, player_id) -> (goal_id, generation, prompt observation at subgoal start)
         self.code_waits = {}  # (run_id, player_id) -> (goal_id, seconds of code waits used)
         self.step_index = {}  # (run_id, player_id) -> (goal_id, index of the goal's next unfinished step, decider takes the next turn)
-        self.goal_intents = {}  # (run_id, player_id) -> (goal_id, [macros.step_for of each agent action]), saved as a skill when the goal completes
+        self.goal_intents = {}  # (run_id, player_id) -> (goal_id, [repeat.step_for of each agent action]), saved as a skill when the goal completes
         # (run_id, player_id) -> (next leaf's goal_id, plan revision once the current leaf completes, planning_scene at start, planner task).
-        # At most one per player, started while a code macro runs; advance_plan uses or cancels it.
+        # At most one per player, started while a repeat step runs; advance_plan uses or cancels it.
         self.lookahead = {}
         self.crashes_recorded = set()
 
@@ -326,8 +326,7 @@ class StructuredPlayers:
             goal_id = run["subgoal_plan"].get("active_goal_id")
             if self.goal_intents.get(key, (None,))[0] != goal_id:
                 self.goal_intents[key] = (goal_id, [])
-            goal_fact = (subgoals.active_goal(run["subgoal_plan"]) or {}).get("completion", {}).get("fact", "")
-            self.goal_intents[key][1].append(macros.step_for(payload, observation, goal_fact))
+            self.goal_intents[key][1].append(repeat.step_for(payload, observation))
         self.store.put("runs", run)
         self.status(run_id, player_id, "acting", str(args.get("reason") or f"Performing {args['verb']}"), generation, action_id=action_id)
         self.last_decisions.pop(key, None)
@@ -771,7 +770,7 @@ class StructuredPlayers:
         self.status(run_id, player_id, "planning", "Finding the next achievable prerequisite for: " + context["current_goal"]["objective"], generation)
         warnings = []
         self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": revision, "context": context})
-        # A look-ahead planned while the last macro ran is this leaf's first attempt when nothing it saw has changed.
+        # A look-ahead planned while the last repeat step ran is this leaf's first attempt when nothing it saw has changed.
         proposal, ahead = None, self.lookahead.pop((run_id, player_id), None)
         if ahead:
             ahead_goal_id, ahead_revision, scene, task = ahead
@@ -782,7 +781,7 @@ class StructuredPlayers:
             else:
                 try:
                     with timed(timing, "plan_model"):
-                        # Its first_actions name the macro-start observation's options, so the decider picks instead.
+                        # Its first_actions name the repeat-step-start observation's options, so the decider picks instead.
                         proposal = {**await task, "first_actions": []}
                 except Exception:
                     why = "error"
@@ -873,8 +872,9 @@ class StructuredPlayers:
         skill = skills.find(self.store, project_id, goal["completion"])
         if not skill:
             return False
+        # Steps rebuilt from dispatched actions verify nothing (unknown), so the goal's own fact must be readable instead.
         first = skill["steps"][0]["verifies"]
-        check = goal["completion"] if goal["completion"]["fact"] == first else {"fact": first, "args": []}
+        check = goal["completion"] if first in (goal["completion"]["fact"], "unknown") else {"fact": first, "args": []}
         if subgoals.measure({**check, "op": ">=", "value": 0}, observation)[1] is None:
             return False
         goal.update(steps=skills.bind(skill["steps"], goal["completion"], replay=True, measured=goal.get("measured")),
@@ -969,8 +969,8 @@ class StructuredPlayers:
         """Run actions from `next_action(fresh) -> (action | None, why)` back to back, each chosen on the observation the previous action left.
 
         `start` is the observation the batch was chosen on. `last` is the result of the batch action already run (its
-        post-action observation is `fresh`), or None when the batch starts here on `fresh`. With a `tried` set (macros),
-        one no_effect that is not a move is tolerated: a use_item's tile joins `tried` and the next pick skips it; a
+        post-action observation is `fresh`), or None when the batch starts here on `fresh`. With a `tried` set (repeat steps),
+        one no_effect that is not a move is tolerated: the used target joins `tried` and the next pick skips it; a
         second no_effect in a row stops. Returns the stop reason and the actions dispatched here."""
         key = (run_id, player_id)
         run = self.store.require("runs", run_id)
@@ -997,9 +997,9 @@ class StructuredPlayers:
                 elif tried is None or missed or not ran or ran[-1]["args"].get("verb") == "move_to":
                     return "no_effect", ran
                 else:
-                    position = ran[-1]["args"].get("parameters", {}).get("world_position")
-                    if position:
-                        tried.add(tuple(position))
+                    target = repeat.action_key(ran[-1])
+                    if target is not None:
+                        tried.add(target)
                     missed = True
             if goal and subgoals.measure(goal["completion"], fresh)[0]:
                 return "goal_met", ran
@@ -1023,7 +1023,7 @@ class StructuredPlayers:
             done += 1
 
     def _start_lookahead(self, run_id, player_id, run, player, plan, observation):
-        """Start planning the leaf after this one in parallel with a code macro, unless a saved skill will replay it.
+        """Start planning the leaf after this one in parallel with a repeat step, unless a saved skill will replay it.
 
         Builds the planning context exactly as advance_plan does, from a copy of the plan with the current leaf completed."""
         key = (run_id, player_id)
@@ -1050,21 +1050,30 @@ class StructuredPlayers:
         self.lookahead[key] = (leaf["id"], ahead_plan["revision"], subgoals.planning_scene(observation), task)
         self.store.event(run_id, "lookahead_started", {"player_id": player_id, "goal_id": leaf["id"]})
 
-    async def _run_macro(self, run_id, player_id, generation, current, context, observation, step, timing):
-        """Run one macro step (`step["control"]` names a MACROS entry, `step["item"]` the hotbar item) in code, with no model call.
+    async def _run_repeat(self, run_id, player_id, generation, current, context, observation, step, check, timing):
+        """Run one repeat step (`step["targets"]` the field=value conditions, `step["control"]` the input or verb, `step["item"]` the hotbar item) in code, with no model call.
 
-        Selects the item's hotbar slot first, then moves to and uses each matching tile until a stop. Returns the stop
-        reason and the actions dispatched."""
-        macro, selected, tried = step["control"], False, set()
+        Stops once `check` has moved by `step["count"]` (`count` uses when the step verifies nothing), or on the batch
+        stops. Returns the stop reason and the actions dispatched."""
+        state = {"select": "", "tried": set(), "skipped": False}
+        before = subgoals.measure(check, observation)[1]
+        uses = 0
         def next_action(fresh):
-            nonlocal selected
-            action, why = macros.next_action(macro, step, {**context, "observation": fresh}, selected, tried)
-            selected = selected or why == "select"
+            nonlocal uses
+            if step["count"]:
+                if step["verifies"] == "unknown" and uses >= step["count"]:
+                    return None, "done"
+                now = subgoals.measure(check, fresh)[1] if before is not None else None
+                if now is not None and abs(now - before) >= step["count"]:
+                    return None, "done"
+            action, why = repeat.next_action(step, {**context, "observation": fresh}, state)
+            uses += why == "use"
             return action, why
         stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None,
-                                          next_action, timing, MACRO_LIMIT, tried)
-        timing["counts"]["macro_actions"] = timing["counts"].get("macro_actions", 0) + len(ran)
-        self.store.event(run_id, "macro_stopped", {"player_id": player_id, "macro": macro, "item": step.get("item", ""), "reason": stop, "actions": len(ran)})
+                                          next_action, timing, REPEAT_LIMIT, state["tried"])
+        timing["counts"]["repeat_actions"] = timing["counts"].get("repeat_actions", 0) + len(ran)
+        self.store.event(run_id, "repeat_stopped", {"player_id": player_id, "control": step["control"], "targets": step["targets"], "item": step.get("item", ""),
+                                                    "select": state["select"], "reason": stop, "actions": len(ran)})
         return stop, ran
 
     async def turn(self, run_id, player_id, tick_seconds=None):
@@ -1167,29 +1176,29 @@ class StructuredPlayers:
             self.last_decisions[key] = (signature, time.time(), generation)
             decision_started_at = time.time()
             result, first, stop, ran, finished = None, {}, None, [], False
-            # The leaf's next unfinished step runs in code when it names a macro. A macro stop that leaves the step
-            # unfinished after dispatching actions hands the next turn to the decider; then the macro is tried again.
+            # The leaf's next unfinished step runs in code when it is a repeat step. A repeat stop that leaves the step
+            # unfinished after dispatching actions hands the next turn to the decider; then the repeat step is tried again.
             steps = (goal or {}).get("steps") or []
             goal_id, index, decider_turn = self.step_index.get(key) or (None, 0, False)
             if not goal or goal_id != goal["id"]:
                 index, decider_turn = 0, False
-            # A select right before a macro on the same item is redundant: the macro selects its own item first.
+            # A select right before a repeat step on the same item is redundant: the repeat selects its own item first.
             if (index + 1 < len(steps) and (steps[index]["control"] == "select" or steps[index]["control"].startswith("slot_"))
-                    and steps[index + 1]["control"] in macros.MACROS and steps[index + 1]["item"] == steps[index]["item"]):
+                    and steps[index + 1].get("targets") and steps[index + 1]["item"] == steps[index]["item"]):
                 index += 1
             step = steps[index] if index < len(steps) else None
             if steps and context.get("current_goal"):
-                # The decider and relevant_groups' tile filter see only the unfinished steps, so a finished macro's tiles are not the ones kept.
+                # The decider and relevant_groups' tile filter see only the unfinished steps, so a finished repeat step's tiles are not the ones kept.
                 context["current_goal"]["steps"] = steps[index:]
             if planned_keys:
                 # The planner named the first batch: run it on the post-planning observation, with no decide call.
                 stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None, queued_actions(context, planned_keys), timing)
-            elif step and step["control"] in macros.MACROS and not decider_turn:
-                # The verifying fact reads the goal's plant_id when the goal checks another fact (e.g. item_count), else it would read the zero default.
-                check = {"fact": step["verifies"], "args": [a for a in goal["completion"]["args"] if goal["completion"]["fact"] == step["verifies"] or a["name"] == "plant_id"], "op": ">=", "value": 0}
+            elif step and step.get("targets") and not decider_turn:
+                # The verifying fact reads the goal's args that it also takes (e.g. plant_id); others read its default.
+                check = {"fact": step["verifies"], "args": [a for a in goal["completion"]["args"] if a["name"] in facts.FACTS.get(step["verifies"], ((),))[0]], "op": ">=", "value": 0}
                 before = subgoals.measure(check, observation)[1]
                 self._start_lookahead(run_id, player_id, run, player, plan, observation)
-                stop, ran = await self._run_macro(run_id, player_id, generation, current, context, observation, step, timing)
+                stop, ran = await self._run_repeat(run_id, player_id, generation, current, context, observation, step, check, timing)
                 after = subgoals.measure(check, self.store.get("observations", f"{run_id}:{player_id}") or {})[1]
                 finished = stop in ("goal_met", "done") or bool(step["count"] and before is not None and after is not None and abs(after - before) >= step["count"])
                 self.step_index[key] = (goal["id"], index + finished, not finished and bool(ran))

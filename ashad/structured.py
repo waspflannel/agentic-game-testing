@@ -896,29 +896,36 @@ class StructuredPlayers:
         if (not project_id or goal["id"] == plan["root_id"] or any(g.get("parent_id") == goal["id"] for g in plan["goals"])
                 or any((plan.get("reason") or "").startswith(prefix) for prefix, _ in PLAN_TRIGGERS)):
             return False
-        skill = skills.find(self.store, project_id, goal["completion"])
-        if not skill:
+        candidates = skills.find(self.store, project_id, goal["completion"])
+        if not candidates:
             return False
-        # Steps rebuilt from dispatched actions verify nothing (unknown), so the goal's own fact must be readable instead.
-        first = skill["steps"][0]["verifies"]
-        check = goal["completion"] if first in (goal["completion"]["fact"], "unknown") else {"fact": first, "args": []}
-        if subgoals.measure({**check, "op": ">=", "value": 0}, observation)[1] is None:
-            return False
-        steps = skills.bind(skill["steps"], goal["completion"], replay=True, measured=goal.get("measured"))
-        # A skill whose first action is not offered here is not tried; the planner takes the leaf, and nothing is counted against the skill.
-        step = next((s for s in steps if s.get("targets") or s["control"] != "select"), None)
         player = next(p for p in run["plan"]["players"] if p["id"] == player_id)
         context = {**self.decision_context(run, player, observation), "observation": observation}
-        if step is None:
-            action = None
-        elif step.get("targets"):
-            action, _ = repeat.next_action(step, context, {"select": "", "tried": set(), "skipped": False, "held": self.held.get((run_id, player_id), "")})
+        skipped = False
+        for index, (key, skill) in enumerate(candidates):
+            # Steps rebuilt from dispatched actions verify nothing (unknown), so the goal's own fact must be readable instead.
+            first = skill["steps"][0]["verifies"]
+            check = goal["completion"] if first in (goal["completion"]["fact"], "unknown") else {"fact": first, "args": []}
+            if subgoals.measure({**check, "op": ">=", "value": 0}, observation)[1] is None:
+                continue
+            steps = skills.bind(skill["steps"], goal["completion"], replay=True, measured=goal.get("measured"))
+            # A skill whose first action is not offered here is not tried; nothing is counted against it.
+            step = next((s for s in steps if s.get("targets") or s["control"] != "select"), None)
+            if step is None:
+                action = None
+            elif step.get("targets"):
+                action, _ = repeat.next_action(step, context, {"select": "", "tried": set(), "skipped": False, "held": self.held.get((run_id, player_id), "")})
+            else:
+                action = repeat.ordinary(step, context)
+            if action is not None:
+                break
+            skipped = skipped or index == 0
         else:
-            action = repeat.ordinary(step, context)
-        if action is None:
-            self.store.event(run_id, "skill_skipped", {"player_id": player_id, "goal_id": goal["id"], "skill": skill["name"], "why": "not_offered"})
+            # No candidate is offered: the planner takes the leaf.
+            if skipped:
+                self.store.event(run_id, "skill_skipped", {"player_id": player_id, "goal_id": goal["id"], "skill": candidates[0][1]["name"], "why": "not_offered"})
             return False
-        goal.update(steps=steps, actionable=True, skill=skill["name"])
+        goal.update(steps=steps, actionable=True, skill=skill["name"], skill_key=key)
         self.store.put("runs", run)
         self.step_index.pop((run_id, player_id), None)  # Replay starts at the skill's first step.
         self.store.event(run_id, "skill_replayed", {"player_id": player_id, "skill": skill["name"], "goal_id": goal["id"]})
@@ -931,11 +938,14 @@ class StructuredPlayers:
         if not goal or goal["id"] != goal_id or not goal.get("skill"):
             return False
         skill = goal.pop("skill")
+        skill_key = goal.pop("skill_key", None)
         goal.pop("steps", None)
         goal["actionable"] = False
         self.store.put("runs", run)
         self.step_index.pop((run_id, player_id), None)
-        saved = skills.save(self.store, run.get("project_id"), goal["completion"], None, False, build_id=run["build"].get("id"), run_id=run_id)
+        if not skill_key:
+            return False  # Replayed before skills had per-step keys: nothing to count against.
+        saved = skills.save(self.store, run.get("project_id"), goal["completion"], None, False, build_id=run["build"].get("id"), run_id=run_id, key=skill_key)
         self.store.event(run_id, "skill_failed", {"player_id": player_id, "goal_id": goal_id, "skill": skill, "reason": reason})
         if saved["last_result"]["regression"]:
             await self.report_skill_regression(run_id, player_id, saved, "subgoal", reason)

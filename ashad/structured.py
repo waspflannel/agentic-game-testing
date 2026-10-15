@@ -631,7 +631,7 @@ class StructuredPlayers:
                 if run["plan"].get("decision_engine") == "jev_hybrid":
                     gap = {"objective": focus["objective"], "completion": check, "measured": focus.get("measured"), "missing": missing[:500],
                            "tried": [str(t)[:200] for t in tried][:10], "effects": dict(Counter(effects))}
-                    label, confidence = await jev_triage(gap, run["plan"].get("jev_model") or JEV_MODEL)
+                    label, confidence = await jev_triage(gap, run["plan"].get("jev_model") or JEV_MODEL, self.coordinator.credentials)
                     self.store.event(run_id, "jev_check", {"player_id": player_id, "goal_id": focus["id"], "check": "triage",
                                                            "choice": label, "confidence": confidence, "applied": label is not None})
                     if label:

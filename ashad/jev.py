@@ -1,9 +1,11 @@
-"""TypeSafe Jev client: one POST /v1/systemone per decision, carrying every question about the same state. The key is TYPESAFE_API_KEY only; it is never stored or logged."""
+"""TypeSafe Jev client: one POST /v1/systemone per decision, carrying every question about the same state.
+The key is TYPESAFE_API_KEY if set, else the one saved in Settings (the OS credential store); it is never logged or sent to the browser."""
 from __future__ import annotations
 import asyncio
 import os
 import time
 import httpx
+import keyring.errors
 from .models import JEV_MODEL
 
 URL = "https://api.typesafe.ai/v1/systemone"
@@ -12,6 +14,8 @@ ATTEMPTS = 3
 FAKE_ENV = "ASHAD_JEV_FAKE"
 FAKE_NOUL_ENV = "ASHAD_JEV_FAKE_NOUL"  # Set it to 0.5 / 0.1 to exercise the unsure and no bands.
 RETRY_STATUSES = {429: "rate_limited", 529: "overloaded"}
+KEY_ENV = "TYPESAFE_API_KEY"
+KEY_REFERENCE = "typesafe:jev"
 
 
 class JevError(Exception):
@@ -52,28 +56,44 @@ def _fake() -> bool:
     return os.environ.get(FAKE_ENV) == "1"
 
 
-def status() -> dict:
-    """Words only: reports whether the key is set, never the key itself."""
+def _saved_key(credentials) -> str | None:
+    try:
+        return credentials.get(KEY_REFERENCE)
+    except keyring.errors.KeyringError:
+        return None
+
+
+def api_key(credentials) -> str | None:
+    """TYPESAFE_API_KEY wins over the saved key. Keyring lookups may block, so async callers run this in a thread."""
+    return os.environ.get(KEY_ENV) or _saved_key(credentials)
+
+
+def status(credentials) -> dict:
+    """Booleans and words only: reports whether a key is set, never the key itself. Keyring lookups may block."""
+    result = {"available": True, "fake": False, "key_set": bool(_saved_key(credentials)), "env_set": bool(os.environ.get(KEY_ENV))}
     if _fake():
-        return {"available": True, "fake": True, "message": "Fake Jev (ASHAD_JEV_FAKE=1): local answers, no API calls."}
-    if os.environ.get("TYPESAFE_API_KEY"):
-        return {"available": True, "fake": False, "message": "TYPESAFE_API_KEY is set."}
-    return {"available": False, "fake": False, "message": "TYPESAFE_API_KEY is not set, so Jev hybrid runs use Today's flow."}
+        return {**result, "fake": True, "message": "Fake Jev (ASHAD_JEV_FAKE=1): local answers, no API calls."}
+    if result["env_set"]:
+        return {**result, "message": "TYPESAFE_API_KEY is set and takes precedence over a saved key."}
+    if result["key_set"]:
+        return {**result, "message": "Using the TypeSafe key saved in Settings."}
+    return {**result, "available": False, "message": "No TypeSafe key is saved and TYPESAFE_API_KEY is not set, so Jev hybrid runs use Today's flow."}
 
 
-async def ask(state: str, questions: dict[str, dict], *, model: str = JEV_MODEL) -> dict:
+async def ask(state: str, questions: dict[str, dict], *, credentials, model: str = JEV_MODEL) -> dict:
     """Sends every question in one request. Retries only 429/529, which the API rejected before answering."""
     if _fake():
         return {"model": model, "answers": fake_answers(questions), "usage": {"input_tokens": 0, "output_tokens": 0}, "latency_ms": 0}
-    if not os.environ.get("TYPESAFE_API_KEY"):
-        raise JevError("unavailable", "TYPESAFE_API_KEY is not set.")
+    key = await asyncio.to_thread(api_key, credentials)
+    if not key:
+        raise JevError("unavailable", "No TypeSafe key is saved and TYPESAFE_API_KEY is not set.")
     started = time.monotonic()
     async with httpx.AsyncClient(timeout=TIMEOUT_SECONDS) as client:
         for attempt in range(ATTEMPTS):
             try:
                 response = await client.post(
                     URL, json={"state": state, "model": model, "questions": questions},
-                    headers={"Authorization": "Bearer " + os.environ["TYPESAFE_API_KEY"]})
+                    headers={"Authorization": "Bearer " + key})
             except httpx.TimeoutException:
                 raise JevError("timeout", f"Jev did not answer within {TIMEOUT_SECONDS:g} s.") from None
             except httpx.TransportError:

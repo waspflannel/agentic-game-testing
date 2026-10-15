@@ -167,8 +167,9 @@ async def untruncated(context, dispatch, can_continue):
 class OpenAI:
     def __init__(self, store, credentials=None, *, backend=None, claude_backend=None, grok_backend=None):
         self.store = store
+        self.credentials = credentials or Credentials()
         self.backend = backend if backend is not None else CodexBackend(store)
-        self.claude_backend = claude_backend if claude_backend is not None else ClaudeBackend(store, credentials or Credentials())
+        self.claude_backend = claude_backend if claude_backend is not None else ClaudeBackend(store, self.credentials)
         self.grok_backend = grok_backend if grok_backend is not None else GrokBackend(store)
         self.claude_status = {"configured": False, "status": "not_validated", "model": CLAUDE_MODEL,
                               "api": "claude", "auth_method": "claude_oauth_token",
@@ -595,7 +596,7 @@ class OpenAI:
         if len(state.encode("utf-8")) + len(json.dumps(questions["action"]).encode("utf-8")) > QUESTION_BYTES:
             return fallback("too_large")
         try:
-            response = await jev.ask(state, questions, model=model)
+            response = await jev.ask(state, questions, credentials=self.credentials, model=model)
         except jev.JevError as exc:
             return fallback(f"jev_error:{exc.status}")
         answers, calls = response["answers"], 1
@@ -620,7 +621,7 @@ class OpenAI:
                             for n, key in enumerate(shortlist)}}
                 calls = 2
                 try:
-                    second = await jev.ask(state, retry, model=model)
+                    second = await jev.ask(state, retry, credentials=self.credentials, model=model)
                 except jev.JevError:
                     second = None  # Only the skill pick is lost; request 1's action answer still stands.
                 if second and max(second["answers"][f"fits_{n}"]["noul"] for n in range(len(shortlist))) >= SKILL_FITS:
@@ -668,11 +669,11 @@ TRIAGE_CRITERIA = {
 }
 
 
-async def jev_triage(gap, model):
+async def jev_triage(gap, model, credentials):
     """Label a gap the fixed cause rule can't decide; None keeps the rule's label."""
     try:
         response = await jev.ask(json.dumps(gap, ensure_ascii=False), {"triage": jev.choice("Why did the agent give up on `objective`? Pick the cause in criteria.", TRIAGE_CRITERIA)},
-                                 model=model)
+                                 credentials=credentials, model=model)
     except jev.JevError:
         return None, None
     answer = response["answers"]["triage"]

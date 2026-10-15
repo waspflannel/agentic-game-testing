@@ -60,7 +60,7 @@ class Instances:
             model = request.model or default_model(self.coordinator.ai, settings.get("last_model"))
             decide_model = (settings.get("claude_decide_model") or CLAUDE_DECIDE_MODEL) if provider_of(model) == "claude" else None
             engine = settings.get("decision_engine", "today")
-            if engine == "jev_hybrid" and not jev.status()["available"]:
+            if engine == "jev_hybrid" and not (await asyncio.to_thread(jev.status, self.coordinator.credentials))["available"]:
                 engine = "today"
             build = self.coordinator.validated_build(record["build_id"])
             worker, accounts = await self._allocate_worker(build, request.transport)

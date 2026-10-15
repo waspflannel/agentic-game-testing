@@ -270,7 +270,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         # In particular an import/restart must validate this backend's own home.
         ai_status = {**ai.status, "api": SUBSCRIPTION_PRICING["api"]}
         model_options = [dict(o) for o in MODEL_OPTIONS]
-        return {"settings": settings, "ai": ai_status, "ai_claude": ai.claude_status, "ai_grok": ai.grok_status, "model_options": model_options, "jev": jev.status(), "default_model": default_model(ai, settings.get("last_model")), "builds": builds, "workers": workers, "accounts": store.list("accounts"), "configurations": store.list("configurations"), "runs": store.list("runs"), "usage_count": store.count("usage"), "leases": store.leases(), "projects": store.list("projects"),
+        return {"settings": settings, "ai": ai_status, "ai_claude": ai.claude_status, "ai_grok": ai.grok_status, "model_options": model_options, "jev": await asyncio.to_thread(jev.status, credentials),"default_model": default_model(ai, settings.get("last_model")), "builds": builds, "workers": workers, "accounts": store.list("accounts"), "configurations": store.list("configurations"), "runs": store.list("runs"), "usage_count": store.count("usage"), "leases": store.leases(), "projects": store.list("projects"),
                 "instance_slot": instance_slot(),
                 "workspace_import": {"interrupted": coordinator.import_interrupted()}}
 
@@ -716,6 +716,20 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             require_ai_idle()
             await asyncio.to_thread(ai.claude_backend.clear_token)
             return await ai.validate(CLAUDE_MODEL)
+
+    @app.post("/api/settings/jev/key")
+    async def jev_key_save(body: dict):
+        key = body.get("key")
+        key = key.strip() if isinstance(key, str) else ""
+        if not (key and len(key) <= 512 and not any(c.isspace() for c in key)):
+            raise ValueError("Paste your TypeSafe API key.")
+        await asyncio.to_thread(credentials.save, jev.KEY_REFERENCE, key)
+        return await asyncio.to_thread(jev.status, credentials)
+
+    @app.delete("/api/settings/jev/key")
+    async def jev_key_remove():
+        await asyncio.to_thread(credentials.remove, jev.KEY_REFERENCE)
+        return await asyncio.to_thread(jev.status, credentials)
 
     @app.post("/api/builds")
     async def add_build(body: dict):

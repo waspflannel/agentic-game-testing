@@ -222,11 +222,16 @@ export function limitsSkeleton(data) {
     + field('l-reserve', 'Storage reserve (GB)', `<input id="l-reserve" class="input" name="reserve" inputmode="decimal" value="${esc(Number.isFinite(s.storage_reserve_bytes) ? +(s.storage_reserve_bytes / GB).toFixed(2) : '')}" aria-describedby="l-reserve-error">`, 'Free disk space kept back for evidence.', 'l-reserve-error')
     + field('l-decide', 'Claude action model', `<select id="l-decide" class="select" name="decide">${decideOptions}</select>`, "Chooses each action batch on Claude instances. The instance's model still plans.")
     + field('l-engine', 'Decision engine', `<select id="l-engine" class="select" name="engine">${option('today', 'Today (Default)', engine)}${option('jev_hybrid', 'Jev hybrid', engine)}</select>`,
-      data?.jev?.message || '')
+      'Jev hybrid needs a TypeSafe key (below); without one, runs use Today.')
     + field('l-jev-model', 'Jev model', `<select id="l-jev-model" class="select" name="jev_model">${option('jev-1.13.0', 'jev-1.13.0 (Default)', jevModel)}${option('jev-preview', 'jev-preview', jevModel)}</select>`,
       'Pinned so confidence thresholds stay tuned. Preview tracks the newest Jev.')
     + `<p class="hint">Concurrent instances: 1 (fixed in this release).</p>`
     + `<div data-region="form-status"></div><div class="btn-row"><button type="submit" class="btn btn-primary" data-key="l-save">Save limits</button></div></form>`
+    + `<form class="card settings-card settings-form" data-form="jev-key" novalidate><h2 class="card-title">TypeSafe Jev key</h2><div class="field"><label for="jev-key">TypeSafe API key</label>`
+    + `<input id="jev-key" class="input mono" type="password" autocomplete="off" name="jev-key" spellcheck="false" placeholder="Paste your TypeSafe API key">`
+    + `<span class="hint">Write-only: stored in the OS credential store and never shown again.</span></div><div data-region="jev-key"></div>`
+    + `<div class="btn-row"><button type="button" class="btn btn-primary" data-action="jev-key-save" data-key="jev-save">Save key</button>`
+    + `<button type="button" class="btn btn-secondary" data-action="jev-key-clear" data-key="jev-clear">Clear key</button></div></form>`
     + `<section class="card settings-card"><h2 class="card-title">This computer</h2><div data-region="hardware"></div></section>`;
 }
 
@@ -252,8 +257,13 @@ export function limitsRegions(data, ui) {
   return {
     hardware: `<dl class="kv"><dt>CPU</dt><dd>${pct(h.cpu_percent)} in use</dd><dt>Memory</dt><dd>${pct(h.memory_percent)} in use · ${gb(h.memory_available)} available</dd><dt>Disk free</dt><dd>${gb(h.disk_free)}</dd><dt>GPU</dt><dd>${h.gpu ? esc(JSON.stringify(h.gpu)) : 'Not reported'}</dd></dl>`,
     'form-status': errorNote(ui.formError) + okNote(ui.saved),
+    'jev-key': `<p class="hint">${ui.jevBusy ? 'Working…' : esc(jevKeyWords(data?.jev || {}))}</p>${errorNote(ui.jevError)}`,
   };
 }
+
+// Status is booleans only; the key itself never reaches the browser.
+const jevKeyWords = jev => [jev.key_set ? 'A key is saved.' : 'No key saved.',
+  jev.env_set ? 'TYPESAFE_API_KEY is set and takes precedence.' : '', jev.fake ? 'Fake Jev is on (ASHAD_JEV_FAKE=1).' : ''].filter(Boolean).join(' ');
 
 function field(id, label, control, hint = '', errorId = '') {
   return `<div class="field"><label for="${id}">${esc(label)}</label>${control}${hint ? `<span class="hint">${esc(hint)}</span>` : ''}<span class="error" id="${errorId || id + '-error'}" data-error-for="${id}"></span></div>`;

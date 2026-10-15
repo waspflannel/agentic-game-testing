@@ -8,7 +8,7 @@ import re
 import time
 
 from .prompts import SOURCE_NOTES_LIMIT, TUNING_MANUAL_LIMIT, TUNING_MINIMUM_BYTES, TUNING_PROMPT_VERSION
-from .models import CLAUDE_MODEL, provider_of
+from .models import CLAUDE_CONTROLS_MODEL, CLAUDE_MODEL, provider_of
 from .repository import Repository, sha256_file
 from .projects import Projects, _identifier, _name
 from .store import uid
@@ -22,8 +22,8 @@ CONTROLS_VERSION = 1
 CONTROLS_FILE_LIMIT = 256 * 1024
 CONTROLS_KEYS = frozenset({"format", "version", "configuration_id", "project_id", "build_id", "source_revision",
     "source_inventory_sha256", "source_files", "coverage", "generated_by", "created_at", "limitations", "controls"})
-CLAUDE_REQUIRED = "Getting game controls uses Claude Sonnet. Connect Claude in Settings › Account; instances can still use Codex."
-MODEL_NOT_ALLOWED = "Get game controls always uses Claude Sonnet; choose the testing model when you start an instance."
+CLAUDE_REQUIRED = "Getting game controls uses Claude Opus. Connect Claude in Settings › Account; instances can still use Codex."
+MODEL_NOT_ALLOWED = "Get game controls always uses Claude Opus; choose the testing model when you start an instance."
 BUSY = "Game controls are already being gathered. Wait for them to finish."
 CONFIGURATION_RETIRED = "This project configuration is retired. Get game controls again for this project, then start the instance with the new configuration."
 SIGN_IN_WAIT = "Wait for Get game controls to finish before changing AI sign-in."
@@ -35,7 +35,8 @@ CONTROL = re.compile(r"Input\.|is_action_|func .*?(?:input|interact|pressed)|nex
 CORE = ("project.godot", "action_executor.gd", "cutscene_manager.gd", "player_tablet.gd", "player.gd",
         "create_world.gd", "select_world_manager.gd", "main_menu.gd", "character_creation.gd",
         "text_object.gd", "player_inventory_manager.gd", "inventory_slot.gd", "state_manager.gd",
-        "escape_back.gd", "npc_tablet.gd", "building_manager.gd", "fishing_manager.gd", "machine_window.gd")
+        "escape_back.gd", "npc_tablet.gd", "building_manager.gd", "fishing_manager.gd", "machine_window.gd",
+        "context_registry.gd", "game_bridge.gd")
 
 
 def source_evidence(build):
@@ -48,7 +49,7 @@ def source_evidence(build):
         path = Path(relative)
         if relative != "project.godot" and (path.suffix != ".gd" or not relative.startswith("scripts/")):
             continue
-        if path.name == "dev_console.gd" or "/ashad/" in relative and path.name != "action_executor.gd":
+        if path.name == "dev_console.gd" or "/ashad/" in relative and path.name not in ("action_executor.gd", "context_registry.gd", "game_bridge.gd"):
             continue
         file = repo.resolve(relative)
         if not file.is_file():
@@ -202,7 +203,7 @@ class GameControls:
                     "source_files": list({source["path"]: {k: source[k] for k in ("path", "sha256", "total_lines")}
                         for source in evidence["sources"]}.values()),
                     "coverage": {**evidence["coverage"], "source_batches": len(batches), "workers": workers},
-                    "generated_by": {"method": "swarm", "provider": "claude", "model": CLAUDE_MODEL, "prompt_version": TUNING_PROMPT_VERSION},
+                    "generated_by": {"method": "swarm", "provider": "claude", "model": CLAUDE_CONTROLS_MODEL, "prompt_version": TUNING_PROMPT_VERSION},
                     "created_at": record["created_at"], "limitations": list(LIMITATIONS), "controls": controls}
                 if configuration_id:
                     try:
@@ -252,13 +253,13 @@ class GameControls:
                 try:
                     batch_evidence = {"build_id": build["id"], "source_revision": build["source_revision"],
                         "batch": index + 1, "batch_count": len(batches), "sources": batch}
-                    notes_key = hashlib.sha256(json.dumps({"evidence": batch_evidence, "model": CLAUDE_MODEL,
+                    notes_key = hashlib.sha256(json.dumps({"evidence": batch_evidence, "model": CLAUDE_CONTROLS_MODEL,
                         "prompt_version": TUNING_PROMPT_VERSION}, ensure_ascii=False, sort_keys=True).encode("utf-8")).hexdigest()
                     saved = self.store.get("tuning_notes", notes_key, {})
                     note = saved.get("instructions")
                     if not isinstance(note, str) or len(note.strip().encode("utf-8")) < TUNING_MINIMUM_BYTES or len(note.encode("utf-8")) > SOURCE_NOTES_LIMIT:
                         note = await self.ai.write_controls(batch_evidence, stage="source_notes")
-                        self.store.put("tuning_notes", {"id": notes_key, "build_id": build["id"], "model": CLAUDE_MODEL,
+                        self.store.put("tuning_notes", {"id": notes_key, "build_id": build["id"], "model": CLAUDE_CONTROLS_MODEL,
                             "prompt_version": TUNING_PROMPT_VERSION, "instructions": note})
                     notes[index] = note
                     self.progress["batches_done"] += 1
@@ -373,4 +374,4 @@ def migrate_tuned_configurations(store):
         with store.transaction():
             store.put("configurations", converted)
     with store.transaction() as db:
-        db.execute("DELETE FROM records WHERE kind='tuning_notes' AND json_extract(data,'$.model') != 'sonnet'")
+        db.execute("DELETE FROM records WHERE kind='tuning_notes' AND json_extract(data,'$.model') != ?", (CLAUDE_CONTROLS_MODEL,))

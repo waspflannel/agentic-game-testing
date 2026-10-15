@@ -12,7 +12,7 @@ from .codex_backend import CodexBackend, CodexError
 from .claude_backend import ClaudeBackend, ClaudeError
 from .grok_backend import GrokBackend, GrokError
 from .credentials import Credentials
-from .models import CLAUDE_MODEL, GROK_MODEL, MODEL, PROVIDERS, SUPPORTED_MODELS, provider_of
+from .models import CLAUDE_CONTROLS_MODEL, CLAUDE_MODEL, GROK_MODEL, MODEL, PROVIDERS, SUPPORTED_MODELS, provider_of
 from .prompts import SOURCE_NOTES_LIMIT, TUNING_MANUAL_LIMIT, TUNING_MINIMUM_BYTES
 from .store import uid
 from .subgoals import PlanningDecision
@@ -363,7 +363,7 @@ class OpenAI:
         return await self._request(context, None, "planning", run_id, model, input_bytes, planning_schema=schema, prefix=prefix)
 
     async def write_controls(self, evidence, *, stage="manual"):
-        model = CLAUDE_MODEL
+        model = CLAUDE_CONTROLS_MODEL
         if stage not in {"manual", "source_notes"}:
             raise ValueError("Unknown tuning stage")
         for attempt in range(2):

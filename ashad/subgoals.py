@@ -51,11 +51,12 @@ class ProposedGoal(Contract):
 
 
 class Step(Contract):
-    control: str = Field(min_length=1, max_length=40, description="A macro name, an advertised input name or a game verb")
+    control: str = Field(min_length=1, max_length=40, description="An advertised input name or a game verb")
     item: str = Field(max_length=60, description="The hotbar item_id the step needs; empty if none")
     count: int = Field(ge=0, le=99, description="Repeats; 0 means until the check is met")
     precondition: str = Field(max_length=200, description="The manual's precondition text or a catalog fact")
     verifies: str = Field(min_length=1, max_length=60, description="A fact_catalog name, or unknown")
+    targets: str = Field(max_length=160, description="Space-separated field=value conditions every target of a repeated step matches (observed tile or entity fields; empty value means empty or missing), nearest first; empty for a single action")
 
 
 class PlanningDecision(Contract):

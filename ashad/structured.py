@@ -63,7 +63,7 @@ def json_bytes(value):
 
 
 def capped_delta(snapshot, view, cap=SNAPSHOT_RESET_CHARS):
-    """observation_delta with its JSON at most cap chars: in delta order, tiles and entities past the cap are dropped and truncated is set."""
+    """observation_delta with its JSON at most cap chars: in delta order, tiles and entities that do not fit are dropped and truncated is set."""
     delta = observation_delta(snapshot, view)
     if len(json.dumps(delta)) <= cap:
         return delta
@@ -75,7 +75,7 @@ def capped_delta(snapshot, view, cap=SNAPSHOT_RESET_CHARS):
         for item in items.items() if isinstance(items, dict) else items:
             cost = len(json.dumps(dict([item]) if isinstance(items, dict) else item)) + 2  # The item plus its separator.
             if cost > room:
-                return kept
+                continue  # A smaller later item may still fit.
             room -= cost
             if isinstance(items, dict):
                 kept[name][item[0]] = item[1]

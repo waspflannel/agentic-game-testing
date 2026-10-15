@@ -83,3 +83,4 @@ Goal reached popup (goalReachedHTML): the planner's claim as a result slip on th
 - 2026-10-13: skipped subtrees read Skipped; regather progress shows batches being read and a stale note; configuration rows show the build id; readiness lists only desktops for the checked build; sidebar ages tick; Issues board Instance dropdown (fix/ashad-v4-ui-batch).
 - 2026-10-14: Issues board gains MCP or game needs updating (capability gaps, with what was tried); Goals tab shows given-up goals as Gave up and a handed-back plan as Needs review; empty board groups read "None recorded." (fix/ashad-v5-opus-fixes).
 - 2026-10-14: completion checks come from the typed fact catalog; Goals tab and Goal reached show each check and its current value instead of evidence quotes; Planner rejections group removed (feat/ashad-fact-catalog-v6).
+- 2026-10-15: Settings › Limits gains a native Claude action model select (Sonnet default) for batch decisions (perf/ashad-batching-caching).

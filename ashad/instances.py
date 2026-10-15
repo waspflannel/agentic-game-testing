@@ -5,7 +5,7 @@ from typing import Literal
 from pydantic import Field
 
 from .game_controls import GameControls
-from .models import ACTIVE_STATES, CLAUDE_MODEL, GROK_MODEL, MODEL, SUPPORTED_MODELS, Contract, Plan, provider_of
+from .models import ACTIVE_STATES, CLAUDE_DECIDE_MODEL, CLAUDE_MODEL, GROK_MODEL, MODEL, SUPPORTED_MODELS, Contract, Plan, provider_of
 from .projects import Projects
 
 
@@ -57,9 +57,10 @@ class Instances:
             Projects(self.store).project_for_configuration(request.configuration_id, request.project_id)
             settings = self.store.require("settings", "main")
             model = request.model or default_model(self.coordinator.ai, settings.get("last_model"))
+            decide_model = (settings.get("claude_decide_model") or CLAUDE_DECIDE_MODEL) if provider_of(model) == "claude" else None
             build = self.coordinator.validated_build(record["build_id"])
             worker, accounts = await self._allocate_worker(build, request.transport)
-            plan = Plan(configuration_id=record["id"], build_id=record["build_id"], model=model,
+            plan = Plan(configuration_id=record["id"], build_id=record["build_id"], model=model, decide_model=decide_model,
                         title=payload["primary_goal"][:100], intent=payload["primary_goal"], primary_goal=payload["primary_goal"]).model_dump()
             plan["players"][0].update(name="Player 1", goal=payload["primary_goal"], goal_id="", worker_id=worker["id"],
                                      account_id=accounts[worker["id"]]["id"] if request.transport == "steam" else None)

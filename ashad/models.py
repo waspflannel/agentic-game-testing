@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 MODEL = "gpt-6-luna"
 CLAUDE_MODEL = "sonnet"
+CLAUDE_DECIDE_MODEL = "sonnet"
 GROK_MODEL = "grok-4.7"
 PROVIDERS = {
     "codex": {"label": "Codex", "status_key": "ai_status", "pricing": {
@@ -142,6 +143,7 @@ class Plan(Contract):
     # Retain the historical run contract for recovery; new instances use one fresh host.
     configuration_id: str | None = None
     model: str = MODEL
+    decide_model: str | None = None
     play_mode: Literal["structured"] = "structured"
     guidance: Literal["rules", "guided"] = "guided"
     structured_version: int = Field(default=1, ge=1, le=1)
@@ -185,6 +187,8 @@ class Plan(Contract):
     def invariants(self):
         if self.model not in SUPPORTED_MODELS:
             raise ValueError("Select a supported model: " + ", ".join(SUPPORTED_MODELS))
+        if self.decide_model is not None:
+            require_same_provider(self.decide_model, self.model, "the action model")
         ids = [p.id for p in self.players]
         if len(set(ids)) != len(ids):
             raise ValueError("Player IDs must be unique")

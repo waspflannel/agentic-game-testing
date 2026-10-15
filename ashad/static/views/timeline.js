@@ -100,7 +100,7 @@ function decisionSummary(kind, p) {
   if (kind === 'jev_check') {
     const applied = p.applied ? ' · applied' : p.reason ? ` · not applied: ${words(p.reason)}` : '';
     if (p.check === 'triage') return { text: `Jev check · triage: ${p.choice ? `${p.choice} (${round(p.confidence)})` : p.confidence == null ? 'no answer' : `unsure (${round(p.confidence)})`}${applied}` };
-    if (p.check === 'effect') return { text: `Jev check · effect: ${p.disagree ? 'disagrees' : 'agrees'} with fact (${p.band} ${round(p.noul)})` };
+    if (p.check === 'effect') return { text: `Jev check · effect: ${p.band === 'unsure' ? 'unsure about' : p.disagree ? 'disagrees with' : 'agrees with'} fact (${p.band} ${round(p.noul)})` };
     return { text: `Jev check · ${words(p.check)}: ${p.band} (${round(p.noul)})${applied}` };
   }
   if (kind === 'jev_skill_replayed') return { text: `Jev replayed skill ${p.name || short(p.key)} · ${words(p.reason) || 'no stop reason'}, ${p.actions ?? 0} action${p.actions === 1 ? '' : 's'}` };

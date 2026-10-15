@@ -10,6 +10,9 @@ CLAUDE_MODEL = "sonnet"
 CLAUDE_DECIDE_MODEL = "sonnet"
 CLAUDE_CONTROLS_MODEL = "claude-opus-5-5"  # Get game controls only; not a selectable instance model.
 GROK_MODEL = "grok-4.7"
+JEV_MODEL = "jev-1.13.0"  # Pinned: Jev confidence thresholds are tuned against it.
+JEV_MODELS = ("jev-1.13.0", "jev-preview")
+DECISION_ENGINES = ("today", "jev_hybrid")
 PROVIDERS = {
     "codex": {"label": "Codex", "status_key": "ai_status", "pricing": {
         "api": "codex", "billing": "subscription", "auth_method": "chatgpt",

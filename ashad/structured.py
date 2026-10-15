@@ -119,7 +119,7 @@ def observed_entity(observation, target_id):
     return next((e for e in observation.get("entities", []) if target_id and e.get("id") == target_id), {})
 
 
-GOAL_CONTEXT_KEYS = ("id", "parent_id", "objective", "completion", "status", "actionable", "measured", "attempts")
+GOAL_CONTEXT_KEYS = ("id", "parent_id", "objective", "completion", "status", "actionable", "measured", "attempts", "steps")
 FAILED_STATUSES = frozenset({"failed", "rejected", "expired", "cancelled"})
 DELIVERED_STATUSES = frozenset({"completed", "no_effect"})
 
@@ -159,14 +159,15 @@ class StructuredPlayers:
         self.turn_ended_at = {}
         self.snapshots = {}  # (run_id, player_id) -> (goal_id, generation, prompt observation at subgoal start)
         self.code_waits = {}  # (run_id, player_id) -> (goal_id, seconds of code waits used)
+        self.step_index = {}  # (run_id, player_id) -> (goal_id, index of the goal's next unfinished step, decider takes the next turn)
         self.crashes_recorded = set()
 
     def _forget_turn(self, key):
         self.waits.pop(key, None)
         self.last_decisions.pop(key, None)
-        # The snapshot and code-wait budget belong to one goal; a replan of the same goal keeps them.
+        # The snapshot, code-wait budget and step index belong to one goal; a replan of the same goal keeps them.
         plan = self.store.require("runs", key[0]).get("subgoal_plan") or {}
-        for kept in (self.snapshots, self.code_waits):
+        for kept in (self.snapshots, self.code_waits, self.step_index):
             if key in kept and kept[key][0] != plan.get("active_goal_id"):
                 del kept[key]
 
@@ -603,7 +604,7 @@ class StructuredPlayers:
             LOG.exception("Could not record false completion for %s/%s", run_id, player_id)
 
     def forget_run(self, run_id):
-        for counters in (self.loop_counts, self.movement_stalls, self.bug_reports, self.turn_ended_at, self.snapshots, self.code_waits):
+        for counters in (self.loop_counts, self.movement_stalls, self.bug_reports, self.turn_ended_at, self.snapshots, self.code_waits, self.step_index):
             for key in [k for k in counters if k[0] == run_id]:
                 del counters[key]
         self.crashes_recorded -= {e for e in self.crashes_recorded if e[0] == run_id}
@@ -960,6 +961,7 @@ class StructuredPlayers:
             self.bug_reports.pop(key, None)
             self.snapshots.pop(key, None)
             self.code_waits.pop(key, None)
+            self.step_index.pop(key, None)
             self.generations[key] = generation
         def current():
             live = self.store.require("runs", run_id)
@@ -1041,9 +1043,26 @@ class StructuredPlayers:
             self.last_decisions[key] = (signature, time.time(), generation)
             decision_started_at = time.time()
             result, first, stop, ran = None, {}, None, []
+            # The leaf's next unfinished step runs in code when it names a macro. A macro stop that leaves the step
+            # unfinished after dispatching actions hands the next turn to the decider; then the macro is tried again.
+            steps = (goal or {}).get("steps") or []
+            goal_id, index, decider_turn = self.step_index.get(key) or (None, 0, False)
+            if not goal or goal_id != goal["id"]:
+                index, decider_turn = 0, False
+            step = steps[index] if index < len(steps) else None
             if planned_keys:
                 # The planner named the first batch: run it on the post-planning observation, with no decide call.
                 stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None, queued_actions(context, planned_keys), timing)
+            elif step and step["control"] in macros.MACROS and not decider_turn:
+                # The goal's own args read the verifying fact when it checks the same fact; otherwise only argless facts read.
+                check = {"fact": step["verifies"], "args": goal["completion"]["args"] if goal["completion"]["fact"] == step["verifies"] else [], "op": ">=", "value": 0}
+                before = subgoals.measure(check, observation)[1]
+                stop, ran = await self._run_macro(run_id, player_id, generation, current, context, observation, step, timing)
+                after = subgoals.measure(check, self.store.get("observations", f"{run_id}:{player_id}") or {})[1]
+                finished = stop == "goal_met" or bool(step["count"] and before is not None and after is not None and after - before >= step["count"])
+                self.step_index[key] = (goal["id"], index + finished, not finished and bool(ran))
+            elif decider_turn:
+                self.step_index[key] = (goal["id"], index, False)
             if stop is None or (stop == "not_offered" and not ran):
                 # No planner batch, or its first option is gone: the model decides in this same turn.
                 label = PROVIDERS[provider_of(run.get("model") or run["plan"].get("model", MODEL))]["label"]

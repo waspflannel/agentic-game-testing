@@ -883,25 +883,25 @@ class StructuredPlayers:
                     turn_ends = await self._reconcile_pending(run_id, player_id, ps, generation, observation)
                 if turn_ends:
                     timing["outcome"] = "pending_action"
-                    return
+                    return timing["outcome"]
             if not current():
                 timing["outcome"] = "cancelled"
-                return
+                return timing["outcome"]
             if not await self.advance_plan(run_id, player_id, observation, generation, current, timing):
                 timing["outcome"] = "planning"
-                return
+                return timing["outcome"]
             signature = meaningful_signature(observation)
             wait = self.waits.get(key)
             if wait and wait[2] == generation and time.time() < wait[0] and wait_signature(observation) == wait[1]:
                 self.status(run_id, player_id, "waiting", previous_status.get("detail") or ps.get("activity") or "Waiting for game state to change.", generation, wait_until=wait[0])
                 timing["outcome"] = "waiting"
-                return
+                return timing["outcome"]
             self.waits.pop(key, None)
             last = self.last_decisions.get(key)
             if not wait and last and last[2] == generation and last[0] == signature and time.time() - last[1] < 30:
                 self.status(run_id, player_id, "waiting", "Game state is unchanged; the next decision will retry within 30 seconds.", generation, wait_until=last[1] + 30)
                 timing["outcome"] = "unchanged"
-                return
+                return timing["outcome"]
             run, ps = self.binding(run_id, player_id)
             player = next(p for p in run["plan"]["players"] if p["id"] == player_id)
             with timed(timing, "decision_context"):
@@ -959,7 +959,7 @@ class StructuredPlayers:
                 if exc.status == "decision_needs_instructions" and self.request_replan(run_id, player_id, generation,
                         "No supported direct action fits. Decompose missing prerequisites or explain the blocker."):
                     self.status(run_id, player_id, "planning", "The current goal needs a smaller prerequisite or another approach.", generation)
-                    return
+                    return timing["outcome"]
                 self.status(run_id, player_id, "error", exc.message, generation, last_error=exc.message, error_at=time.time())
                 category = "decision_needs_instructions" if exc.status == "decision_needs_instructions" else "provider_failure"
                 self.store.event(run_id, "agent_turn_failed", {"player_id": player_id, "category": category, "provider_status": exc.status, "error": exc.message})
@@ -975,7 +975,7 @@ class StructuredPlayers:
                 if getattr(exc, "code", None) == "game_bridge_starting" and time.time() - ps.get("launched_at", 0) < 15:
                     self.status(run_id, player_id, "startup_retry", f"Waiting for game interface startup: {reason}", generation, last_error=reason, error_at=time.time(), wait_until=ps["launched_at"] + 15)
                     timing["outcome"] = "startup_retry"
-                    return
+                    return timing["outcome"]
                 self.status(run_id, player_id, "error", reason, generation, last_error=reason, error_at=time.time())
                 trace = "".join(traceback.format_exception(exc)[-4:])[-1500:]
                 self.store.event(run_id, "agent_turn_failed", {"player_id": player_id, "category": "structured_interface_failure", "error": reason, "traceback": trace})
@@ -984,6 +984,7 @@ class StructuredPlayers:
                 await self.report_crash(run_id, player_id, "agent_turn_failure", "structured_interface_failure", f"{reason}\n{trace}")
         finally:
             self._record_turn_timing(run_id, player_id, timing, started, store_before)
+        return timing["outcome"]
 
     def _record_turn_timing(self, run_id, player_id, timing, started, store_before):
         """One ledger row per turn; numbers only, never observation content. Never raises."""

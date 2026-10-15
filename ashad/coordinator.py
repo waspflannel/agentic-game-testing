@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import copy
-from contextlib import nullcontext
+from contextlib import nullcontext, suppress
 import hashlib
 import json
 from pathlib import Path
@@ -75,6 +75,7 @@ class Coordinator:
         self.storage = {}  # run_id -> (checked_at, bytes)
         self.stopping = False
         self.draining = False
+        self.wake = asyncio.Event()  # Set when a working turn ends so the next tick starts without the 1 s poll.
         from .structured import StructuredPlayers
         self.structured = StructuredPlayers(self)
 
@@ -535,7 +536,9 @@ class Coordinator:
             except Exception as exc:
                 # The separate watchdog owns expiry even when this loop cannot persist.
                 print(f"ASHAD coordinator error: {type(exc).__name__}", flush=True)
-            await asyncio.sleep(1)
+            with suppress(TimeoutError):
+                await asyncio.wait_for(self.wake.wait(), 1)
+            self.wake.clear()
 
     async def tick(self, run):
         tick_started = time.perf_counter()
@@ -873,7 +876,10 @@ class Coordinator:
 
     async def player_turn(self, run_id, player_id, tick_seconds=None):
         try:
-            return await self.structured.turn(run_id, player_id, tick_seconds=tick_seconds)
+            outcome = await self.structured.turn(run_id, player_id, tick_seconds=tick_seconds)
+            if outcome in {"decided", "planning"}:
+                self.wake.set()  # Waiting, unchanged and pending turns keep the 1 s poll so they never busy-loop.
+            return outcome
         except asyncio.CancelledError:
             self.store.event(run_id, "agent_task_cancelled", {"player_id": player_id, "reason": "Run control or controller shutdown cancelled the agent task."})
             raise

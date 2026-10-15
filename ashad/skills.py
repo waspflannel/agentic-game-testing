@@ -129,7 +129,8 @@ def save(store, project_id, check, steps, won, build_id=None, run_id=None, key=N
     """Count a win (replacing the steps when given) or a failure for the skill at key, by default the steps' key; returns the record."""
     if steps is None and key is None:
         raise ValueError("A failure needs the skill key")
-    key = key or skill_key(project_id, check, steps)
+    # Keyed by the bound steps, as stored, so a target named by a check arg keys like the skill's other values.
+    key = key or skill_key(project_id, check, bind(steps, check))
     effect = "rises" if check["op"] == ">=" else "falls" if check["op"] == "<=" else "reaches the value"
     record = store.get("skills", key) or {
         "project_id": project_id, "name": name(check), "params": list(facts.FACTS[check["fact"]][0]),

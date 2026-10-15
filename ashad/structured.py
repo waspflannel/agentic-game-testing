@@ -26,6 +26,7 @@ REPEAT_LIMIT = 30  # Actions per turn from one repeat step.
 SNAPSHOT_RESET_CHARS = 12000  # A delta this large costs more than a fresh snapshot (one cache write).
 TIMER_FACTS = ("crops_harvestable", "crop_growth_stage_min")  # Growth facts the code waits on after the model chose to wait.
 CODE_WAIT_STEP = 10
+REUSE_OBSERVATION_SECONDS = 1.0  # A post-action observation this young is the turn's observation; no second observe.
 CODE_WAIT_LIMIT = 120  # Seconds of code waits per goal before the model decides again.
 ISSUE_PREFIXES = {"unsupported_action": "uae_", "crash": "crash_", "game_bug": "bug_", "false_completion": "done_", "capability_gap": "gap_", "skill_regression": "reg_"}
 # Controller replan reasons, by prefix, as category labels; planner prose never reaches the timing row.
@@ -1150,8 +1151,13 @@ class StructuredPlayers:
             # Polling a known wait must not replace its useful status with a flash of "observing".
             if key not in self.pending and key not in self.waits and key not in self.last_decisions:
                 self.status(run_id, player_id, "observing", "Reading fresh game state.", generation)
-            with timed(timing, "observe"):
-                observation = await self.observe(run_id, player_id)
+            stored = None if key in self.pending else self.store.get("observations", f"{run_id}:{player_id}")
+            if stored and time.time() - stored["received_at"] < REUSE_OBSERVATION_SECONDS:
+                observation = stored
+                timing["counts"]["observe_reused"] = 1
+            else:
+                with timed(timing, "observe"):
+                    observation = await self.observe(run_id, player_id)
             timing["bytes"]["observation"] = json_bytes(observation)
             if key in self.pending:
                 with timed(timing, "reconcile_pending"):
@@ -1226,12 +1232,14 @@ class StructuredPlayers:
                 context["current_goal"]["steps"] = steps[index:]
             if planned_keys:
                 # The planner named the first batch: run it on the post-planning observation, with no decide call.
-                stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None, queued_actions(context, planned_keys), timing)
+                with timed(timing, "act"):
+                    stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None, queued_actions(context, planned_keys), timing)
             elif step and step.get("targets") and not decider_turn:
                 # The verifying fact reads the goal's args that it also takes (e.g. plant_id); others read its default.
                 check = {"fact": step["verifies"], "args": [a for a in goal["completion"]["args"] if a["name"] in facts.FACTS.get(step["verifies"], ((),))[0]], "op": ">=", "value": 0}
                 before = subgoals.measure(check, observation)[1]
-                stop, ran = await self._run_repeat(run_id, player_id, generation, current, context, observation, step, check, timing)
+                with timed(timing, "act"):
+                    stop, ran = await self._run_repeat(run_id, player_id, generation, current, context, observation, step, check, timing)
                 after = subgoals.measure(check, self.store.get("observations", f"{run_id}:{player_id}") or {})[1]
                 finished = stop in ("goal_met", "done") or bool(step["count"] and before is not None and after is not None and abs(after - before) >= step["count"])
                 self.step_index[key] = (goal["id"], index + finished, not finished and bool(ran))
@@ -1239,7 +1247,8 @@ class StructuredPlayers:
                 self.step_index[key] = (goal["id"], index, False)
             if stop is None and not planned_keys and goal:
                 # Cache first: a decision this project's model already made in this situation replays without a decide call.
-                stop, ran, replayed = await self._run_decision(run_id, player_id, generation, current, context, observation, goal, timing)
+                with timed(timing, "act"):
+                    stop, ran, replayed = await self._run_decision(run_id, player_id, generation, current, context, observation, goal, timing)
                 if replayed and self.decision_failed.get(key, (None,))[0] == goal["id"] and stop in ("failed", "no_effect", "fact_moved_away", "not_offered"):
                     # The failed replay does not use up the decider's turn: it decides now, or on the next turn once the replay dispatched actions.
                     if decider_turn:
@@ -1281,8 +1290,9 @@ class StructuredPlayers:
                 elif first.get("tool") != "perform_action":
                     stop = "done"  # A game bug report: nothing was dispatched.
                 else:
-                    stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, fresh,
-                                                      result["result"], queued_actions(context, result["queued"]), timing)
+                    with timed(timing, "act"):
+                        stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, fresh,
+                                                          result["result"], queued_actions(context, result["queued"]), timing)
                     if run.get("project_id") and goal and stop in ("done", "goal_met", "scene_changed", "limit"):
                         # The model's batch becomes this situation's decision skill: non-move actions only, read against the observation it was chosen on.
                         steps = [s for s in (repeat.step_for(a["args"], observation) for a in [first] + ran) if s["control"] != "move_to"]

@@ -18,7 +18,7 @@ function skillRow(skill, deleting) {
     + `<span class="skill-meta">${esc(KIND_WORDS[skill.kind] || skill.kind)}</span>`
     + `<span class="skill-meta skill-uses">${skill.uses} ${skill.uses === 1 ? 'use' : 'uses'} · ${skill.wins} worked, ${skill.fails} failed</span>`
     + `<span class="skill-meta">${lastResultHTML(skill.last_result)}</span>`
-    + `<button type="button" class="btn btn-ghost" data-action="skill-delete" data-id="${esc(skill.id)}" data-key="sd-${esc(skill.id)}" aria-label="Delete skill: ${esc(skill.name)}"${busy}>${icon('trash')}Delete</button></li>`;
+    + `<button type="button" class="btn btn-ghost btn-sm" data-action="skill-delete" data-id="${esc(skill.id)}" data-key="sd-${esc(skill.id)}" aria-label="Delete skill: ${esc(skill.name)}"${busy}>${icon('trash')}Delete</button></li>`;
 }
 
 // page: { loading, rows, error, at, deleting } or null before the first fetch.

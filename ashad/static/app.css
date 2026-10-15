@@ -576,6 +576,8 @@ button.step:hover { background: var(--surface-2); color: var(--text); }
 .skill-meta time { font-variant-numeric: tabular-nums; }
 .skill-uses { font-variant-numeric: tabular-nums; text-align: right; }
 .skill-regression { color: var(--attention); white-space: nowrap; }
+/* The button's icon gives it no text baseline, so it sits on the first line instead. */
+.skill-row .btn { align-self: start; margin-block: -3px; }
 .skill-regression .icon { width: 14px; height: 14px; margin-right: 4px; vertical-align: -2px; }
 @container (max-width: 639px) {
   .skill-list { grid-template-columns: minmax(0, 1fr) auto; row-gap: 0; }

@@ -2,7 +2,7 @@
 
 ASHAD runs a game-playing bot in an isolated desktop. Get game controls for a project configuration from the pinned game's source, then start a fresh instance with that configuration and one primary goal using ENet. Steam remains unavailable without fresh licensed-identity proof; see the limitation below. The bot receives its saved instructions and filtered JSON game state, chooses an action, and checks the next observation.
 
-**Get game controls writes a versioned controls file; it does not train model weights.** A Claude Sonnet swarm reads the pinned source in parallel. Each instance picks its own model (Codex or Claude) and freezes the controls file it started with.
+**Get game controls writes a versioned controls file; it does not train model weights.** A Claude Opus swarm reads the pinned source in parallel. Each instance picks its own model (Codex or Claude) and freezes the controls file it started with.
 
 Get game controls saves each completed source batch, so retrying a failed run reuses matching notes for the same model, source and prompt version. Oversized notes or manuals receive one compression retry; both requests count toward usage. A project configuration is saved only after its complete controls file passes validation.
 
@@ -68,7 +68,7 @@ Bot decisions require account access to the instance's model, and Get game contr
 1. Install Claude Code 2.1.280 or later with Anthropic's native installer. ASHAD looks only in the installer's default location (`%USERPROFILE%\.local\bin\claude.exe`, or `~/.local/bin/claude` on Linux).
 2. In a terminal run `claude setup-token`, finish the browser step and copy the printed token.
 3. Use **Settings → Account → Claude**, paste the token and Save. The token goes to the OS credential store, never to ASHAD's database or logs. Remove deletes it.
-4. Get game controls always runs Claude Sonnet (**Projects + → Setup new game agent**, step 4). Each instance picks its own model, Claude Sonnet, Opus or Haiku here or Codex, at start and may change it within the same provider while live.
+4. Get game controls always runs Claude Opus (**Projects + → Setup new game agent**, step 4). Each instance picks its own model, Claude Sonnet, Opus or Haiku here or Codex, at start and may change it within the same provider while live.
 5. Terms: this is personal, local use of your own subscription through the unmodified Claude CLI. Read https://code.claude.com/docs/en/legal-and-compliance. Products built for other people should use API keys; ASHAD has no API-key fallback. Do not share a build containing a token or run it for other people's subscriptions.
 
 ## Project ownership and retained history
@@ -79,7 +79,7 @@ Interrupted imports from older ASHAD versions block editing and admission until 
 
 ## Get game controls, then run it
 
-1. Complete the four **Projects +** setup steps: Project, Build, Desktop, then Get controls. Get controls explicitly runs a Claude Sonnet swarm over the pinned source/control evidence; it performs inference but does not launch a game. Review the saved controls.
+1. Complete the four **Projects +** setup steps: Project, Build, Desktop, then Get controls. Get controls explicitly runs a Claude Opus swarm over the pinned source/control evidence; it performs inference but does not launch a game. Review the saved controls.
 2. Open the project's **New instance**, select a project configuration and enter the primary goal. Its build is fixed by the configuration. Choose the instance's model, Codex or Claude; change it from the instance header within the same provider while the instance is live (it applies from the next decision). The controls file stays the one the instance started with. Check readiness without inference/gameplay if needed.
 3. Explicitly **Start instance**. ASHAD freshly revalidates authentication, exact supported build pins and actual idle desktop/render/capture/input capabilities, then accepts one host bot in a fresh world. Failed/blocked drafts never auto-launch. Lost replies reconcile the same request; restoring prepared inputs asks first and still requires another Start click.
 4. Follow the live view. Pause, resume, stop, or take over if the bot needs help. Each instance retains its own run ID and evidence.

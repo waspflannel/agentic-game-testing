@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 MODEL = "gpt-6-luna"
 CLAUDE_MODEL = "sonnet"
 CLAUDE_DECIDE_MODEL = "sonnet"
+CLAUDE_CONTROLS_MODEL = "claude-opus-5-5"  # Get game controls only; not a selectable instance model.
 GROK_MODEL = "grok-4.7"
 PROVIDERS = {
     "codex": {"label": "Codex", "status_key": "ai_status", "pricing": {
@@ -39,6 +40,8 @@ SUPPORTED_MODELS = CODEX_MODELS + CLAUDE_MODELS + GROK_MODELS
 
 
 def provider_of(model):
+    if model == CLAUDE_CONTROLS_MODEL:
+        return "claude"
     return next((m["provider"] for m in MODEL_OPTIONS if m["id"] == model), "codex")
 
 

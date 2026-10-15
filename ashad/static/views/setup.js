@@ -13,7 +13,7 @@ export const newSetup = projectId => ({
 
 export const projectBuilds = (data, projectId) => (data?.builds || []).filter(b => b.project_id === projectId);
 
-// Get game controls always runs Claude Sonnet, so only Claude's sign-in matters here.
+// Get game controls always runs Claude Opus, so only Claude's sign-in matters here.
 const claudeReady = data => data?.ai_claude?.status === 'ready';
 
 // Step 4 starts from the project's name until the user edits it.
@@ -217,16 +217,16 @@ function mainHTML(data, s, m, now) {
     case 4: {
       if (s.agent) {
         const a = s.agent;
-        return `<dl class="kv"><dt>Configuration</dt><dd>${esc(a.name || a.id)}</dd><dt>Build</dt><dd>${esc(m.build?.name || a.build_id)}</dd><dt>Gathered by</dt><dd>Claude Sonnet</dd>`
+        return `<dl class="kv"><dt>Configuration</dt><dd>${esc(a.name || a.id)}</dd><dt>Build</dt><dd>${esc(m.build?.name || a.build_id)}</dd><dt>Gathered by</dt><dd>Claude Opus</dd>`
           + `<dt>Gathered</dt><dd>${a.created_at ? esc(new Date(a.created_at * 1000).toLocaleString()) : 'Not recorded'}</dd></dl>`
           + `<div class="btn-row"><button type="button" class="btn btn-secondary btn-sm" data-action="ov-controls" data-id="${esc(a.id)}" data-key="s4-view">View controls</button></div>`;
       }
       const op = s.controls;
-      const about = `<p class="hint">ASHAD reads the build source with up to 4 Claude Sonnet workers and writes the game controls file every instance loads, whichever model it uses.</p>`;
+      const about = `<p class="hint">ASHAD reads the build source with up to 4 Claude Opus workers and writes the game controls file every instance loads, whichever model it uses.</p>`;
       if (op.waiting) return about + `<p class="note">${icon('clock')}<span>Another Get game controls run is in progress; this one starts when it finishes.</span>`
         + ` <button type="button" class="btn btn-secondary btn-sm" data-action="setup-stop-waiting" data-key="s4-stop">Stop waiting</button></p>`;
       if (op.status === 'busy') return about + `<div class="tuning">${controlsProgressHTML(op, now)}<p class="hint">You can leave this page; it keeps going.</p></div>`;
-      if (!m.signedIn) return `<p class="note note-error">${icon('alert')}<span>Getting game controls uses Claude Sonnet. <a href="#/settings/account" data-key="s4-signin">Connect Claude under Settings › Account</a>, then come back. Instances can still use Codex.</span></p>`;
+      if (!m.signedIn) return `<p class="note note-error">${icon('alert')}<span>Getting game controls uses Claude Opus. <a href="#/settings/account" data-key="s4-signin">Connect Claude under Settings › Account</a>, then come back. Instances can still use Codex.</span></p>`;
       return about + (op.error ? noteHTML('error', esc(op.error)) : '');
     }
     default: return '';

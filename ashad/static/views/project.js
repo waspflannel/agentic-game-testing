@@ -62,7 +62,7 @@ export function regatherDialogHTML({ validated, selectedBuildId, buildName, agen
     options: validated.map(b => ({ id: b.id, label: b.name || b.id })), selected: selectedBuildId });
   const chosen = buildName(selectedBuildId);
   return `<input type="hidden" name="build_id" id="refresh-build-id" value="${esc(selectedBuildId)}">${picker}`
-    + `<p id="refresh-build-desc">ASHAD re-reads <strong>${esc(chosen)}</strong> with Claude Sonnet and updates project configuration “${esc(agentName)}”. This takes a few minutes and uses your Claude subscription.</p>`;
+    + `<p id="refresh-build-desc">ASHAD re-reads <strong>${esc(chosen)}</strong> with Claude Opus and updates project configuration “${esc(agentName)}”. This takes a few minutes and uses your Claude subscription.</p>`;
 }
 
 export const overviewSkeleton = () => `<div class="page overview"><div class="page-head row-between" data-region="head"></div>`

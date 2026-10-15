@@ -11,7 +11,7 @@ from pathlib import Path
 
 import keyring.errors
 
-from .models import CLAUDE_MODEL, CLAUDE_MODELS
+from .models import CLAUDE_CONTROLS_MODEL, CLAUDE_MODEL, CLAUDE_MODELS
 from .prompts import batch_request, controls_request, planning_request, selection_request
 
 
@@ -93,7 +93,7 @@ class ClaudeBackend:
     async def status(self, model=CLAUDE_MODEL):
         result = {"configured": False, "status": "configuration_required", "model": model, "available_models": [],
             "api": "claude", "auth_method": "claude_oauth_token", "billing": "subscription", "message": ""}
-        if model not in CLAUDE_MODELS:
+        if model not in CLAUDE_MODELS and model != CLAUDE_CONTROLS_MODEL:
             result.update(status="model_unavailable", message=f"Unsupported Claude model: {model}.")
             return result
         try:
@@ -180,7 +180,7 @@ class ClaudeBackend:
         system_path = await asyncio.to_thread(self._system_prompt_file, system)
         cli = self._argv_prefix()
         argv = [*cli, "-p", "--output-format", "json", "--model", model,
-            "--effort", "low" if operation in ("selection", "batch") else "medium",
+            "--effort", "low" if operation in ("selection", "batch") else "high" if operation == "controls" else "medium",
             "--system-prompt-file", str(system_path), "--json-schema", json.dumps(schema),
             "--tools", "", "--strict-mcp-config", "--setting-sources", "", "--disable-slash-commands",
             "--no-session-persistence", "--permission-prompts", "none"]

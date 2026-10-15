@@ -259,6 +259,13 @@ def reconcile(plan, observation, control_generation):
     current = active_goal(plan)
     if current and any(g["id"] in progressed for g in goal_path(plan, current["id"])[:-1]):
         credit_progress(current, now)
+    # A till/plant/water leaf's check often moves only at its last step; each new tilled, planted or watered tile is progress.
+    farm = observation.get("state", {}).get("farm")
+    if isinstance(farm, dict):
+        counts = [farm.get(k) if type(farm.get(k)) is int else 0 for k in ("tilled", "planted", "watered")]
+        if current and plan.get("farm_counts") and any(new > old for new, old in zip(counts, plan["farm_counts"])):
+            credit_progress(current, now)
+        plan["farm_counts"] = counts
     for goal_id in completed:
         for ancestor in goal_path(plan, goal_id)[:-1]:
             credit_progress(ancestor, now)

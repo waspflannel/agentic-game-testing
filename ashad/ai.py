@@ -166,8 +166,9 @@ def prompt_observation(observation, max_chars=28000):
     entities = result.pop("entities", [])
     result.pop("known_locations", None)
     result["entities"] = []
-    # Interactive targets before decorative labels. Preserve full state in evidence.
-    for entity in sorted(entities, key=lambda e: not bool(e.get("actions"))):
+    # Interactive targets before decorative labels, and slots holding an item before empty ones, so a
+    # late display (a ship's copy of the hotbar) is not cut behind a grid of empty slots. Preserve full state in evidence.
+    for entity in sorted(entities, key=lambda e: (not e.get("actions"), not (e.get("state") or {}).get("item_id"))):
         if len(json.dumps(result)) + len(json.dumps(entity)) > max_chars:
             result["complete"] = False
             result["context_truncated"] = True
@@ -194,14 +195,16 @@ def relevant_groups(groups, context):
     distance = lambda position: math.dist(here, position) if point(here) and point(position) else math.inf
     fact = ((context.get("current_goal") or {}).get("completion") or {}).get("fact")
     # Item, plant, quest and target ids named by the goal path's checks, and the items the player can equip.
-    wanted = {a.get("value") for g in context.get("goal_path", []) for a in (g.get("completion") or {}).get("args", [])}
-    wanted |= {item.get("item_id") for item in player.get("hotbar") or [] if isinstance(item, dict)}
-    wanted = {w for w in wanted if isinstance(w, str) and w}
+    goal_ids = {a.get("value") for g in context.get("goal_path", []) for a in (g.get("completion") or {}).get("args", [])}
+    held = {item.get("item_id") for item in player.get("hotbar") or [] if isinstance(item, dict)}
     entities = [g for g in groups if g.get("evidence")]
     tiles = [g for g in groups if g.get("tile")]
     fixed = [g for g in groups if not g.get("evidence") and not g.get("tile")]
     ui = [g for g in entities if g["evidence"].get("kind") == "ui" and g["evidence"].get("actions")]
-    named = [g for g in entities if any(w in f"{g['evidence']['id']} {g['evidence'].get('label', '')} {json.dumps(g['evidence'].get('state'))}" for w in wanted)]
+
+    def naming(wanted):
+        wanted = {w for w in wanted if isinstance(w, str) and w}
+        return [g for g in entities if any(w in f"{g['evidence']['id']} {g['evidence'].get('label', '')} {json.dumps(g['evidence'].get('state'))}" for w in wanted)]
     near_tiles = sorted(tiles, key=lambda g: distance(g["tile"]["position"]))[:24] if fact in FARM_FACTS else []
     nearest = sorted(entities, key=lambda g: distance(g["evidence"].get("position")))
     from .macros import MACROS  # Local: macros imports this module.
@@ -209,7 +212,9 @@ def relevant_groups(groups, context):
     if macro:  # The leaf's macro step only needs its own tiles and the closest entities.
         near_tiles = sorted((g for g in tiles if MACROS[macro][0](g["tile"])), key=lambda g: distance(g["tile"]["position"]))[:12]
         nearest = nearest[:8]
-    chosen = list({id(g): g for g in ui + named + near_tiles + nearest}.values())[:40]  # First place wins; each group once.
+    # Targets naming the goal's own ids come first: a UI listed in tree order (money digits, the HUD hotbar)
+    # must not crowd out the one slot that can make the delivery. First place wins; each group once.
+    chosen = list({id(g): g for g in naming(goal_ids) + ui + naming(held) + near_tiles + nearest}.values())[:40]
     show_all = {"tool": "show_all_targets", "args": {}, "description": "Show every observed target"}
     return chosen + fixed + [{"description": "Target not listed: show every observed target", "actions": [show_all]}]
 

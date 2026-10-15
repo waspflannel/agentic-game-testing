@@ -445,7 +445,9 @@ def print_report(summary, path):
         latency = entry["latency_ms"]
         print(" ".join([route, _fmt(entry["count"]), _fmt(entry["share"]), _fmt(latency["mean"]), _fmt(latency["p50"]), _fmt(latency["p95"]),
                         _fmt(entry["actions"]), _fmt(entry["s_per_action"])]))
-    print("fallbacks " + " ".join(f"{route}:{reason}={count}" for route, entry in summary["routing"].items() for reason, count in entry["fallbacks"].items()))
+    fallbacks = [f"{route}:{reason}={count}" for route, entry in summary["routing"].items() for reason, count in entry["fallbacks"].items()]
+    if fallbacks:
+        print("fallbacks " + " ".join(fallbacks))
     for heading, key in (
         ("H1 serial model calls", "serial_model_calls"),
         ("H2 observation payloads", "observation_payloads"),

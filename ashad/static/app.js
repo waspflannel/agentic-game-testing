@@ -1168,6 +1168,9 @@ async function pollRun() {
     if (current() && apply(run)) state.runMissing = false;
   } catch (error) {
     if (current() && error.status === 404) state.runMissing = true;
+    // A failed GET must not pin the last detail: the bootstrap row is the stored run, so its state and players win.
+    const detail = state.runSlot.get(), row = (state.data?.runs || []).find(r => r.id === id);
+    if (current() && detail?.id === id && row) apply({ ...detail, ...row, events: detail.events, event_states: row.events });
   }
   if (!current()) return;
   renderView();

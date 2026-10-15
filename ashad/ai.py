@@ -207,10 +207,11 @@ def relevant_groups(groups, context):
         return [g for g in entities if any(w in f"{g['evidence']['id']} {g['evidence'].get('label', '')} {json.dumps(g['evidence'].get('state'))}" for w in wanted)]
     near_tiles = sorted(tiles, key=lambda g: distance(g["tile"]["position"]))[:24] if fact in FARM_FACTS else []
     nearest = sorted(entities, key=lambda g: distance(g["evidence"].get("position")))
-    from .macros import MACROS  # Local: macros imports this module.
-    macro = next((s["control"] for s in (context.get("current_goal") or {}).get("steps") or [] if s.get("control") in MACROS), None)
-    if macro:  # The leaf's macro step only needs its own tiles and the closest entities.
-        near_tiles = sorted((g for g in tiles if MACROS[macro][0](g["tile"])), key=lambda g: distance(g["tile"]["position"]))[:12]
+    from . import repeat  # Local: repeat imports this module.
+    targets = next((s["targets"] for s in (context.get("current_goal") or {}).get("steps") or [] if s.get("targets")), "")
+    if targets:  # The leaf's repeat step only needs its own targets and the closest entities.
+        near_tiles = sorted((g for g in tiles + entities if repeat.matches(repeat.view(g), targets)),
+                            key=lambda g: distance(repeat.view(g).get("position")))[:12]
         nearest = nearest[:8]
     # Targets naming the goal's own ids come first: a UI listed in tree order (money digits, the HUD hotbar)
     # must not crowd out the one slot that can make the delivery. First place wins; each group once.

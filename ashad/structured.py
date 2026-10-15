@@ -10,7 +10,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 
-from .ai import ProviderError, picked_options, static_prefix
+from .ai import EXCERPT_CHARS, OPTION_CHARS, ProviderError, picked_options, static_prefix
 from .game_controls import run_configuration
 from .menu import GAME_VERBS, SNAPSHOT_CHARS, batch_options, capability_summary, observation_delta, option_key, prompt_observation, resolve
 from .models import MODEL, PROVIDERS, provider_of
@@ -166,6 +166,7 @@ class StructuredPlayers:
         self.goal_intents = {}  # (run_id, player_id) -> (goal_id, [repeat.step_for of each agent action]), saved as a skill when the goal completes
         self.held = {}  # (run_id, player_id) -> item_id of the hotbar slot the controller last pressed; the game does not report it
         self.decision_failed = {}  # (run_id, player_id) -> (goal_id, decision key) whose one replay failed while that goal is active
+        self.jev_missed = {}  # (run_id, player_id) -> (goal_id,): a Jev batch or skill on this goal missed, so Sonnet takes the next turn
         self.crashes_recorded = set()
 
     def snapshot(self, key, generation, context):
@@ -181,7 +182,7 @@ class StructuredPlayers:
         self.last_decisions.pop(key, None)
         # The code-wait budget, step index, intents and failed decision belong to one goal; a replan of the same goal keeps them.
         plan = self.store.require("runs", key[0]).get("subgoal_plan") or {}
-        for kept in (self.code_waits, self.step_index, self.goal_intents, self.decision_failed):
+        for kept in (self.code_waits, self.step_index, self.goal_intents, self.decision_failed, self.jev_missed):
             if key in kept and kept[key][0] != plan.get("active_goal_id"):
                 del kept[key]
 
@@ -668,7 +669,7 @@ class StructuredPlayers:
 
     def forget_run(self, run_id):
         for counters in (self.loop_counts, self.movement_stalls, self.bug_reports, self.turn_ended_at, self.snapshots, self.code_waits, self.step_index,
-                         self.goal_intents, self.held, self.decision_failed):
+                         self.goal_intents, self.held, self.decision_failed, self.jev_missed):
             for key in [k for k in counters if k[0] == run_id]:
                 del counters[key]
         self.crashes_recorded -= {e for e in self.crashes_recorded if e[0] == run_id}
@@ -1165,6 +1166,49 @@ class StructuredPlayers:
                 await self.report_skill_regression(run_id, player_id, failed, "decision", stop)
         return stop, ran, record
 
+    async def _run_jev_skill(self, run_id, player_id, generation, current, context, observation, goal, skill_key, timing):
+        """Replay the skill Jev picked in code, or skip it when its first step is not offered here; returns the stop and actions, or (None, []) when skipped.
+
+        No tally: a wrong pick is Jev's miss, not the skill's failure."""
+        key = (run_id, player_id)
+        record = self.store.get("skills", skill_key)
+        steps = skills.bind(record["steps"], goal["completion"], replay=True) if record else []
+        if self._step_replayer(key, context, steps)(observation)[0] is None:
+            self.store.event(run_id, "jev_skill_skipped", {"player_id": player_id, "goal_id": goal["id"], "key": skill_key, "why": "not_offered"})
+            return None, []
+        stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None,
+                                          self._step_replayer(key, context, steps), timing, REPEAT_LIMIT)
+        self.store.event(run_id, "jev_skill_replayed", {"player_id": player_id, "goal_id": goal["id"], "key": skill_key,
+                                                        "name": record["name"], "reason": stop, "actions": len(ran)})
+        return stop, ran
+
+    async def _jev_decide(self, run_id, player_id, generation, current, run, context, observation, goal, dispatch, routing, timing):
+        """Jev decides the turn: a picked skill replays in code, else Jev's action is dispatched; a fallback leaves the turn to Sonnet.
+
+        Fills routing. Returns (result, stop, ran): Jev's dispatched result with stop None, a replayed skill's stop and actions,
+        (None, "cancelled", []) when the turn was cancelled, or (None, None, []) for a Sonnet fallback."""
+        project_id = run.get("project_id")
+        library = [(k, skills.describe(r, OPTION_CHARS), skills.describe(r, EXCERPT_CHARS))
+                   for k, r in skills.library(self.store, project_id)] if project_id else []
+        started = time.monotonic()
+        res = await self.coordinator.ai.jev_turn(context, library, dispatch, current, run_id)
+        if res and res["status"] == "skill":
+            stop, ran = await self._run_jev_skill(run_id, player_id, generation, current, context, observation, goal, res["key"], timing)
+            if stop is not None:
+                routing.update(route="jev", pick="skill", model=res["model"], confidence=res["confidence"], jev_ms=res["latency_ms"])
+                return None, stop, ran
+            # Not offered here: act on request 1's action answer, with no second ask.
+            res = await self.coordinator.ai.jev_act(context, res["groups"], res["listings"], res["action"], dispatch, current, run_id,
+                                                    model=res["model"], started=started)
+        if res is None:
+            return None, "cancelled", []
+        routing.update(confidence=res["confidence"], jev_ms=res["latency_ms"])
+        if res["status"] == "fallback":
+            routing["fallback"] = res["reason"]
+            return None, None, []
+        routing.update(route="jev", pick="action", model=res["model"])
+        return res, None, []
+
     async def turn(self, run_id, player_id, tick_seconds=None):
         key = (run_id, player_id)
         run, ps = self.binding(run_id, player_id)
@@ -1262,6 +1306,7 @@ class StructuredPlayers:
             decision_started_at = time.time()
             result, first, stop, ran, finished, replayed = None, {}, None, [], False, None
             route, route_model, route_ms = None, None, 0
+            routing = {"route": None, "model": None, "pick": None, "confidence": None, "fallback": None, "jev_ms": 0}
             # The leaf's next unfinished step runs in code when it is a repeat step. A repeat stop that leaves the step
             # unfinished after dispatching actions hands the next turn to the decider; then the repeat step is tried again.
             steps = (goal or {}).get("steps") or []
@@ -1312,8 +1357,6 @@ class StructuredPlayers:
                              and await self._skill_failed(run_id, player_id, generation, goal["id"], stop))
             if not replanned and (stop is None or (stop == "not_offered" and not ran)):
                 # No planner batch, or its first option is gone: the model decides in this same turn.
-                label = PROVIDERS[provider_of(run.get("model") or run["plan"].get("model", MODEL))]["label"]
-                self.status(run_id, player_id, "thinking", f"Waiting for {label} to choose the next action.", generation)
                 fresh = None  # The post-action observation of the batch's first action.
                 async def dispatch(name, args):
                     nonlocal observation, fresh
@@ -1331,13 +1374,33 @@ class StructuredPlayers:
                     return result
                 # Keyed by the observation and held item the model decides on, before its first action changes them.
                 sig = skills.signature(goal["completion"], observation, self.held.get(key, "")) if goal else None
-                with timed(timing, "decide"):
-                    result = await self.coordinator.ai.batch_turn(context, snapshot, dispatch, current, run_id)
+                jev_stop, jev_ran = None, []
+                # Jev hybrid: Jev decides first, unless the goal looks stuck or Jev's last batch or skill on it missed.
+                if run["plan"].get("decision_engine") == "jev_hybrid" and goal:
+                    if context.get("repeated_failures") or context.get("operator_instruction"):
+                        routing["fallback"] = "stuck"
+                    elif self.jev_missed.get(key, (None,))[0] == goal["id"]:
+                        routing["fallback"] = "jev_missed"
+                    else:
+                        self.status(run_id, player_id, "thinking", "Waiting for Jev to choose the next action.", generation)
+                        with timed(timing, "decide"):
+                            result, jev_stop, jev_ran = await self._jev_decide(run_id, player_id, generation, current, run, context, observation,
+                                                                               goal, dispatch, routing, timing)
+                if routing["route"] == "jev":
+                    route, route_model, route_ms = "jev", routing["model"], routing["jev_ms"]
+                elif jev_stop is None:
+                    label = PROVIDERS[provider_of(run.get("model") or run["plan"].get("model", MODEL))]["label"]
+                    self.status(run_id, player_id, "thinking", f"Waiting for {label} to choose the next action.", generation)
+                    with timed(timing, "decide"):
+                        result = await self.coordinator.ai.batch_turn(context, snapshot, dispatch, current, run_id)
+                    self.jev_missed.pop(key, None)  # After one Sonnet turn the goal goes back to Jev.
+                    if result:
+                        route = route_model = result["model"]
+                        route_ms = routing["jev_ms"] + result["latency_ms"]
                 first = (result or {}).get("action") or {}
-                if result:
-                    route = route_model = result["model"]
-                    route_ms = result["latency_ms"]
-                if result is None:
+                if routing["pick"] == "skill":
+                    stop, ran = jev_stop, jev_ran
+                elif result is None:
                     stop = "cancelled"
                 elif first.get("tool") == "wait_for_change":
                     stop = "wait"
@@ -1347,7 +1410,7 @@ class StructuredPlayers:
                     with timed(timing, "act"):
                         stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, fresh,
                                                           result["result"], queued_actions(context, result["queued"]), timing)
-                    if run.get("project_id") and goal and stop in ("done", "goal_met", "scene_changed", "limit"):
+                    if run.get("project_id") and goal and result.get("route") != "jev" and stop in ("done", "goal_met", "scene_changed", "limit"):
                         # The model's batch becomes this situation's decision skill: non-move actions only, read against the observation it was chosen on.
                         steps = [s for s in (repeat.step_for(a["args"], observation) for a in [first] + ran) if s["control"] != "move_to"]
                         if steps:
@@ -1355,14 +1418,18 @@ class StructuredPlayers:
                                                           build_id=run["build"].get("id"), run_id=run_id)
                             self.store.event(run_id, "decision_saved", {"player_id": player_id, "goal_id": goal["id"],
                                                                         "key": skills.decision_key(run["project_id"], sig), "name": saved["name"]})
+                if route == "jev" and stop in ("failed", "no_effect", "not_offered", "fact_moved_away"):
+                    self.jev_missed[key] = (goal["id"],)  # Sonnet takes this goal's next turn.
             timing["outcome"] = "decided"
             timing["counts"]["batch_actions"] = len(ran) + (first.get("tool") == "perform_action")
             timing["batch_stop"] = stop
             if result:
                 timing["bytes"].update(result["bytes"])
             if route:
-                self.store.event(run_id, "decision_routed", {"player_id": player_id, "route": route, "latency_ms": route_ms, "confidence": None,
-                                                             "model": route_model, "actions": timing["counts"]["batch_actions"] or len(ran)})
+                # Today's routes carry exactly part 1's keys; Jev hybrid adds pick (Jev) or fallback (Sonnet).
+                extra = {k: routing[k] for k in ("pick", "fallback") if routing[k]}
+                self.store.event(run_id, "decision_routed", {"player_id": player_id, "route": route, "latency_ms": route_ms, "confidence": routing["confidence"],
+                                                             "model": route_model, "actions": timing["counts"]["batch_actions"] or len(ran), **extra})
             self.store.event(run_id, "batch_stopped", {"player_id": player_id, "reason": stop, "actions": timing["counts"]["batch_actions"]})
             # Code waits start only after the model itself chose to wait on a growth goal; any other batch ends them.
             current_goal = context.get("current_goal") or {}

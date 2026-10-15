@@ -33,7 +33,7 @@ def next_action(macro, step, context, selected, tried):
     """(action, why) for the macro's next action; tried holds tile positions as tuples already used this run."""
     observation = context["observation"]
     state = observation.get("state", {})
-    if not selected:
+    if not selected and step.get("item"):  # A step with no item (e.g. harvest by hand) has nothing to select.
         slot = select_input(observation, step.get("item"))
         action = slot and _offered(context, "input", {"name": slot, "duration_ms": 160})  # Same parameters as ai.action_groups' ordinary inputs.
         return (action, "select") if action else (None, "not_offered")

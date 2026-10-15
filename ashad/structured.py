@@ -955,12 +955,12 @@ class StructuredPlayers:
         goal["actionable"] = False
         self.store.put("runs", run)
         self.step_index.pop((run_id, player_id), None)
-        if not skill_key:
-            return False  # Replayed before skills had per-step keys: nothing to count against.
-        saved = skills.save(self.store, run.get("project_id"), goal["completion"], None, False, build_id=run["build"].get("id"), run_id=run_id, key=skill_key)
         self.store.event(run_id, "skill_failed", {"player_id": player_id, "goal_id": goal_id, "skill": skill, "reason": reason})
-        if saved["last_result"]["regression"]:
-            await self.report_skill_regression(run_id, player_id, saved, "subgoal", reason)
+        # A replay started before skills had per-step keys has nothing to count against, but still hands the leaf to the planner.
+        if skill_key:
+            saved = skills.save(self.store, run.get("project_id"), goal["completion"], None, False, build_id=run["build"].get("id"), run_id=run_id, key=skill_key)
+            if saved["last_result"]["regression"]:
+                await self.report_skill_regression(run_id, player_id, saved, "subgoal", reason)
         return self.request_replan(run_id, player_id, generation, f"Skill replay stopped ({reason}); plan this leaf.")
 
     def request_replan(self, run_id, player_id, generation, reason):

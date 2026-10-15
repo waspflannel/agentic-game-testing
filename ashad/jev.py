@@ -104,7 +104,8 @@ def check_answers(questions: dict[str, dict], answers) -> None:
             valid = answer.get("choice") in question["criteria"] and "probabilities" in answer and "confidence" in answer
         elif question["type"] == "noul":
             value = answer.get("noul")
-            valid = isinstance(value, float) and 0.0 <= value <= 1.0
+            # JSON 0 and 1 decode as int; true is an int too but is not a probability.
+            valid = isinstance(value, (int, float)) and not isinstance(value, bool) and 0.0 <= value <= 1.0
         else:
             valid = all(field in answer for field in ("score", "probabilities", "confidence"))
         if not valid:

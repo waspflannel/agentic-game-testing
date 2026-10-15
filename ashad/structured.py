@@ -1167,6 +1167,9 @@ class StructuredPlayers:
             if not goal or goal_id != goal["id"]:
                 index, decider_turn = 0, False
             step = steps[index] if index < len(steps) else None
+            if steps and context.get("current_goal"):
+                # The decider and relevant_groups' tile filter see only the unfinished steps, so a finished macro's tiles are not the ones kept.
+                context["current_goal"]["steps"] = steps[index:]
             if planned_keys:
                 # The planner named the first batch: run it on the post-planning observation, with no decide call.
                 stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None, queued_actions(context, planned_keys), timing)

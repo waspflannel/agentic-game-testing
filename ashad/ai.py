@@ -276,6 +276,7 @@ def static_prefix(context, snapshot):
 def numeric_option_id(option_id, groups):
     """Map a `<target>.<n>` or `<target>.<verb>` ID to `T.A` when exactly one listed group matches the target and action; else None."""
     name, _, last = option_id.strip("`'\" ").rpartition(".")
+    name = re.sub(r"\.\d+$", "", name)  # `Label.<group>.<n>`: the stray group number is dropped, the action index kept.
     owners = [i for i, g in enumerate(groups) if name in (g.get("subject"), (g.get("evidence") or {}).get("id"), (g.get("evidence") or {}).get("label"))]
     if len(owners) != 1 or groups[owners[0]].get("drag_source"):
         return None

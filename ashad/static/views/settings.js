@@ -257,13 +257,15 @@ export function limitsRegions(data, ui) {
   return {
     hardware: `<dl class="kv"><dt>CPU</dt><dd>${pct(h.cpu_percent)} in use</dd><dt>Memory</dt><dd>${pct(h.memory_percent)} in use · ${gb(h.memory_available)} available</dd><dt>Disk free</dt><dd>${gb(h.disk_free)}</dd><dt>GPU</dt><dd>${h.gpu ? esc(JSON.stringify(h.gpu)) : 'Not reported'}</dd></dl>`,
     'form-status': errorNote(ui.formError) + okNote(ui.saved),
-    'jev-key': `<p class="hint">${ui.jevBusy ? 'Working…' : esc(jevKeyWords(data?.jev || {}))}</p>${errorNote(ui.jevError)}`,
+    'jev-key': `<p class="hint">${ui.jevBusy ? 'Working…' : esc(jevKeyWords(data?.jev || {}))}</p>`
+      + errorNote(ui.jevError || (jevKeyBadShape(data?.jev) ? `${data.jev.env_set ? 'TYPESAFE_API_KEY' : 'Saved key'} doesn't look like a TypeSafe key.` : '')),
   };
 }
 
 // Status is booleans only; the key itself never reaches the browser.
 const jevKeyWords = jev => [jev.key_set ? 'A key is saved.' : 'No key saved.',
   jev.env_set ? 'TYPESAFE_API_KEY is set and takes precedence.' : '', jev.fake ? 'Fake Jev is on (ASHAD_JEV_FAKE=1).' : ''].filter(Boolean).join(' ');
+const jevKeyBadShape = jev => Boolean(jev && !jev.fake && (jev.key_set || jev.env_set) && jev.key_shape_ok === false);
 
 function field(id, label, control, hint = '', errorId = '') {
   return `<div class="field"><label for="${id}">${esc(label)}</label>${control}${hint ? `<span class="hint">${esc(hint)}</span>` : ''}<span class="error" id="${errorId || id + '-error'}" data-error-for="${id}"></span></div>`;

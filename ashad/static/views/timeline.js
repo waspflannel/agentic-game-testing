@@ -44,7 +44,7 @@ export function eventKind(type) {
 }
 
 export const FILTERS = [['all', 'All'], ['actions', 'Actions'], ['plan', 'Plan'], ['problems', 'Problems'], ['model', 'Model']];
-const FILTER_KINDS = { actions: ['selected', 'sent', 'outcome', 'tool'], plan: ['plan'], problems: ['problem'], model: ['model'] };
+const FILTER_KINDS = { actions: ['decision', 'selected', 'sent', 'outcome', 'tool'], plan: ['plan'], problems: ['problem'], model: ['model'] };
 
 // ── Labels that must never merge: selected ≠ delivered ≠ confirmed ──────────
 export const SELECTED_LABEL = 'selected, not yet sent';
@@ -94,7 +94,9 @@ function decisionSummary(kind, p) {
   if (kind === 'decision_routed') {
     const jev = p.route === 'jev';
     const confidence = p.confidence == null ? null : `${jev ? '' : 'Jev '}${Math.round(p.confidence * 100)}% confident`;
-    const text = [`Decided by ${ROUTES[p.route] || modelName(p.route)}`, confidence, p.fallback ? `fell back: ${fallbackText(p.fallback)}` : null].filter(Boolean).join(' · ');
+    // A named route (Jev, cache, repeat) also names the model it used; a model route is its own model.
+    const by = ROUTES[p.route] ? `${ROUTES[p.route]}${p.model ? ` (${modelName(p.model)})` : ''}` : modelName(p.route);
+    const text = [`Decided by ${by}`, confidence, p.fallback ? `fell back: ${fallbackText(p.fallback)}` : null].filter(Boolean).join(' · ');
     return { text, tone: p.fallback ? 'attention' : undefined };
   }
   if (kind === 'jev_check') {

@@ -1544,6 +1544,9 @@ class StructuredPlayers:
                 latest = self.store.require("runs", run_id)
                 status = latest["players"][player_id].get("agent_status") or {}
                 status["completed_at"] = time.time()
+                # A completed turn means an earlier error (e.g. a startup-window bridge 503) is no longer current.
+                status.pop("last_error", None)
+                status.pop("error_at", None)
                 latest["players"][player_id]["agent_status"] = status
                 self.store.put("runs", latest)
                 phase = status.get("phase")

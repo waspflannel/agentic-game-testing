@@ -721,8 +721,8 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
     async def jev_key_save(body: dict):
         key = body.get("key")
         key = key.strip() if isinstance(key, str) else ""
-        if not (key and len(key) <= 512 and not any(c.isspace() for c in key)):
-            raise ValueError("Paste your TypeSafe API key.")
+        if not (jev.key_shape_ok(key) and len(key) <= 512):
+            raise ValueError("Paste your TypeSafe API key. It starts with apikey_.")
         await asyncio.to_thread(credentials.save, jev.KEY_REFERENCE, key)
         return await asyncio.to_thread(jev.status, credentials)
 

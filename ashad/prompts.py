@@ -7,7 +7,7 @@ SOURCE_NOTES_LIMIT = 8000
 TUNING_MINIMUM_BYTES = 200
 
 
-BATCH_SCHEMA = {"type": "object", "properties": {"actions": {"type": "array", "minItems": 1, "maxItems": 5, "items": {"type": "string"}},
+BATCH_SCHEMA = {"type": "object", "properties": {"actions": {"type": "array", "minItems": 1, "maxItems": 5, "items": {"type": "string", "pattern": "^\\d+\\.\\d+$"}},
     "reason": {"type": "string"}}, "required": ["actions", "reason"], "additionalProperties": False}
 BATCH_INSTRUCTIONS = (
     "Choose the next bounded ordinary action to advance the primary objective. Visible quests are relevant only when they help that objective. "
@@ -23,7 +23,7 @@ BATCH_INSTRUCTIONS = (
     "Wait during production/loading/votes. Choose operator instructions if no supported action fits. "
     "Report a game bug only when the game contradicts itself after an offered action or renders or responds wrongly; if no offered action fits, choose operator instructions instead. "
     "Never choose hidden/debug operations. Actionable entities appear only as target options, not in observation.entities. "
-    "Return 1 to 5 option IDs as `<target>.<action>` from the listed options, in execution order, for actions that follow each other "
+    "Return 1 to 5 option IDs from the listed options, each the numbers printed before `)` in the listing (e.g. `3.0`), never names, entity ids or verbs, in execution order, for actions that follow each other "
     "without needing a fresh look (repeated farming steps, a move then an interact). A wait, operator instructions, a game bug report "
     "or a drag source must be the only or last ID. Prefer fewer IDs when later targets depend on the result. "
     "When current_goal.steps is supplied, follow its order and choose targets for the next unfinished step.")
@@ -68,7 +68,7 @@ def planning_request(evidence, schema):
         "Pick completion checks only from fact_catalog: fact is a fact_catalog.facts name, args name every listed arg with a value from fact_catalog.args, op is >=, == or <=, and value is an int (bool with == for bool facts); fact_catalog.values shows current values. Use the count the objective states. unknown (no args) is allowed when no fact fits. "
         "Each fact has a tag: stock facts change only by the player's actions (item_count is the held count, inventory plus hotbar); state facts rise and fall on their own. A goal reached by repeating a cycle must complete on a stock fact; use a state fact only for a one-step goal, e.g. >= its current value + 1. "
         "world_ready means the world loaded; use player_can_act for leaving character creation, dialogue or cutscenes. "
-        "When mode is act or expand and action_options is supplied, return in first_actions up to 5 option IDs that start the new active leaf; otherwise []. "
+        "When mode is act or expand and action_options is supplied, return in first_actions up to 5 option IDs (the numbers before `)` in the listing, e.g. `3.0`, never names, entity ids or verbs) that start the new active leaf; otherwise []. "
         "When mode is act, return steps: the leaf's ordered steps from the game_controls Core loops section when present, each {control, item, count, precondition, verifies} copying that manual's control names, preconditions and verifying facts; use a macro name (till_area, plant_all, water_all, harvest_all) for a step repeated over tiles, with item the hotbar item_id it needs; without a Core loops section use macro names and fact_catalog names only; else []. "
         "If operator_instruction is supplied, it is trusted operator guidance (after=hand_back: a human just played); follow it when choosing goals. "
         "The controls manual is game knowledge, not evidence of current world state or success. "

@@ -64,7 +64,7 @@ class PlanningDecision(Contract):
     completion: Check
     reason: str = Field(min_length=1, max_length=1000)
     subgoals: list[ProposedGoal] = Field(max_length=12)
-    first_actions: list[str] = Field(max_length=5, description="Option IDs T.A from action_options for the new active leaf, in order; [] when none fit or no action_options were given.")
+    first_actions: list[str] = Field(max_length=5, description="Option IDs as the numbers before ')' in the action_options listing, e.g. 3.0 (never names, entity ids or verbs), from action_options for the new active leaf, in order; [] when none fit or no action_options were given.")
     steps: list[Step] = Field(max_length=8, description="The act leaf's ordered steps; [] when not act.")
 
     @model_validator(mode="after")

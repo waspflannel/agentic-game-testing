@@ -273,6 +273,25 @@ def static_prefix(context, snapshot):
     return json.dumps({**static, "subgoal_snapshot": snapshot}, sort_keys=True, ensure_ascii=False)
 
 
+def numeric_option_id(option_id, groups):
+    """Map a `<target>.<n>` or `<target>.<verb>` ID to `T.A` when exactly one listed group matches the target and action; else None."""
+    name, _, last = option_id.strip("`'\" ").rpartition(".")
+    # The name may itself end in a dotted number (entity id, label, float coordinate); else `Label.<group>.<n>` drops the stray group number.
+    for target in (name, re.sub(r"\.\d+$", "", name)):
+        owners = [i for i, g in enumerate(groups) if target in (g.get("subject"), (g.get("evidence") or {}).get("id"), (g.get("evidence") or {}).get("label"))]
+        if len(owners) == 1:
+            break
+    else:
+        return None
+    group = groups[owners[0]]
+    if group.get("drag_source"):  # Listed with only its .0 option.
+        return f"{owners[0]}.0"
+    if last.isdigit():
+        return f"{owners[0]}.{last}"
+    found = [i for i, a in enumerate(group["actions"]) if last == (a["args"].get("verb") if a["tool"] == "perform_action" else a["tool"])]
+    return f"{owners[0]}.{found[0]}" if len(found) == 1 else None
+
+
 def picked_options(answers, groups, shown):
     """The offered T.A IDs as (id, group, action), skipping invalid ones; the action is None for a drag source.
 
@@ -283,6 +302,8 @@ def picked_options(answers, groups, shown):
     for option_id in ids[:5] if isinstance(ids, list) else []:
         # Tolerate quoting, backticks or a trailing ")" around the ID.
         match = re.fullmatch(r"\W*(\d+)\.(\d+)\W*", option_id) if isinstance(option_id, str) else None
+        if not match and isinstance(option_id, str):  # A name, entity id or verb instead of numbers: map only when unambiguous.
+            match = re.fullmatch(r"(\d+)\.(\d+)", numeric_option_id(option_id, groups) or "")
         # The ID must appear in the listing the model saw; invented IDs are skipped.
         if not match or int(match[1]) >= len(groups) or f"{match[1]}.{match[2]})" not in shown[int(match[1])]:
             continue

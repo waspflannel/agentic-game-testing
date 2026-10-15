@@ -1191,15 +1191,18 @@ class StructuredPlayers:
         library = [(k, skills.describe(r, OPTION_CHARS), skills.describe(r, EXCERPT_CHARS))
                    for k, r in skills.library(self.store, project_id)] if project_id else []
         started = time.monotonic()
-        res = await self.coordinator.ai.jev_turn(context, library, dispatch, current, run_id)
+        with timed(timing, "decide"):
+            res = await self.coordinator.ai.jev_turn(context, library, dispatch, current, run_id)
         if res and res["status"] == "skill":
-            stop, ran = await self._run_jev_skill(run_id, player_id, generation, current, context, observation, goal, res["key"], timing)
+            with timed(timing, "act"):
+                stop, ran = await self._run_jev_skill(run_id, player_id, generation, current, context, observation, goal, res["key"], timing)
             if stop is not None:
                 routing.update(route="jev", pick="skill", model=res["model"], confidence=res["confidence"], jev_ms=res["latency_ms"])
                 return None, stop, ran
             # Not offered here: act on request 1's action answer, with no second ask.
-            res = await self.coordinator.ai.jev_act(context, res["groups"], res["listings"], res["action"], dispatch, current, run_id,
-                                                    model=res["model"], started=started, calls=res["calls"])
+            with timed(timing, "decide"):
+                res = await self.coordinator.ai.jev_act(context, res["groups"], res["listings"], res["action"], dispatch, current, run_id,
+                                                        model=res["model"], started=started, calls=res["calls"])
         if res is None:
             return None, "cancelled", []
         routing.update(confidence=res["confidence"], jev_ms=res["latency_ms"])
@@ -1383,9 +1386,8 @@ class StructuredPlayers:
                         routing["fallback"] = "jev_missed"
                     else:
                         self.status(run_id, player_id, "thinking", "Waiting for Jev to choose the next action.", generation)
-                        with timed(timing, "decide"):
-                            result, jev_stop, jev_ran = await self._jev_decide(run_id, player_id, generation, current, run, context, observation,
-                                                                               goal, dispatch, routing, timing)
+                        result, jev_stop, jev_ran = await self._jev_decide(run_id, player_id, generation, current, run, context, observation,
+                                                                           goal, dispatch, routing, timing)
                 if routing["route"] == "jev":
                     route, route_model, route_ms = "jev", routing["model"], routing["jev_ms"]
                 elif jev_stop is None:

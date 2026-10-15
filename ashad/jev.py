@@ -3,6 +3,7 @@ The key is TYPESAFE_API_KEY if set, else the one saved in Settings (the OS crede
 from __future__ import annotations
 import asyncio
 import os
+import re
 import time
 import httpx
 import keyring.errors
@@ -19,8 +20,10 @@ KEY_REFERENCE = "typesafe:jev"
 
 
 class JevError(Exception):
-    """status is one of unavailable, rate_limited, overloaded, timeout, connection, bad_request, invalid_answer.
-    The message is fixed text: never the key, headers or request body."""
+    """status is one of unavailable, rate_limited, overloaded, timeout, connection, invalid_answer,
+    bad_request:local (validate_request refused the request before sending), or bad_request:<code> for any other non-2xx,
+    with :<field> appended when the JSON error body names the offending field (e.g. bad_request:422:questions.action.criteria).
+    The message and status are fixed text plus that sanitized field name: never the key, headers or a body."""
 
     def __init__(self, status: str, message: str):
         super().__init__(f"{status}: {message}")
@@ -28,23 +31,56 @@ class JevError(Exception):
         self.message = message
 
 
-def choice(instructions: str, criteria: dict[str, str]) -> dict:
+def choice(instructions: str | dict, criteria: dict[str, str]) -> dict:
     if not 1 <= len(criteria) <= 255:
         raise ValueError("A Jev choice needs 1-255 options.")
     return {"type": "choice", "instructions": instructions, "criteria": criteria}
 
 
-def noul(instructions: str, criteria: str | None = None) -> dict:
+def noul(instructions: str | dict, criteria: dict[str, str] | None = None) -> dict:
+    """criteria, when given, says what a yes and a no mean: {"true": str, "false": str}."""
     question = {"type": "noul", "instructions": instructions}
     if criteria is not None:
+        if not (isinstance(criteria, dict) and set(criteria) == {"true", "false"} and all(isinstance(v, str) for v in criteria.values())):
+            raise ValueError('Jev noul criteria must be {"true": str, "false": str}.')
         question["criteria"] = criteria
     return question
 
 
-def score(instructions: str, levels: list[str]) -> dict:
+def score(instructions: str | dict, levels: list[str]) -> dict:
     if not 2 <= len(levels) <= 10:
         raise ValueError("A Jev score needs 2-10 levels.")
-    return {"type": "score", "instructions": instructions, "levels": levels}
+    return {"type": "score", "instructions": instructions, "criteria": levels}
+
+
+def _criteria_ok(kind: str, criteria) -> bool:
+    if kind == "choice":
+        return (isinstance(criteria, dict) and 1 <= len(criteria) <= 255
+                and all(isinstance(k, str) and (v is None or isinstance(v, str)) for k, v in criteria.items()))
+    if kind == "noul":
+        return isinstance(criteria, dict) and set(criteria) <= {"true", "false"} and all(isinstance(v, str) for v in criteria.values())
+    return isinstance(criteria, list) and 2 <= len(criteria) <= 10 and all(isinstance(level, str) for level in criteria)
+
+
+def validate_request(state, questions) -> None:
+    """Checks the documented request shape before anything is sent, so the fake and real paths refuse the same requests."""
+    if not isinstance(state, (str, dict, list)):
+        raise JevError("bad_request:local", "Jev state must be a string, object or array.")
+    if not isinstance(questions, dict) or not questions:
+        raise JevError("bad_request:local", "Jev questions must be a non-empty object.")
+    for question_id, question in questions.items():
+        if not isinstance(question, dict):
+            raise JevError("bad_request:local", f"Jev question {question_id!r} is not an object.")
+        unknown = set(question) - {"type", "instructions", "criteria"}
+        if unknown:
+            raise JevError("bad_request:local", f"Jev question {question_id!r} has unknown field {sorted(unknown)[0]!r}.")
+        kind = question.get("type")
+        if kind not in ("choice", "noul", "score"):
+            raise JevError("bad_request:local", f"Jev question {question_id!r} has an invalid type.")
+        if not isinstance(question.get("instructions"), (str, dict, list)):
+            raise JevError("bad_request:local", f"Jev question {question_id!r} has invalid instructions.")
+        if (kind != "noul" or "criteria" in question) and not _criteria_ok(kind, question.get("criteria")):
+            raise JevError("bad_request:local", f"Jev question {question_id!r} has invalid criteria.")
 
 
 async def box(instructions, image=None):
@@ -82,6 +118,7 @@ def status(credentials) -> dict:
 
 async def ask(state: str, questions: dict[str, dict], *, credentials, model: str = JEV_MODEL) -> dict:
     """Sends every question in one request. Retries only 429/529, which the API rejected before answering."""
+    validate_request(state, questions)
     if _fake():
         return {"model": model, "answers": fake_answers(questions), "usage": {"input_tokens": 0, "output_tokens": 0}, "latency_ms": 0}
     key = await asyncio.to_thread(api_key, credentials)
@@ -109,7 +146,7 @@ async def ask(state: str, questions: dict[str, dict], *, credentials, model: str
     if response.status_code in RETRY_STATUSES:
         raise JevError(RETRY_STATUSES[response.status_code], f"Jev returned {response.status_code} after {ATTEMPTS} attempts.")
     if not response.is_success:
-        raise JevError("bad_request", f"Jev returned {response.status_code}.")
+        raise JevError(f"bad_request:{response.status_code}{_error_field(response)}", f"Jev returned {response.status_code}.")
     try:
         body = response.json()
     except ValueError:
@@ -117,6 +154,28 @@ async def ask(state: str, questions: dict[str, dict], *, credentials, model: str
     check_answers(questions, body.get("answers") if isinstance(body, dict) else None)
     return {"model": body.get("model", model), "answers": body["answers"], "usage": body.get("usage"),
             "latency_ms": int((time.monotonic() - started) * 1000)}
+
+
+def _error_field(response) -> str:
+    """":<field>" when the JSON error body names the offending field in a loc/field/param key, else "". Only that name is kept, sanitized."""
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    nodes = [body, body.get("error"), body.get("detail")] if isinstance(body, dict) else [body]
+    for node in nodes:
+        if isinstance(node, list) and node:
+            node = node[0]
+        if not isinstance(node, dict):
+            continue
+        for name in ("loc", "field", "param"):
+            value = node.get(name)
+            if isinstance(value, list):
+                value = ".".join(str(part) for part in value if isinstance(part, (str, int)))
+            field = re.sub(r"[^A-Za-z0-9_.]", "", value)[:40] if isinstance(value, str) else ""
+            if field:
+                return ":" + field
+    return ""
 
 
 def check_answers(questions: dict[str, dict], answers) -> None:
@@ -153,6 +212,6 @@ def fake_answers(questions: dict[str, dict]) -> dict:
             answers[question_id] = {"type": "noul", "noul": noul_value}
         else:
             answers[question_id] = {"type": "score", "score": 0, "probabilities": {"0": 1.0},
-                                    "legend": {str(index): level for index, level in enumerate(question["levels"])},
+                                    "legend": {str(index): level for index, level in enumerate(question["criteria"])},
                                     "confidence": 1.0}
     return answers

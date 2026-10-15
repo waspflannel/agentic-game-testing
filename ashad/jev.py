@@ -99,14 +99,25 @@ def _saved_key(credentials) -> str | None:
         return None
 
 
+def _env_key() -> str:
+    """An empty or whitespace-only TYPESAFE_API_KEY counts as unset."""
+    return os.environ.get(KEY_ENV, "").strip()
+
+
+def key_shape_ok(key: str) -> bool:
+    return key.startswith("apikey_") and not any(c.isspace() for c in key)
+
+
 def api_key(credentials) -> str | None:
     """TYPESAFE_API_KEY wins over the saved key. Keyring lookups may block, so async callers run this in a thread."""
-    return os.environ.get(KEY_ENV) or _saved_key(credentials)
+    return _env_key() or _saved_key(credentials)
 
 
 def status(credentials) -> dict:
-    """Booleans and words only: reports whether a key is set, never the key itself. Keyring lookups may block."""
-    result = {"available": True, "fake": False, "key_set": bool(_saved_key(credentials)), "env_set": bool(os.environ.get(KEY_ENV))}
+    """Booleans and words only: reports whether a key is set and looks like a TypeSafe key, never the key itself. Keyring lookups may block."""
+    saved, env = _saved_key(credentials), _env_key()
+    result = {"available": True, "fake": False, "key_set": bool(saved), "env_set": bool(env),
+              "key_shape_ok": key_shape_ok(env or saved or "")}
     if _fake():
         return {**result, "fake": True, "message": "Fake Jev (ASHAD_JEV_FAKE=1): local answers, no API calls."}
     if result["env_set"]:

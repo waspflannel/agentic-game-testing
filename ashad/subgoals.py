@@ -56,6 +56,7 @@ class PlanningDecision(Contract):
     completion: Check
     reason: str = Field(min_length=1, max_length=1000)
     subgoals: list[ProposedGoal] = Field(max_length=12)
+    first_actions: list[str] = Field(max_length=5, description="Option IDs T.A from action_options for the new active leaf, in order; [] when none fit or no action_options were given.")
 
     @model_validator(mode="after")
     def check_expansion(self):
@@ -337,6 +338,7 @@ def apply_decision(plan, raw, context, warnings=None):
     warnings = [] if warnings is None else warnings
     if isinstance(raw, dict):
         raw = copy.deepcopy(raw)
+        raw["first_actions"] = []  # The controller's optional first batch; never a reason to reject a plan.
         mode = raw.get("mode")
         if mode == "expand" and not raw.get("subgoals") and raw.get("goal_id") != plan["root_id"]:
             raw["mode"] = "act"

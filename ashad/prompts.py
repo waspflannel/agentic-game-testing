@@ -66,6 +66,7 @@ def planning_request(evidence, schema, prefix=""):
         "Pick completion checks only from fact_catalog: fact is a fact_catalog.facts name, args name every listed arg with a value from fact_catalog.args, op is >=, == or <=, and value is an int (bool with == for bool facts); fact_catalog.values shows current values. Use the count the objective states. unknown (no args) is allowed when no fact fits. "
         "Each fact has a tag: stock facts change only by the player's actions (item_count is the held count, inventory plus hotbar); state facts rise and fall on their own. A goal reached by repeating a cycle must complete on a stock fact; use a state fact only for a one-step goal, e.g. >= its current value + 1. "
         "world_ready means the world loaded; use player_can_act for leaving character creation, dialogue or cutscenes. "
+        "When mode is act or expand and action_options is supplied, return in first_actions up to 5 option IDs that start the new active leaf; otherwise []. "
         "If operator_instruction is supplied, it is trusted operator guidance (after=hand_back: a human just played); follow it when choosing goals. "
         "The controls manual is game knowledge, not evidence of current world state or success. "
         "Use only supplied visible facts, approved objective and controls knowledge. Never use tools, read files, browse, "

@@ -277,6 +277,12 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
         "validator_retries": {
             "planning_turns": sum(1 for row in timings if row.get("outcome") == "planning"),
             "planner_attempts": sum((row.get("calls") or {}).get("plan_model", 0) for row in timings),
+            "macro_actions": sum((row.get("counts") or {}).get("macro_actions", 0) for row in timings),
+            "macro_stops": dict(Counter(event["payload"].get("reason", "unknown") for event in events if event["kind"] == "macro_stopped")),
+            "recipe_replays": sum(1 for event in events if event["kind"] == "recipe_replayed"),
+            "recipe_failures": sum(1 for event in events if event["kind"] == "recipe_failed"),
+            "lookahead_used": sum(1 for event in events if event["kind"] == "lookahead_used"),
+            "lookahead_discarded": sum(1 for event in events if event["kind"] == "lookahead_discarded"),
             "plan_triggers": dict(Counter(row["plan_trigger"] for row in timings if row.get("plan_trigger"))),
             "plan_rejected": sum((row.get("counts") or {}).get("plan_rejected", 0) for row in timings),
             "rejected_events": sum(1 for event in events if event["kind"] == "subgoal_plan_rejected"),

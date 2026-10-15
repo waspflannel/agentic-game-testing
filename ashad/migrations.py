@@ -1,9 +1,10 @@
 """One-way, idempotent startup migrations; running one twice changes nothing the second time."""
+import json
 import logging
 import time
 from datetime import datetime, timezone
 
-from . import repair_tasks
+from . import repair_tasks, skills
 
 LOG = logging.getLogger(__name__)
 
@@ -111,3 +112,16 @@ def drop_macro_skills(store):
     with store.transaction() as db:
         db.execute("DELETE FROM records WHERE kind='skills' AND EXISTS (SELECT 1 FROM json_each(data, '$.steps') "
                    "WHERE json_extract(value, '$.control') IN ('till_area', 'plant_all', 'water_all', 'harvest_all'))")
+
+
+def rekey_skills(store):
+    """Subgoal skills were keyed by shape only; re-key each once by its main step's control and target kind."""
+    with store.transaction() as db:
+        for key, data in db.execute("SELECT id, data FROM records WHERE kind='skills'").fetchall():
+            record = json.loads(data)
+            if record.get("scope") == "decision" or key.count(":") != record["project_id"].count(":") + 1:
+                continue
+            new_key = f"{key}:{skills.key_suffix(record['steps'])}" if record["steps"] else None
+            if new_key and store.get("skills", new_key) is None:
+                store.put("skills", record, new_key)
+            store.delete("skills", key)

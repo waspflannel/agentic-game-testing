@@ -86,3 +86,5 @@ Goal reached popup (goalReachedHTML): the planner's claim as a result slip on th
 - 2026-10-14: completion checks come from the typed fact catalog; Goals tab and Goal reached show each check and its current value instead of evidence quotes; Planner rejections group removed (feat/ashad-fact-catalog-v6).
 - 2026-10-15: Settings › Limits gains a native Claude action model select (Sonnet default) for batch decisions (perf/ashad-batching-caching).
 - 2026-10-15: project Skills page (uses, last result, delete) and the Likely skill regressions issue group (feat/ashad-skills-page).
+- 2026-10-15: Settings › Limits gains native Decision engine (Today default | Jev hybrid) and Jev model (jev-1.13.0 default | jev-preview) selects, with the TypeSafe key status in words (feat/ashad-jev-hybrid-part-1).
+- 2026-10-15: Settings › Limits gains a TypeSafe Jev key card (write-only password input, Save key / Clear key, saved and TYPESAFE_API_KEY status in words) (jev-key).

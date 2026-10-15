@@ -210,6 +210,9 @@ export function limitsSkeleton(data) {
   const s = data?.settings || {};
   const minutes = s.duration_seconds ? String(Math.round(s.duration_seconds / 60)) : '';
   const decide = s.claude_decide_model || 'sonnet';
+  const option = (value, label, current) => `<option value="${esc(value)}"${value === current ? ' selected' : ''}>${esc(label)}</option>`;
+  const engine = s.decision_engine || 'today';
+  const jevModel = s.jev_model || 'jev-1.13.0';
   const decideOptions = (data?.model_options || []).filter(m => m.provider === 'claude')
     .map(m => `<option value="${esc(m.id)}"${m.id === decide ? ' selected' : ''}>${esc(m.label)}${m.id === 'sonnet' ? ' (Default)' : ''}</option>`).join('');
   return head('Limits', 'Guards for every instance. Leave a field blank for no limit.')
@@ -218,8 +221,17 @@ export function limitsSkeleton(data) {
     + field('l-spend', 'Spend cap (USD, API-equivalent estimate)', `<input id="l-spend" class="input" name="spend" inputmode="decimal" value="${esc(s.spend_usd ?? '')}" placeholder="No limit" aria-describedby="l-spend-error">`, 'Estimates only apply to metered rows; subscription turns have no price.', 'l-spend-error')
     + field('l-reserve', 'Storage reserve (GB)', `<input id="l-reserve" class="input" name="reserve" inputmode="decimal" value="${esc(Number.isFinite(s.storage_reserve_bytes) ? +(s.storage_reserve_bytes / GB).toFixed(2) : '')}" aria-describedby="l-reserve-error">`, 'Free disk space kept back for evidence.', 'l-reserve-error')
     + field('l-decide', 'Claude action model', `<select id="l-decide" class="select" name="decide">${decideOptions}</select>`, "Chooses each action batch on Claude instances. The instance's model still plans.")
+    + field('l-engine', 'Decision engine', `<select id="l-engine" class="select" name="engine">${option('today', 'Today (Default)', engine)}${option('jev_hybrid', 'Jev hybrid', engine)}</select>`,
+      'Jev hybrid needs a TypeSafe key (below); without one, runs use Today.')
+    + field('l-jev-model', 'Jev model', `<select id="l-jev-model" class="select" name="jev_model">${option('jev-1.13.0', 'jev-1.13.0 (Default)', jevModel)}${option('jev-preview', 'jev-preview', jevModel)}</select>`,
+      'Pinned so confidence thresholds stay tuned. Preview tracks the newest Jev.')
     + `<p class="hint">Concurrent instances: 1 (fixed in this release).</p>`
     + `<div data-region="form-status"></div><div class="btn-row"><button type="submit" class="btn btn-primary" data-key="l-save">Save limits</button></div></form>`
+    + `<form class="card settings-card settings-form" data-form="jev-key" novalidate><h2 class="card-title">TypeSafe Jev key</h2><div class="field"><label for="jev-key">TypeSafe API key</label>`
+    + `<input id="jev-key" class="input mono" type="password" autocomplete="off" name="jev-key" spellcheck="false" placeholder="Paste your TypeSafe API key">`
+    + `<span class="hint">Write-only: stored in the OS credential store and never shown again.</span></div><div data-region="jev-key"></div>`
+    + `<div class="btn-row"><button type="button" class="btn btn-primary" data-action="jev-key-save" data-key="jev-save">Save key</button>`
+    + `<button type="button" class="btn btn-secondary" data-action="jev-key-clear" data-key="jev-clear">Clear key</button></div></form>`
     + `<section class="card settings-card"><h2 class="card-title">This computer</h2><div data-region="hardware"></div></section>`;
 }
 
@@ -236,7 +248,7 @@ export function limitsPayload(values) {
   const spend = num('spend', 'Spend cap');
   const reserve = num('reserve', 'Storage reserve', GB, true);
   if (reserve === null) errors.reserve = 'Enter a reserve, or 0 for none.';
-  return { errors, body: { duration_seconds: duration, spend_usd: spend, storage_reserve_bytes: Number.isFinite(reserve) ? Math.round(reserve) : reserve, claude_decide_model: values.decide } };
+  return { errors, body: { duration_seconds: duration, spend_usd: spend, storage_reserve_bytes: Number.isFinite(reserve) ? Math.round(reserve) : reserve, claude_decide_model: values.decide, decision_engine: values.engine, jev_model: values.jev_model } };
 }
 
 export function limitsRegions(data, ui) {
@@ -245,8 +257,13 @@ export function limitsRegions(data, ui) {
   return {
     hardware: `<dl class="kv"><dt>CPU</dt><dd>${pct(h.cpu_percent)} in use</dd><dt>Memory</dt><dd>${pct(h.memory_percent)} in use · ${gb(h.memory_available)} available</dd><dt>Disk free</dt><dd>${gb(h.disk_free)}</dd><dt>GPU</dt><dd>${h.gpu ? esc(JSON.stringify(h.gpu)) : 'Not reported'}</dd></dl>`,
     'form-status': errorNote(ui.formError) + okNote(ui.saved),
+    'jev-key': `<p class="hint">${ui.jevBusy ? 'Working…' : esc(jevKeyWords(data?.jev || {}))}</p>${errorNote(ui.jevError)}`,
   };
 }
+
+// Status is booleans only; the key itself never reaches the browser.
+const jevKeyWords = jev => [jev.key_set ? 'A key is saved.' : 'No key saved.',
+  jev.env_set ? 'TYPESAFE_API_KEY is set and takes precedence.' : '', jev.fake ? 'Fake Jev is on (ASHAD_JEV_FAKE=1).' : ''].filter(Boolean).join(' ');
 
 function field(id, label, control, hint = '', errorId = '') {
   return `<div class="field"><label for="${id}">${esc(label)}</label>${control}${hint ? `<span class="hint">${esc(hint)}</span>` : ''}<span class="error" id="${errorId || id + '-error'}" data-error-for="${id}"></span></div>`;

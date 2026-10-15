@@ -21,12 +21,12 @@ from .codex_backend import CodexError
 from .grok_backend import GrokError
 from .coordinator import Coordinator, InstanceConflict
 from .credentials import Credentials
-from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, CLAUDE_MODELS, GROK_MODEL, PROVIDERS, provider_of, ACTIVE_STATES, RecalculateGoalsRequest, IssueStatusRequest
-from . import repair_tasks, skills
+from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, CLAUDE_MODELS, DECISION_ENGINES, GROK_MODEL, JEV_MODELS, PROVIDERS, provider_of, ACTIVE_STATES, RecalculateGoalsRequest, IssueStatusRequest
+from . import jev, repair_tasks, skills
 from .repository import Repository, sha256_file
 from .reports import generate_report
 from .game_controls import BUSY, MODEL_NOT_ALLOWED, SIGN_IN_WAIT, GameControls, migrate_configuration_names, migrate_tuned_configurations
-from .migrations import retire_fixer, migrate_issue_projects, retire_saves, drop_run_observations, drop_recipes, drop_macro_skills
+from .migrations import retire_fixer, migrate_issue_projects, retire_saves, drop_run_observations, drop_recipes, drop_macro_skills, rekey_skills
 from .projects import Projects
 from .workspace_environment import inspect_fresh_environment, prepare_environment, validate_build
 from .instances import Instances, InstanceRequest, default_model
@@ -101,6 +101,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
     drop_run_observations(store)
     drop_recipes(store)
     drop_macro_skills(store)
+    rekey_skills(store)
     controls = GameControls(store, ai)
     coordinator = Coordinator(store, credentials, ai)
     instances = Instances(coordinator)
@@ -269,7 +270,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         # In particular an import/restart must validate this backend's own home.
         ai_status = {**ai.status, "api": SUBSCRIPTION_PRICING["api"]}
         model_options = [dict(o) for o in MODEL_OPTIONS]
-        return {"settings": settings, "ai": ai_status, "ai_claude": ai.claude_status, "ai_grok": ai.grok_status, "model_options": model_options, "default_model": default_model(ai, settings.get("last_model")), "builds": builds, "workers": workers, "accounts": store.list("accounts"), "configurations": store.list("configurations"), "runs": store.list("runs"), "usage_count": store.count("usage"), "leases": store.leases(), "projects": store.list("projects"),
+        return {"settings": settings, "ai": ai_status, "ai_claude": ai.claude_status, "ai_grok": ai.grok_status, "model_options": model_options, "jev": await asyncio.to_thread(jev.status, credentials),"default_model": default_model(ai, settings.get("last_model")), "builds": builds, "workers": workers, "accounts": store.list("accounts"), "configurations": store.list("configurations"), "runs": store.list("runs"), "usage_count": store.count("usage"), "leases": store.leases(), "projects": store.list("projects"),
                 "instance_slot": instance_slot(),
                 "workspace_import": {"interrupted": coordinator.import_interrupted()}}
 
@@ -646,7 +647,11 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             raise ValueError("Gameplay selections use the configured Codex effort. Refresh the dashboard.")
         if "claude_decide_model" in body and body["claude_decide_model"] not in CLAUDE_MODELS:
             raise ValueError("Select a Claude action model: " + ", ".join(CLAUDE_MODELS))
-        allowed = {"concurrent_sessions", "storage_reserve_bytes", "duration_seconds", "spend_usd", "claude_decide_model"}
+        if "decision_engine" in body and body["decision_engine"] not in DECISION_ENGINES:
+            raise ValueError("Select a decision engine: Today or Jev hybrid.")
+        if "jev_model" in body and body["jev_model"] not in JEV_MODELS:
+            raise ValueError("Select a Jev model: " + ", ".join(JEV_MODELS))
+        allowed = {"concurrent_sessions", "storage_reserve_bytes", "duration_seconds", "spend_usd", "claude_decide_model", "decision_engine", "jev_model"}
         current.update({k: v for k, v in body.items() if k in allowed})
         return store.put("settings", current)
 
@@ -711,6 +716,20 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             require_ai_idle()
             await asyncio.to_thread(ai.claude_backend.clear_token)
             return await ai.validate(CLAUDE_MODEL)
+
+    @app.post("/api/settings/jev/key")
+    async def jev_key_save(body: dict):
+        key = body.get("key")
+        key = key.strip() if isinstance(key, str) else ""
+        if not (key and len(key) <= 512 and not any(c.isspace() for c in key)):
+            raise ValueError("Paste your TypeSafe API key.")
+        await asyncio.to_thread(credentials.save, jev.KEY_REFERENCE, key)
+        return await asyncio.to_thread(jev.status, credentials)
+
+    @app.delete("/api/settings/jev/key")
+    async def jev_key_remove():
+        await asyncio.to_thread(credentials.remove, jev.KEY_REFERENCE)
+        return await asyncio.to_thread(jev.status, credentials)
 
     @app.post("/api/builds")
     async def add_build(body: dict):

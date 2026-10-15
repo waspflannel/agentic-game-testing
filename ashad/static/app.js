@@ -37,7 +37,7 @@ const state = {
   setups: new Map(),         // project ID ('' before step 1) -> setup state; long operations survive leaving the page
   settingsDirty: false,
   account: { checking: false, busy: false, error: '', login: null },  // login: { auth_url, login_id } only while sign-in is pending
-  settingsUi: { probing: new Set(), errors: new Map(), saving: false, saved: '', formError: '', steamBusy: new Map(), steamResults: new Map() },
+  settingsUi: { probing: new Set(), errors: new Map(), saving: false, saved: '', formError: '', jevBusy: false, jevError: '', steamBusy: new Map(), steamResults: new Map() },
   overviews: new Map(),      // project ID -> overview state (selected build, readiness, chooser, prepare, refreshes)
   usage: null,               // { loading, rows, error, at }; fetched on view open and Refresh only
   usageUi: newUsageUi(),
@@ -605,6 +605,25 @@ async function claudeTokenAction(kind) {
   poll();
 }
 
+// Same rule as the Claude token: the key lives only in the input and the server answers with booleans.
+async function jevKeyAction(kind) {
+  const ui = state.settingsUi;
+  if (ui.jevBusy) return;
+  const input = document.querySelector('[data-form="jev-key"] input[name="jev-key"]');
+  const key = kind === 'save' ? String(input?.value || '').trim() : '';
+  if (kind === 'save' && !key) { ui.jevError = 'Paste your TypeSafe API key first.'; renderView(); return; }
+  if (input) input.value = '';
+  Object.assign(ui, { jevBusy: true, jevError: '' });
+  renderView();
+  try {
+    state.data.jev = kind === 'save'
+      ? await api('/api/settings/jev/key', { method: 'POST', body: { key } })
+      : await api('/api/settings/jev/key', { method: 'DELETE' });
+  } catch (error) { ui.jevError = error.message; }
+  ui.jevBusy = false;
+  renderView();
+}
+
 const workerById = id => (state.data.workers || []).find(w => w.id === id);
 const accountById = id => (state.data.accounts || []).find(a => a.id === id);
 
@@ -615,6 +634,7 @@ async function settingsAction(action, target) {
   if (['account-login', 'account-cancel', 'account-logout'].includes(action)) return accountAction(action.slice(8));
   if (action === 'account-refresh') return refreshAccount();
   if (action === 'claude-token-save' || action === 'claude-token-remove') return claudeTokenAction(action.slice(13));
+  if (action === 'jev-key-save' || action === 'jev-key-clear') return jevKeyAction(action.slice(8));
   if (action === 'worker-probe') {
     ui.probing.add(id);
     ui.errors.delete(id);
@@ -1429,7 +1449,7 @@ document.addEventListener('click', async event => {
     onSetupAction(action, target, event);
   } else if (action.startsWith('ov-')) {
     onOverviewAction(action, target);
-  } else if (/^(account|claude|worker|steam)-/.test(action)) {
+  } else if (/^(account|claude|jev|worker|steam)-/.test(action)) {
     settingsAction(action, target);
   } else if (action === 'usage-refresh') {
     loadUsage();
@@ -1597,6 +1617,11 @@ document.addEventListener('submit', async event => {
   if (event.target.matches('[data-form="claude-token"]')) {
     event.preventDefault();  // Enter must not fall through to a GET submit that puts the token in the URL.
     settingsAction('claude-token-save', event.target.querySelector('[data-action="claude-token-save"]'));  // Same disabled gate as clicking Save.
+    return;
+  }
+  if (event.target.matches('[data-form="jev-key"]')) {
+    event.preventDefault();  // Enter must not fall through to a GET submit that puts the key in the URL.
+    settingsAction('jev-key-save', event.target.querySelector('[data-action="jev-key-save"]'));
     return;
   }
   if (event.target.matches('[data-form^="settings-"]')) {

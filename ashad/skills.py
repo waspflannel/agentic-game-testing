@@ -25,6 +25,24 @@ def shape(check):
     return f"{check['fact']}({','.join(sorted(a['name'] for a in check['args']))}){check['op']}"
 
 
+def target_kind(step):
+    """The kind a step's targets name: kind=<x>, tile for tile conditions, else none."""
+    targets = step.get("targets", "")
+    if targets.startswith("state="):
+        return "tile"
+    return next((c[5:] for c in targets.split() if c.startswith("kind=")), "") or "none"
+
+
+def key_suffix(steps):
+    """Control and target kind of the skill's main step (the first that is not a hotbar select)."""
+    main = next((s for s in steps if s["control"] != "select"), steps[0])
+    return f"{main['control']}:{target_kind(main)}"
+
+
+def skill_key(project_id, check, steps):
+    return f"{project_id}:{shape(check)}:{key_suffix(steps)}"
+
+
 def name(check):
     """Display name, e.g. plant(<seed>) for crops_planted, else the fact form crops_planted(<plant_id>)>=."""
     return VERBS.get(check["fact"]) or f"{check['fact']}({', '.join('<' + a + '>' for a in facts.FACTS[check['fact']][0])}){check['op']}"
@@ -107,9 +125,12 @@ def summary(key, record):
             "last_result": record.get("last_result"), "updated": record.get("updated")}
 
 
-def save(store, project_id, check, steps, won, build_id=None, run_id=None):
-    """Count a win (replacing the steps when given) or a failure for the check's shape in the project; returns the record."""
-    key = f"{project_id}:{shape(check)}"
+def save(store, project_id, check, steps, won, build_id=None, run_id=None, key=None):
+    """Count a win (replacing the steps when given) or a failure for the skill at key, by default the steps' key; returns the record."""
+    if steps is None and key is None:
+        raise ValueError("A failure needs the skill key")
+    # Keyed by the bound steps, as stored, so a target named by a check arg keys like the skill's other values.
+    key = key or skill_key(project_id, check, bind(steps, check))
     effect = "rises" if check["op"] == ">=" else "falls" if check["op"] == "<=" else "reaches the value"
     record = store.get("skills", key) or {
         "project_id": project_id, "name": name(check), "params": list(facts.FACTS[check["fact"]][0]),
@@ -124,9 +145,14 @@ def save(store, project_id, check, steps, won, build_id=None, run_id=None):
 
 
 def find(store, project_id, check):
-    """The usable skill for the check's shape in the project: it has steps and has not failed more often than it won; else None."""
-    record = store.get("skills", f"{project_id}:{shape(check)}")
-    return record if record and record["steps"] and record["fails"] <= record["wins"] else None
+    """The usable skills for the check's shape in the project as [(key, record)], most wins first: each has steps and has not failed more often than it won."""
+    prefix = f"{project_id}:{shape(check)}:"
+    # substr, not LIKE: fact names contain _, a LIKE wildcard.
+    with store.lock:
+        rows = store.db.execute("SELECT id, data FROM records WHERE kind='skills' AND substr(id, 1, ?) = ?", (len(prefix), prefix)).fetchall()
+    found = [(key, record) for key, record in ((key, json.loads(data)) for key, data in rows)
+             if record["steps"] and record["fails"] <= record["wins"]]
+    return sorted(found, key=lambda item: -item[1]["wins"])
 
 
 def signature(check, observation, held):
@@ -160,3 +186,19 @@ def find_decision(store, project_id, sig):
     """The usable decision skill for this situation: it has steps and has not failed more often than it won; else None."""
     record = store.get("skills", decision_key(project_id, sig))
     return record if record and record["steps"] and record["fails"] <= record["wins"] else None
+
+
+def library(store, project_id):
+    """The project's usable skills, subgoal and decision, as (key, record), most wins first; Jev picks among them."""
+    with store.lock:
+        rows = store.db.execute("SELECT id, data FROM records WHERE kind='skills' AND json_extract(data,'$.project_id')=?", (project_id,)).fetchall()
+    usable = [(key, record) for key, record in ((k, json.loads(d)) for k, d in rows) if record["steps"] and record["fails"] <= record["wins"]]
+    return sorted(usable, key=lambda kr: -kr[1]["wins"])
+
+
+def describe(record, chars):
+    """The skill as text for Jev, cut to chars: a decision skill (it has a signature) by its screen, a subgoal skill by effect, needs and steps."""
+    if "signature" in record:
+        return f"{record['name']}. Screen: {', '.join(record['signature']['screen'])}"[:chars]
+    steps = "; ".join(f"{s['control']} {s.get('item', '')} {s.get('targets', '')}".strip() for s in record["steps"])
+    return f"{record['name']}: {record['effect']}. Needs: {', '.join(record['preconditions']) or 'nothing'}. Steps: {steps}"[:chars]

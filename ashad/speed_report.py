@@ -1,6 +1,6 @@
 """Speed report for one ASHAD run: per-step turn timing, model calls and hypothesis evidence.
 
-  python3 -m ashad.speed_report [--run <run_id>] [--data <controller dir>] [--out <dir>]
+  python3 -m ashad.speed_report [--run <run_id> | --compare <run_a> <run_b>] [--data <controller dir>] [--out <dir>]
 
 Read-only; numbers only, no game text or credentials.
 """
@@ -142,6 +142,42 @@ def _repeat_breakdown(events):
     stops = [event["payload"] for event in events if event["kind"] == "repeat_stopped" and (event["payload"].get("actions") or 0) > 1]
     return {"stops": len(stops), "actions": sum(stop["actions"] for stop in stops),
             "by_control_reason": dict(Counter(f"{stop.get('control')}/{stop.get('reason', 'unknown')}" for stop in stops))}
+
+
+def _routing(events):
+    by_route = {}
+    for event in events:
+        if event["kind"] == "decision_routed":
+            by_route.setdefault(event["payload"]["route"], []).append(event["payload"])
+    total = sum(len(payloads) for payloads in by_route.values())
+    report = {}
+    for route, payloads in by_route.items():
+        latencies = [payload["latency_ms"] for payload in payloads]
+        actions = sum(payload["actions"] for payload in payloads)
+        report[route] = {"count": len(payloads), "share": _ratio(len(payloads), total), "latency_ms": spread(latencies), "actions": actions,
+                         "s_per_action": _ratio(sum(latencies) / 1000, actions),
+                         "fallbacks": dict(Counter(payload["fallback"] for payload in payloads if payload.get("fallback")))}
+    return report
+
+
+def _jev_checks(events):
+    """Band counts and applied per Jev check; triage has no band, so it counts applied / not applied only."""
+    report = {"effect_disagreed": 0, "dismiss": 0}
+    for event in events:
+        payload = event["payload"]
+        if event["kind"] == "decision_routed" and payload.get("route") == "jev" and payload.get("pick") == "dismiss":
+            report["dismiss"] += 1
+        if event["kind"] != "jev_check":
+            continue
+        if payload["check"] == "triage":
+            entry = report.setdefault("triage", {"applied": 0, "not_applied": 0})
+            entry["applied" if payload["applied"] else "not_applied"] += 1
+            continue
+        entry = report.setdefault(payload["check"], {"yes": 0, "no": 0, "unsure": 0, "applied": 0})
+        entry[payload["band"]] += 1
+        entry["applied"] += payload["applied"]
+        report["effect_disagreed"] += bool(payload.get("disagree"))
+    return report
 
 
 CACHE_TOKENS = ("cache_read_input_tokens", "cache_creation_input_tokens", "input_tokens")
@@ -356,15 +392,21 @@ def summarize(run, events, data):
     turns = {}
     for row in timings:
         turns.setdefault(row["outcome"], []).append(row.get("total_seconds") or 0)
+    routing = _routing(events)
     return {
         "run": {
             "id": run["id"],
             "model": run.get("model") or run["plan"].get("model"),
+            "decision_engine": run["plan"].get("decision_engine", "today"),
             "state": run["state"],
             "players": len(run["players"]),
             "first_event_at": first,
             "last_event_at": last,
             "wall_seconds": round(last - first, 6),
+            "s_per_action": _ratio(last - first, sum(entry["actions"] for entry in routing.values())),
+            "active_seconds": round(turn_total, 6),
+            "goal_reached": any(event["kind"] == "goal_reached" for event in events),
+            "goals_verified": sum(len(event["payload"]["goal_ids"]) for event in events if event["kind"] == "subgoals_verified"),
         },
         "turns": {
             outcome: {"count": len(samples), "total_seconds": round(sum(samples), 6), "mean_seconds": round(sum(samples) / len(samples), 6)}
@@ -373,6 +415,8 @@ def summarize(run, events, data):
         "steps": steps,
         "gaps": gaps,
         "model_calls": calls,
+        "routing": routing,
+        "jev_checks": _jev_checks(events),
         "ledger": ledger,
         "hypotheses": _hypotheses(timings, events, steps, calls, gaps, turn_total, ledger["event_bytes"]),
         "environment": _environment(),
@@ -400,10 +444,42 @@ def _ordered_steps(steps):
     return ordered
 
 
+def _checks_line(checks):
+    parts = []
+    for name in ("blocker", "stuck", "effect"):
+        entry = checks.get(name) or {"yes": 0, "no": 0, "unsure": 0, "applied": 0}
+        part = f"{name} {entry['yes']}/{entry['no']}/{entry['unsure']} applied {entry['applied']}"
+        parts.append(part + (f" disagreed {checks['effect_disagreed']}" if name == "effect" else ""))
+    triage = checks.get("triage") or {"applied": 0, "not_applied": 0}
+    parts.append(f"triage applied {triage['applied']}/{triage['applied'] + triage['not_applied']}")
+    return "jev checks: " + "; ".join(parts)
+
+
+def print_compare(a, b, path):
+    routes = list(dict.fromkeys([*a["routing"], *b["routing"]]))
+    rows = [("engine", lambda s: s["run"]["decision_engine"]),
+            *((f"route:{name} share", lambda s, name=name: (s["routing"].get(name) or {}).get("share")) for name in routes),
+            ("s/action", lambda s: s["run"]["s_per_action"]),
+            ("active_s", lambda s: s["run"]["active_seconds"]),
+            ("wall_s", lambda s: s["run"]["wall_seconds"]),
+            ("goal_reached", lambda s: s["run"]["goal_reached"]),
+            ("goals_verified", lambda s: s["run"]["goals_verified"]),
+            ("turns", lambda s: sum(item["count"] for item in s["turns"].values())),
+            ("jev dismiss", lambda s: s["jev_checks"]["dismiss"]),
+            ("jev stuck applied", lambda s: (s["jev_checks"].get("stuck") or {}).get("applied", 0)),
+            ("jev effect disagreed", lambda s: s["jev_checks"]["effect_disagreed"]),
+            ("jev triage applied", lambda s: (s["jev_checks"].get("triage") or {}).get("applied", 0))]
+    print(f"field {a['run']['id']} {b['run']['id']}")
+    for label, value in rows:
+        print(f"{label} {_fmt(value(a))} {_fmt(value(b))}")
+    print(f"speed report: {path}")
+
+
 def print_report(summary, path):
     run = summary["run"]
     turn_count = sum(item["count"] for item in summary["turns"].values())
-    print(f"run {run['id']}  model {run['model']}  turns {turn_count}  wall {run['wall_seconds']}s")
+    print(f"run {run['id']}  model {run['model']}  engine {run['decision_engine']}  s/action {_fmt(run['s_per_action'])}  turns {turn_count}  wall {run['wall_seconds']}s"
+          f"  active {run['active_seconds']}s  goal_reached {'yes' if run['goal_reached'] else 'no'}  verified {run['goals_verified']}")
     print("step calls total_s mean_s p50_s p95_s max_s share")
     steps = summary["steps"]
     for name in _ordered_steps(steps):
@@ -420,6 +496,15 @@ def print_report(summary, path):
         latency = entry["latency"]
         print(" ".join([name, _fmt(latency["count"]), _fmt(latency["mean"]), _fmt(latency["p50"]), _fmt(latency["p95"]), _fmt(latency["max"]), _fmt(entry["input_bytes"]["mean"]),
             *(_fmt(entry["tokens"][name]) for name in CACHE_TOKENS)]))
+    print("route count share mean_ms p50_ms p95_ms actions s_per_action")
+    for route, entry in summary["routing"].items():
+        latency = entry["latency_ms"]
+        print(" ".join([route, _fmt(entry["count"]), _fmt(entry["share"]), _fmt(latency["mean"]), _fmt(latency["p50"]), _fmt(latency["p95"]),
+                        _fmt(entry["actions"]), _fmt(entry["s_per_action"])]))
+    fallbacks = [f"{route}:{reason}={count}" for route, entry in summary["routing"].items() for reason, count in entry["fallbacks"].items()]
+    if fallbacks:
+        print("fallbacks " + " ".join(fallbacks))
+    print(_checks_line(summary["jev_checks"]))
     for heading, key in (
         ("H1 serial model calls", "serial_model_calls"),
         ("H2 observation payloads", "observation_payloads"),
@@ -435,13 +520,22 @@ def print_report(summary, path):
 def main(argv=None):
     parser = argparse.ArgumentParser(description="Speed report for one ASHAD run: per-step turn timing, model calls and hypothesis evidence.")
     parser.add_argument("--data", type=Path, default=default_data())
-    parser.add_argument("--run")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--run")
+    group.add_argument("--compare", nargs=2, metavar=("RUN_A", "RUN_B"))
     parser.add_argument("--out", type=Path, default=REPO / "tmp" / "speed-report")
     args = parser.parse_args(argv)
+    args.out.mkdir(parents=True, exist_ok=True)
+    stamp = f"{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}"
+    if args.compare:
+        a, b = (summarize(*load(args.data, run_id), args.data) for run_id in args.compare)
+        path = args.out / f"compare-{a['run']['id']}-{b['run']['id']}-{stamp}.json"
+        path.write_text(json.dumps({"a": a, "b": b}, indent=2) + "\n")
+        print_compare(a, b, path)
+        return
     run, events = load(args.data, args.run)
     summary = summarize(run, events, args.data)
-    args.out.mkdir(parents=True, exist_ok=True)
-    path = args.out / f"{run['id']}-{datetime.now(timezone.utc):%Y%m%dT%H%M%SZ}.json"
+    path = args.out / f"{run['id']}-{stamp}.json"
     path.write_text(json.dumps(summary, indent=2) + "\n")
     print_report(summary, path)
 

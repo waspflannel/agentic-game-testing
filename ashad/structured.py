@@ -10,9 +10,9 @@ import time
 import traceback
 from datetime import datetime, timezone
 
-from .ai import (GAME_VERBS, SNAPSHOT_CHARS, ProviderError, batch_options, capability_summary, observation_delta, option_key, picked_options,
-                 prompt_observation, resolve, static_prefix)
+from .ai import ProviderError, picked_options, static_prefix
 from .game_controls import run_configuration
+from .menu import GAME_VERBS, SNAPSHOT_CHARS, batch_options, capability_summary, observation_delta, option_key, prompt_observation, resolve
 from .models import MODEL, PROVIDERS, provider_of
 from .repository import Repository
 from .store import uid

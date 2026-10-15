@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 
-from . import ai
+from . import menu
 
 
 USE_RANGE = 64  # Pixels from the player within which an action aimed at a world_position is sent without moving onto the target first.
@@ -73,7 +73,7 @@ def next_action(step, context, state):
         state["select"] = "held"
     if step.get("item") and not state["select"]:
         slot = select_input(observation, step["item"])
-        action = slot and ai.resolve(context, ai.option_key({"tool": "perform_action", "args": {"verb": "input", "parameters": {"name": slot, "duration_ms": 160}}}))
+        action = slot and menu.resolve(context, menu.option_key({"tool": "perform_action", "args": {"verb": "input", "parameters": {"name": slot, "duration_ms": 160}}}))
         state["select"] = "pressed" if action else "not_on_hotbar"
         if action:
             state["held"] = step["item"]
@@ -81,16 +81,16 @@ def next_action(step, context, state):
         # Use whatever is equipped instead; a wrong equipped item shows as two no-effect uses, which stop the run.
     here = observation.get("state", {}).get("player", {}).get("position")
     candidates = []
-    for group in ai.action_groups(context):
+    for group in menu.action_groups(context):
         target = view(group)
         if not target or key(group) in state["tried"] or not matches(target, step["targets"]):
             continue
         # A UI control has a rect, not a position, so it counts at distance 0, even on a menu with no player yet.
         if target.get("kind") == "ui":
             candidates.append((0, group))
-        elif ai.point(target.get("position")) and ai.point(here):
+        elif menu.point(target.get("position")) and menu.point(here):
             candidates.append((math.dist(here, target["position"]), group))
-    if not candidates and not ai.point(here):
+    if not candidates and not menu.point(here):
         return None, "not_offered"
     wanted = step.get("parameters") or {}
     for distance, group in sorted(candidates, key=lambda c: c[0]):
@@ -132,9 +132,9 @@ def step_for(payload, observation):
 
 def ordinary(step, context):
     """The offered input action of an untargeted step whose control is an input name, not select or a verb; None when not offered."""
-    if step["targets"] or step["control"] == "select" or step["control"] in ai.GAME_VERBS:
+    if step["targets"] or step["control"] == "select" or step["control"] in menu.GAME_VERBS:
         return None
-    return ai.resolve(context, ai.option_key({"tool": "perform_action", "args": {"verb": "input", "parameters": {"name": step["control"], "duration_ms": 160}}}))
+    return menu.resolve(context, menu.option_key({"tool": "perform_action", "args": {"verb": "input", "parameters": {"name": step["control"], "duration_ms": 160}}}))
 
 
 def steps_from(intents):

@@ -286,8 +286,6 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
             "decision_saves": sum(1 for event in events if event["kind"] == "decision_saved"),
             "batch_prefixes": len({(e["payload"].get("bytes") or {}).get("prefix_sha") for e in events if e["kind"] == "decision_selected"} - {None}),
             "decision_skips": sum(1 for event in events if event["kind"] in ("decision_skipped", "skill_skipped")),
-            "lookahead_used": sum(1 for event in events if event["kind"] == "lookahead_used"),
-            "lookahead_discarded": sum(1 for event in events if event["kind"] == "lookahead_discarded"),
             "plan_triggers": dict(Counter(row["plan_trigger"] for row in timings if row.get("plan_trigger"))),
             "goals_by_fact": dict(Counter(g["completion"]["fact"] for g in next(
                 (e["payload"]["plan"]["goals"] for e in reversed(events) if e["kind"] == "subgoal_plan_updated"), []))),

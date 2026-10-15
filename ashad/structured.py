@@ -1110,6 +1110,31 @@ class StructuredPlayers:
                                                     "select": state["select"], "reason": stop, "actions": len(ran)})
         return stop, ran
 
+    def _step_replayer(self, key, context, steps):
+        """A next_action over the steps in order: one use (or its select, or its ordinary input) finishes a step."""
+        index, state = 0, None
+        def next_action(fresh):
+            nonlocal index, state
+            while index < len(steps):
+                step = steps[index]
+                state = state or {"select": "", "tried": set(), "skipped": False, "held": self.held.get(key, "")}
+                step_context = {**context, "observation": fresh}
+                if step.get("targets") or step["control"] == "select":
+                    action, why = repeat.next_action(step, step_context, state)
+                else:
+                    action = repeat.ordinary(step, step_context)
+                    why = "use" if action else "not_offered"
+                if action is None and state["select"] == "held" and not step.get("targets"):
+                    index, state = index + 1, None  # A select of the item already held needs no press.
+                    continue
+                if action is None:
+                    return None, "not_offered"
+                if why == "use" or step["control"] == "select":
+                    index, state = index + 1, None
+                return action, why
+            return None, "done"
+        return next_action
+
     async def _run_decision(self, run_id, player_id, generation, current, context, observation, goal, timing):
         """Replay the decision skill saved for this situation in code, with no model call; one try per goal, and only when its first action is offered here.
 
@@ -1125,36 +1150,11 @@ class StructuredPlayers:
         if not record or self.decision_failed.get(key) == (goal["id"], decision_key):
             return None, [], None
         steps = skills.bind(record["steps"], goal["completion"], replay=True)
-
-        def replay():
-            """A next_action over the steps in order: one use (or its select, or its ordinary input) finishes a step."""
-            index, state = 0, None
-            def next_action(fresh):
-                nonlocal index, state
-                while index < len(steps):
-                    step = steps[index]
-                    state = state or {"select": "", "tried": set(), "skipped": False, "held": self.held.get(key, "")}
-                    step_context = {**context, "observation": fresh}
-                    if step.get("targets") or step["control"] == "select":
-                        action, why = repeat.next_action(step, step_context, state)
-                    else:
-                        action = repeat.ordinary(step, step_context)
-                        why = "use" if action else "not_offered"
-                    if action is None and state["select"] == "held" and not step.get("targets"):
-                        index, state = index + 1, None  # A select of the item already held needs no press.
-                        continue
-                    if action is None:
-                        return None, "not_offered"
-                    if why == "use" or step["control"] == "select":
-                        index, state = index + 1, None
-                    return action, why
-                return None, "done"
-            return next_action
-
-        if replay()(observation)[0] is None:
+        if self._step_replayer(key, context, steps)(observation)[0] is None:
             self.store.event(run_id, "decision_skipped", {"player_id": player_id, "goal_id": goal["id"], "key": decision_key, "why": "not_offered"})
             return None, [], None
-        stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None, replay(), timing, REPEAT_LIMIT)
+        stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None,
+                                          self._step_replayer(key, context, steps), timing, REPEAT_LIMIT)
         self.store.event(run_id, "decision_replayed", {"player_id": player_id, "goal_id": goal["id"], "key": decision_key,
                                                        "name": record["name"], "reason": stop, "actions": len(ran)})
         if stop in ("failed", "no_effect", "fact_moved_away", "not_offered"):

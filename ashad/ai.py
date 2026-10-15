@@ -220,7 +220,7 @@ def batch_options(context):
 
 
 def observation_delta(snapshot, observation):
-    """What changed since the subgoal snapshot: changed state and player keys, and entities by id. No snapshot means everything is new."""
+    """What changed since the subgoal snapshot: changed state and player keys, tiles by position, and entities by id. No snapshot means everything is new."""
     snapshot = snapshot or {}
 
     def changed(old, new):
@@ -230,13 +230,19 @@ def observation_delta(snapshot, observation):
         # Versions change on every tick and mean nothing to the model.
         return {e["id"]: {k: v for k, v in e.items() if k != "version"} for e in source.get("entities", []) if isinstance(e.get("id"), str)}
 
+    def tiles(source):
+        return {json.dumps(t.get("position")): t for t in source.get("state", {}).get("tiles", [])}
+
     old_state, new_state = snapshot.get("state", {}), observation.get("state", {})
-    state = changed({k: v for k, v in old_state.items() if k != "player"}, {k: v for k, v in new_state.items() if k != "player"})
+    state = changed({k: v for k, v in old_state.items() if k not in ("player", "tiles")}, {k: v for k, v in new_state.items() if k not in ("player", "tiles")})
     player = changed(old_state.get("player", {}), new_state.get("player", {}))
     if player:
         state["player"] = player
     before, after = keyed(snapshot), keyed(observation)
+    old_tiles, new_tiles = tiles(snapshot), tiles(observation)
     return {"state": state,
+            "tiles_changed": [tile for at, tile in new_tiles.items() if old_tiles.get(at) != tile],
+            "tiles_removed": [old_tiles[at].get("position") for at in old_tiles if at not in new_tiles],
             "entities_added": [entity for id, entity in after.items() if id not in before],
             "entities_removed": [id for id in before if id not in after],
             "entities_changed": {id: changed(before[id], entity) for id, entity in after.items() if id in before and before[id] != entity}}

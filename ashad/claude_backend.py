@@ -175,7 +175,9 @@ class ClaudeBackend:
         status = await self.status(model)
         if status["status"] != "ready":
             raise ClaudeError(status["status"], status["message"])
-        system = instructions + SYSTEM_SUFFIX + ("\n\n" + prefix if prefix else "")
+        # With a prefix the system block holds only bytes shared by every operation, so planning and batch hit one cache.
+        system = (prefix + SYSTEM_SUFFIX) if prefix else (instructions + SYSTEM_SUFFIX)
+        message = (instructions + "\n\n" if prefix else "") + json.dumps(payload, ensure_ascii=False)
         # A file keeps the 23 KB+ prefix out of argv (Windows command-line limit).
         system_path = await asyncio.to_thread(self._system_prompt_file, system)
         cli = self._argv_prefix()
@@ -194,7 +196,7 @@ class ClaudeBackend:
         try:
             async with asyncio.timeout(CONTROLS_TIMEOUT_SECONDS if operation == "controls" else REQUEST_TIMEOUT_SECONDS):
                 try:
-                    proc.stdin.write(json.dumps(payload, ensure_ascii=False).encode())
+                    proc.stdin.write(message.encode())
                     await proc.stdin.drain()
                     proc.stdin.close()
                 except (BrokenPipeError, ConnectionResetError):

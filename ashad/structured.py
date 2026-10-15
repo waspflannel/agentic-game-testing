@@ -168,6 +168,14 @@ class StructuredPlayers:
         self.decision_failed = {}  # (run_id, player_id) -> (goal_id, decision key) whose one replay failed while that goal is active
         self.crashes_recorded = set()
 
+    def snapshot(self, key, generation, context):
+        """The prompt observation the cached prefix holds for this player generation; replaced only when the delta outgrows it."""
+        view = prompt_observation(context["observation"], max_chars=SNAPSHOT_CHARS)
+        kept = self.snapshots.get(key)
+        if not kept or kept[0] != generation or len(json.dumps(observation_delta(kept[1], view))) > SNAPSHOT_RESET_CHARS:
+            kept = self.snapshots[key] = (generation, view)
+        return kept[1]
+
     def _forget_turn(self, key):
         self.waits.pop(key, None)
         self.last_decisions.pop(key, None)
@@ -813,11 +821,14 @@ class StructuredPlayers:
         revision = plan["revision"]
         self.status(run_id, player_id, "planning", "Finding the next achievable prerequisite for: " + context["current_goal"]["objective"], generation)
         warnings = []
-        self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": revision, "context": context})
+        # The same snapshot as the batch, so planning and batch share one cached prefix.
+        prefix = static_prefix(context, self.snapshot((run_id, player_id), generation, context))
+        self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": revision, "context": context,
+                         "prefix_sha": hashlib.sha256(prefix.encode()).hexdigest()[:12]})
         for attempt in range(2):
             warnings = []
             with timed(timing, "plan_model"):
-                proposal = await self.coordinator.ai.plan_subgoals(context, run_id, prefix=static_prefix(context, None))
+                proposal = await self.coordinator.ai.plan_subgoals(context, run_id, prefix=prefix)
             if not current():
                 self.store.event(run_id, "subgoal_planning_cancelled", {"player_id": player_id, "reason": "Run control changed during planning"})
                 return None
@@ -1246,11 +1257,7 @@ class StructuredPlayers:
                     "observation_ref": subgoals.observation_ref(observation), "source_revision": run["build"].get("source_revision")})
             timing["bytes"].update(prompt_observation=json_bytes(context["observation"]), decision_context=json_bytes(context))
             timing["context_truncated"] = bool(context["observation"].get("context_truncated"))
-            # One snapshot per player generation sits in the cached prefix; it is replaced only when the delta outgrows it.
-            view = prompt_observation(context["observation"], max_chars=SNAPSHOT_CHARS)
-            kept = self.snapshots.get(key)
-            if not kept or kept[0] != generation or len(json.dumps(observation_delta(kept[1], view))) > SNAPSHOT_RESET_CHARS:
-                kept = self.snapshots[key] = (generation, view)
+            snapshot = self.snapshot(key, generation, context)
             self.last_decisions[key] = (signature, time.time(), generation)
             decision_started_at = time.time()
             result, first, stop, ran, finished, replayed = None, {}, None, [], False, None
@@ -1319,7 +1326,7 @@ class StructuredPlayers:
                 # Keyed by the observation and held item the model decides on, before its first action changes them.
                 sig = skills.signature(goal["completion"], observation, self.held.get(key, "")) if goal else None
                 with timed(timing, "decide"):
-                    result = await self.coordinator.ai.batch_turn(context, kept[1], dispatch, current, run_id)
+                    result = await self.coordinator.ai.batch_turn(context, snapshot, dispatch, current, run_id)
                 first = (result or {}).get("action") or {}
                 if result is None:
                     stop = "cancelled"

@@ -48,9 +48,9 @@ def matches(target, targets):
 def describe(entity, tile):
     """Conditions for a step rebuilt from one dispatched action, naming the entity's kind or the tile's state, plant and true flags."""
     if entity:
-        return f"kind={entity.get('kind', '')}"
+        return f"kind={_text(entity.get('kind'))}"
     flags = "".join(f" {k}=true" for k, v in tile.items() if v is True and k != "ground")
-    return f"state={tile.get('state', '')} plant={tile.get('plant', '')}" + flags
+    return f"state={_text(tile.get('state'))} plant={_text(tile.get('plant'))}" + flags
 
 
 def select_input(observation, item_id):

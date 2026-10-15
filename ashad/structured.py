@@ -872,8 +872,9 @@ class StructuredPlayers:
         skill = skills.find(self.store, project_id, goal["completion"])
         if not skill:
             return False
+        # Steps rebuilt from dispatched actions verify nothing (unknown), so the goal's own fact must be readable instead.
         first = skill["steps"][0]["verifies"]
-        check = goal["completion"] if goal["completion"]["fact"] == first else {"fact": first, "args": []}
+        check = goal["completion"] if first in (goal["completion"]["fact"], "unknown") else {"fact": first, "args": []}
         if subgoals.measure({**check, "op": ">=", "value": 0}, observation)[1] is None:
             return False
         goal.update(steps=skills.bind(skill["steps"], goal["completion"], replay=True, measured=goal.get("measured")),

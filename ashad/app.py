@@ -22,7 +22,7 @@ from .grok_backend import GrokError
 from .coordinator import Coordinator, InstanceConflict
 from .credentials import Credentials
 from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, CLAUDE_MODELS, GROK_MODEL, PROVIDERS, provider_of, ACTIVE_STATES, RecalculateGoalsRequest, IssueStatusRequest
-from . import repair_tasks
+from . import repair_tasks, skills
 from .repository import Repository, sha256_file
 from .reports import generate_report
 from .game_controls import BUSY, MODEL_NOT_ALLOWED, SIGN_IN_WAIT, GameControls, migrate_configuration_names, migrate_tuned_configurations
@@ -304,6 +304,23 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
         if found is None:
             raise HTTPException(404, "Issue not found")
         return await asyncio.to_thread(repair_tasks.issue_detail, store, issue_id)
+
+    @app.get("/api/projects/{project_id}/skills")
+    async def project_skills(project_id: str):
+        if store.get("projects", project_id) is None:
+            raise HTTPException(404, "Project not found")
+        with store.lock:
+            rows = store.db.execute("SELECT id, data FROM records WHERE kind='skills' AND json_extract(data,'$.project_id')=? "
+                                    "ORDER BY updated DESC", (project_id,)).fetchall()
+        return {"skills": [skills.summary(key, json.loads(data)) for key, data in rows]}
+
+    @app.delete("/api/projects/{project_id}/skills/{skill_id}")
+    async def delete_skill(project_id: str, skill_id: str):
+        record = store.get("skills", skill_id)
+        if record is None or record.get("project_id") != project_id:
+            raise HTTPException(404, "Skill not found")
+        store.delete("skills", skill_id)
+        return {"deleted": skill_id}
 
     @app.get("/api/projects/{project_id}/readiness")
     async def project_readiness(project_id: str, build_id: str, configuration_id: str | None = None, model: str | None = None):

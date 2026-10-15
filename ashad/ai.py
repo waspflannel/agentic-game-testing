@@ -276,15 +276,20 @@ def static_prefix(context, snapshot):
 def numeric_option_id(option_id, groups):
     """Map a `<target>.<n>` or `<target>.<verb>` ID to `T.A` when exactly one listed group matches the target and action; else None."""
     name, _, last = option_id.strip("`'\" ").rpartition(".")
-    name = re.sub(r"\.\d+$", "", name)  # `Label.<group>.<n>`: the stray group number is dropped, the action index kept.
-    owners = [i for i, g in enumerate(groups) if name in (g.get("subject"), (g.get("evidence") or {}).get("id"), (g.get("evidence") or {}).get("label"))]
-    if len(owners) != 1 or groups[owners[0]].get("drag_source"):
+    # The name may itself end in a dotted number (entity id, label, float coordinate); else `Label.<group>.<n>` drops the stray group number.
+    for target in (name, re.sub(r"\.\d+$", "", name)):
+        owners = [i for i, g in enumerate(groups) if target in (g.get("subject"), (g.get("evidence") or {}).get("id"), (g.get("evidence") or {}).get("label"))]
+        if len(owners) == 1:
+            break
+    else:
         return None
-    actions = groups[owners[0]]["actions"]
+    group = groups[owners[0]]
+    if group.get("drag_source"):  # Listed with only its .0 option.
+        return f"{owners[0]}.0"
     if last.isdigit():
         return f"{owners[0]}.{last}"
-    found = [i for i, a in enumerate(actions) if last == (a["args"].get("verb") if a["tool"] == "perform_action" else a["tool"])]
-    return f"{owners[0]}.{found[0]}" if found else None
+    found = [i for i, a in enumerate(group["actions"]) if last == (a["args"].get("verb") if a["tool"] == "perform_action" else a["tool"])]
+    return f"{owners[0]}.{found[0]}" if len(found) == 1 else None
 
 
 def picked_options(answers, groups, shown):

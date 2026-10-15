@@ -17,7 +17,7 @@ from .game_controls import run_configuration
 from .models import MODEL, PROVIDERS, provider_of
 from .repository import Repository
 from .store import uid
-from . import facts, macros, recipes, repair_tasks, subgoals
+from . import facts, macros, repair_tasks, skills, subgoals
 
 LOG = logging.getLogger(__name__)
 LOOP_BACKSTOP_DECISIONS = 6
@@ -34,7 +34,7 @@ PLAN_TRIGGERS = (("The last action failed", "action_failed"),
                  ("Observed objectives changed", "knowledge_changed"), ("Control or game binding changed", "rebound"),
                  ("No supported direct action fits", "needs_instructions"), ("The game state did not change across", "loop_backstop"),
                  ("You said the primary goal is not done", "completion_rejected"),
-                 ("Repeating the same action", "action_repeat"), ("Recipe replay stopped", "recipe_failed"))
+                 ("Repeating the same action", "action_repeat"), ("Skill replay stopped", "skill_failed"))
 
 
 def meaningful_signature(observation):
@@ -161,7 +161,7 @@ class StructuredPlayers:
         self.snapshots = {}  # (run_id, player_id) -> (goal_id, generation, prompt observation at subgoal start)
         self.code_waits = {}  # (run_id, player_id) -> (goal_id, seconds of code waits used)
         self.step_index = {}  # (run_id, player_id) -> (goal_id, index of the goal's next unfinished step, decider takes the next turn)
-        self.goal_intents = {}  # (run_id, player_id) -> (goal_id, [macros.step_for of each agent action]), saved as a recipe when the goal completes
+        self.goal_intents = {}  # (run_id, player_id) -> (goal_id, [macros.step_for of each agent action]), saved as a skill when the goal completes
         # (run_id, player_id) -> (next leaf's goal_id, plan revision once the current leaf completes, planning_scene at start, planner task).
         # At most one per player, started while a code macro runs; advance_plan uses or cancels it.
         self.lookahead = {}
@@ -734,7 +734,7 @@ class StructuredPlayers:
         if completed:
             self.store.event(run_id, "subgoals_verified", {"player_id": player_id, "goal_ids": completed,
                              "evidence": subgoals.observation_ref(observation), "full_observation": observation})
-            self._save_recipes(run_id, player_id, run, plan, completed)
+            self._save_skills(run_id, player_id, run, plan, completed)
         if completed or previous_active != plan.get("active_goal_id"):
             self._forget_turn((run_id, player_id))
         if plan["status"] == "blocked":
@@ -753,7 +753,7 @@ class StructuredPlayers:
             return await self._give_up(run_id, player_id, generation, observation, kind="stuck", tried=tried, missing=stuck)
         if not needs_plan:
             return {"observation": observation, "first_actions": []}
-        if self._replay_recipe(run_id, player_id, run, plan, observation):
+        if self._replay_skill(run_id, player_id, run, plan, observation):
             return {"observation": observation, "first_actions": []}
         # The replan reason is input too: a failed action or first repeat on unchanged state still replans once.
         planning_key = hashlib.sha256(json.dumps([plan["active_goal_id"], generation, wait_signature(observation), plan.get("reason")]).encode()).hexdigest()
@@ -845,63 +845,63 @@ class StructuredPlayers:
         self.status(run_id, player_id, "ready", "Plan updated; acting on fresh state.", generation)
         return {"observation": fresh, "first_actions": [option_key(a) for _, _, a in picked if a and a["tool"] == "perform_action"]}
 
-    def _save_recipes(self, run_id, player_id, run, plan, completed):
+    def _save_skills(self, run_id, player_id, run, plan, completed):
         """Save each completed non-root leaf's steps as a win for its completion shape: the planner's or a replayed
-        recipe's steps, else the steps its own actions took. Runs before the turn state of the old goal is forgotten."""
-        configuration_id = run_configuration(run)[0]
-        if not configuration_id:
+        skill's steps, else the steps its own actions took. Runs before the turn state of the old goal is forgotten."""
+        project_id = run.get("project_id")
+        if not project_id:
             return
         intents = self.goal_intents.get((run_id, player_id))
         for goal in plan["goals"]:
             if (goal["id"] not in completed or goal["id"] == plan["root_id"]
                     or any(g.get("parent_id") == goal["id"] for g in plan["goals"])):
                 continue
-            steps = goal.get("steps") or (recipes.from_intents(intents[1]) if intents and intents[0] == goal["id"] else [])
+            steps = goal.get("steps") or (skills.from_intents(intents[1]) if intents and intents[0] == goal["id"] else [])
             if steps:
-                saved = recipes.save(self.store, configuration_id, goal["completion"], steps, True)
-                self.store.event(run_id, "recipe_saved", {"player_id": player_id, "goal_id": goal["id"], "shape": saved["shape"], "steps": saved["steps"]})
+                saved = skills.save(self.store, project_id, goal["completion"], steps, True)
+                self.store.event(run_id, "skill_saved", {"player_id": player_id, "goal_id": goal["id"], "skill": saved["name"], "steps": saved["steps"]})
 
-    def _replay_recipe(self, run_id, player_id, run, plan, observation):
-        """Give a just-activated leaf a saved recipe's steps instead of calling the planner; True when replayed.
+    def _replay_skill(self, run_id, player_id, run, plan, observation):
+        """Give a just-activated leaf a saved skill's steps instead of calling the planner; True when replayed.
 
         A leaf reached by a controller replan (a PLAN_TRIGGERS reason, including a failed replay) is planned instead."""
         goal = subgoals.active_goal(plan)
-        configuration_id = run_configuration(run)[0]
-        if (not configuration_id or goal["id"] == plan["root_id"] or any(g.get("parent_id") == goal["id"] for g in plan["goals"])
+        project_id = run.get("project_id")
+        if (not project_id or goal["id"] == plan["root_id"] or any(g.get("parent_id") == goal["id"] for g in plan["goals"])
                 or any((plan.get("reason") or "").startswith(prefix) for prefix, _ in PLAN_TRIGGERS)):
             return False
-        recipe = recipes.find(self.store, configuration_id, goal["completion"])
-        if not recipe:
+        skill = skills.find(self.store, project_id, goal["completion"])
+        if not skill:
             return False
-        first = recipe["steps"][0]["verifies"]
+        first = skill["steps"][0]["verifies"]
         check = goal["completion"] if goal["completion"]["fact"] == first else {"fact": first, "args": []}
         if subgoals.measure({**check, "op": ">=", "value": 0}, observation)[1] is None:
             return False
-        goal.update(steps=recipes.bind(recipe["steps"], goal["completion"], replay=True, measured=goal.get("measured")),
-                    actionable=True, recipe=recipe["shape"])
+        goal.update(steps=skills.bind(skill["steps"], goal["completion"], replay=True, measured=goal.get("measured")),
+                    actionable=True, skill=skill["name"])
         self.store.put("runs", run)
-        self.step_index.pop((run_id, player_id), None)  # Replay starts at the recipe's first step.
+        self.step_index.pop((run_id, player_id), None)  # Replay starts at the skill's first step.
         ahead = self.lookahead.pop((run_id, player_id), None)
         if ahead:  # The replayed leaf needs no planner call, so its look-ahead is dropped.
             ahead[3].cancel()
-            self.store.event(run_id, "lookahead_discarded", {"player_id": player_id, "goal_id": ahead[0], "why": "recipe"})
-        self.store.event(run_id, "recipe_replayed", {"player_id": player_id, "shape": recipe["shape"], "goal_id": goal["id"]})
+            self.store.event(run_id, "lookahead_discarded", {"player_id": player_id, "goal_id": ahead[0], "why": "skill"})
+        self.store.event(run_id, "skill_replayed", {"player_id": player_id, "skill": skill["name"], "goal_id": goal["id"]})
         return True
 
-    def _recipe_failed(self, run_id, player_id, generation, goal_id, reason):
-        """Count a failed replay against the recipe and hand the leaf to the planner; True when the replan was requested."""
+    def _skill_failed(self, run_id, player_id, generation, goal_id, reason):
+        """Count a failed replay against the skill and hand the leaf to the planner; True when the replan was requested."""
         run = self.store.require("runs", run_id)
         goal = subgoals.active_goal(run.get("subgoal_plan") or {"goals": []})
-        if not goal or goal["id"] != goal_id or not goal.get("recipe"):
+        if not goal or goal["id"] != goal_id or not goal.get("skill"):
             return False
-        shape = goal.pop("recipe")
+        skill = goal.pop("skill")
         goal.pop("steps", None)
         goal["actionable"] = False
         self.store.put("runs", run)
         self.step_index.pop((run_id, player_id), None)
-        recipes.save(self.store, run_configuration(run)[0], goal["completion"], None, False)
-        self.store.event(run_id, "recipe_failed", {"player_id": player_id, "goal_id": goal_id, "shape": shape, "reason": reason})
-        return self.request_replan(run_id, player_id, generation, f"Recipe replay stopped ({reason}); plan this leaf.")
+        skills.save(self.store, run.get("project_id"), goal["completion"], None, False)
+        self.store.event(run_id, "skill_failed", {"player_id": player_id, "goal_id": goal_id, "skill": skill, "reason": reason})
+        return self.request_replan(run_id, player_id, generation, f"Skill replay stopped ({reason}); plan this leaf.")
 
     def request_replan(self, run_id, player_id, generation, reason):
         run = self.store.require("runs", run_id)
@@ -1023,7 +1023,7 @@ class StructuredPlayers:
             done += 1
 
     def _start_lookahead(self, run_id, player_id, run, player, plan, observation):
-        """Start planning the leaf after this one in parallel with a code macro, unless a saved recipe will replay it.
+        """Start planning the leaf after this one in parallel with a code macro, unless a saved skill will replay it.
 
         Builds the planning context exactly as advance_plan does, from a copy of the plan with the current leaf completed."""
         key = (run_id, player_id)
@@ -1031,9 +1031,9 @@ class StructuredPlayers:
         if not ahead_plan:
             return
         leaf = subgoals.active_goal(ahead_plan)
-        configuration_id = run_configuration(run)[0]
-        if (configuration_id and not any(g.get("parent_id") == leaf["id"] for g in ahead_plan["goals"])
-                and recipes.find(self.store, configuration_id, leaf["completion"])):
+        project_id = run.get("project_id")
+        if (project_id and not any(g.get("parent_id") == leaf["id"] for g in ahead_plan["goals"])
+                and skills.find(self.store, project_id, leaf["completion"])):
             return
         kept = self.lookahead.get(key)
         if kept and kept[:2] == (leaf["id"], ahead_plan["revision"]):
@@ -1195,9 +1195,9 @@ class StructuredPlayers:
                 self.step_index[key] = (goal["id"], index + finished, not finished and bool(ran))
             elif decider_turn:
                 self.step_index[key] = (goal["id"], index, False)
-            # A replayed recipe whose step stops unfinished hands the leaf to the planner on the next turn, with no decide call now.
-            replanned = bool(goal and goal.get("recipe") and not finished and stop in ("failed", "no_effect", "not_offered")
-                             and self._recipe_failed(run_id, player_id, generation, goal["id"], stop))
+            # A replayed skill whose step stops unfinished hands the leaf to the planner on the next turn, with no decide call now.
+            replanned = bool(goal and goal.get("skill") and not finished and stop in ("failed", "no_effect", "not_offered")
+                             and self._skill_failed(run_id, player_id, generation, goal["id"], stop))
             if not replanned and (stop is None or (stop == "not_offered" and not ran)):
                 # No planner batch, or its first option is gone: the model decides in this same turn.
                 label = PROVIDERS[provider_of(run.get("model") or run["plan"].get("model", MODEL))]["label"]

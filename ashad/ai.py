@@ -235,7 +235,7 @@ class OpenAI:
             raise ProviderError("context_limit", "Selection evidence exceeds the bounded context budget. Reduce context before continuing.")
         return await self._request(input, questions, purpose, run_id, model, input_bytes)
 
-    async def plan_subgoals(self, context, run_id):
+    async def plan_subgoals(self, context, run_id, prefix=""):
         """Propose a validated hierarchy update, never an executable game action."""
         run = self.store.require("runs", run_id) if run_id else {}
         model = run.get("model") or run.get("plan", {}).get("model", MODEL)
@@ -244,9 +244,9 @@ class OpenAI:
             raise ValueError(f"{label} planning requires a context object")
         schema = PlanningDecision.model_json_schema()
         input_bytes = len(json.dumps({"evidence": context, "schema": schema}, ensure_ascii=False).encode("utf-8"))
-        if input_bytes + 4608 > 128000:
+        if input_bytes + len(prefix.encode("utf-8")) + 4608 > 128000:
             raise ProviderError("context_limit", "Planning evidence exceeds the bounded context budget. Reduce context before continuing.")
-        return await self._request(context, None, "planning", run_id, model, input_bytes, planning_schema=schema)
+        return await self._request(context, None, "planning", run_id, model, input_bytes, planning_schema=schema, prefix=prefix)
 
     async def write_controls(self, evidence, *, stage="manual"):
         model = CLAUDE_MODEL
@@ -265,7 +265,8 @@ class OpenAI:
                     raise
                 evidence = {"draft": exc.draft}
 
-    async def _request(self, input, questions, purpose, run_id, model, input_bytes, *, tuning_stage="manual", tuning_repair=False, planning_schema=None):
+    async def _request(self, input, questions, purpose, run_id, model, input_bytes, *, tuning_stage="manual", tuning_repair=False, planning_schema=None,
+                       batch=False, prefix=""):
         started = time.monotonic()
         provider = provider_of(model)
         label, pricing = PROVIDERS[provider]["label"], PROVIDERS[provider]["pricing"]
@@ -273,16 +274,26 @@ class OpenAI:
         diagnostic = {"id": uid("request_"), "api": pricing["api"], "auth_method": pricing["auth_method"], "model": model,
                       "purpose": purpose, "run_id": run_id, "timestamp": time.time(),
                       "question_names": [q["name"] for q in questions] if questions else ["instructions"],
-                      "input_bytes": input_bytes, "status": "requesting"}
-        if planning_schema is not None:
+                      "input_bytes": input_bytes + len(prefix.encode("utf-8")), "status": "requesting"}
+        if batch:
+            diagnostic["question_names"] = ["batch"]
+        elif planning_schema is not None:
             diagnostic["question_names"] = ["subgoals"]
         elif not questions:
             diagnostic.update(tuning_stage=tuning_stage, tuning_repair=tuning_repair)
-        if questions:
-            call = lambda: backend.select(input, questions, model=model)
+        if batch:
+            call = lambda: backend.batch(input, model=model, prefix=prefix)
+            def parse(data):
+                # The batch schema has no enums; the caller validates each option ID.
+                answers = data.get("answers") if isinstance(data, dict) else None
+                if not isinstance(answers, dict):
+                    raise ProviderError("invalid_decision", f"{label} returned invalid batch JSON; no action was executed.")
+                return answers
+        elif questions:
+            call = lambda: backend.select(input, questions, model=model, prefix=prefix)
             parse = lambda data: self._answers(data, questions, label)
         elif planning_schema is not None:
-            call = lambda: backend.plan(input, planning_schema, model=model)
+            call = lambda: backend.plan(input, planning_schema, model=model, prefix=prefix)
             parse = lambda data: self._plan(data, label)
         else:
             call = lambda: backend.write_controls(input, model=model, stage=tuning_stage, repair=tuning_repair)

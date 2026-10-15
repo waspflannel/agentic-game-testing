@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 
 from .models import GROK_MODEL, GROK_MODELS
-from .prompts import planning_request, selection_request
+from .prompts import batch_request, planning_request, selection_request
 
 
 MINIMUM_VERSION = (1, 0, 52)
@@ -151,15 +151,19 @@ class GrokBackend:
         self.ready_until[model] = time.monotonic() + READY_TTL_SECONDS
         return result
 
-    async def select(self, input, questions, *, model=GROK_MODEL):
-        payload, schema, instructions = selection_request(input, questions)
-        return await self._complete(payload, schema, instructions, model, operation="selection")
+    async def select(self, input, questions, *, model=GROK_MODEL, prefix=""):
+        payload, schema, instructions, prefix = selection_request(input, questions, prefix)
+        return await self._complete(payload, schema, instructions, model, operation="selection", prefix=prefix)
 
-    async def plan(self, evidence, schema, *, model=GROK_MODEL):
-        payload, schema, instructions = planning_request(evidence, schema)
-        return await self._complete(payload, schema, instructions, model, operation="planning")
+    async def batch(self, evidence, *, model, prefix):
+        payload, schema, instructions = batch_request(evidence)
+        return await self._complete(payload, schema, instructions, model, operation="batch", prefix=prefix)
 
-    async def _complete(self, payload, schema, instructions, model, *, operation):
+    async def plan(self, evidence, schema, *, model=GROK_MODEL, prefix=""):
+        payload, schema, instructions, prefix = planning_request(evidence, schema, prefix)
+        return await self._complete(payload, schema, instructions, model, operation="planning", prefix=prefix)
+
+    async def _complete(self, payload, schema, instructions, model, *, operation, prefix=""):
         if self.ready_until.get(model, 0) <= time.monotonic():
             status = await self.status(model)
             if status["status"] != "ready":
@@ -172,7 +176,8 @@ class GrokBackend:
         fd, prompt_path = tempfile.mkstemp(suffix=".txt", dir=self.home / "tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as prompt:
-                prompt.write(json.dumps(payload, ensure_ascii=False))
+                # The stable prefix leads the prompt file, not argv: it can exceed the Windows command-line limit.
+                prompt.write(json.dumps({"reference": prefix, **payload} if prefix else payload, ensure_ascii=False))
             argv = [*prefix, "-m", model, "--prompt-file", prompt_path, "--output-format", "json",
                 "--json-schema", json.dumps(schema), "--system-prompt-override", instructions + SYSTEM_SUFFIX,
                 "--tools", "", "--disable-web-search", "--no-subagents", "--max-turns", "1"]

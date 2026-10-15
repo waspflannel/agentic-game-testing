@@ -85,8 +85,10 @@ def next_action(step, context, state):
     candidates = []
     for group in ai.action_groups(context):
         target = view(group)
-        if target and ai.point(target.get("position")) and key(group) not in state["tried"] and matches(target, step["targets"]):
-            candidates.append((math.dist(here, target["position"]), group))
+        # A UI control has a rect, not a position, so it counts at distance 0.
+        pos = target and target.get("position")
+        if target and (ai.point(pos) or target.get("kind") == "ui") and key(group) not in state["tried"] and matches(target, step["targets"]):
+            candidates.append((math.dist(here, pos) if ai.point(pos) else 0, group))
     wanted = step.get("parameters") or {}
     for distance, group in sorted(candidates, key=lambda c: c[0]):
         actions = group["actions"]

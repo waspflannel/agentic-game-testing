@@ -50,6 +50,14 @@ class ProposedGoal(Contract):
     actionable: bool = Field(description="True only for a bounded achievable goal with currently available ordinary controls; false means decompose later.")
 
 
+class Step(Contract):
+    control: str = Field(min_length=1, max_length=40, description="A macro name, an advertised input name or a game verb")
+    item: str = Field(max_length=60, description="The hotbar item_id the step needs; empty if none")
+    count: int = Field(ge=0, le=99, description="Repeats; 0 means until the check is met")
+    precondition: str = Field(max_length=200, description="The manual's precondition text or a catalog fact")
+    verifies: str = Field(min_length=1, max_length=60, description="A fact_catalog name, or unknown")
+
+
 class PlanningDecision(Contract):
     goal_id: str = Field(min_length=1, max_length=100)
     mode: Literal["expand", "act", "blocked", "retire", "complete"]
@@ -57,6 +65,7 @@ class PlanningDecision(Contract):
     reason: str = Field(min_length=1, max_length=1000)
     subgoals: list[ProposedGoal] = Field(max_length=12)
     first_actions: list[str] = Field(max_length=5, description="Option IDs T.A from action_options for the new active leaf, in order; [] when none fit or no action_options were given.")
+    steps: list[Step] = Field(max_length=8, description="The act leaf's ordered steps; [] when not act.")
 
     @model_validator(mode="after")
     def check_expansion(self):
@@ -185,6 +194,19 @@ def select_active(plan):
         selected["status"] = "active"
         plan["status"] = "active"
     return selected
+
+
+def next_leaf(plan):
+    """A copy of the plan as reconcile would leave it once the active goal completes, or None when the copy's
+    next goal is the root or blocked. The input plan is not changed."""
+    ahead = copy.deepcopy(plan)
+    active_goal(ahead)["status"] = "completed"
+    ahead["revision"] += 1  # reconcile counts the completion as a revision.
+    selected = select_active(ahead)
+    if selected["id"] == ahead["root_id"] or selected["status"] == "blocked":
+        return None
+    selected["actionable"] = False  # reconcile makes a newly active goal plan again.
+    return ahead
 
 
 def reconcile(plan, observation, control_generation):
@@ -339,6 +361,19 @@ def apply_decision(plan, raw, context, warnings=None):
     if isinstance(raw, dict):
         raw = copy.deepcopy(raw)
         raw["first_actions"] = []  # The controller's optional first batch; never a reason to reject a plan.
+        # Steps are optional guidance too: a malformed step or one verified by a fact outside the catalog is dropped, never rejected.
+        steps, raw["steps"] = raw.get("steps"), []
+        for index, step in enumerate(steps if isinstance(steps, list) else []):
+            try:
+                step = Step.model_validate(step).model_dump()
+            except ValidationError:
+                warnings.append(f"steps.{index} dropped: not a valid step")
+                continue
+            if step["verifies"] != "unknown" and step["verifies"] not in context["fact_catalog"]["facts"]:
+                warnings.append(f"steps.{index} dropped: verifies {step['verifies']!r} is not in fact_catalog")
+                continue
+            if len(raw["steps"]) < 8:
+                raw["steps"].append(step)
         mode = raw.get("mode")
         if mode == "expand" and not raw.get("subgoals") and raw.get("goal_id") != plan["root_id"]:
             raw["mode"] = "act"
@@ -375,6 +410,7 @@ def apply_decision(plan, raw, context, warnings=None):
         return result
     if decision["mode"] == "retire":
         # Retirement is not success: the focus keeps its own completion; the decision's is ignored.
+        focus.pop("steps", None)
         result.update(reason=decision["reason"], revision=result["revision"] + 1)
         retire(result, focus, decision, context)
         return result
@@ -405,6 +441,10 @@ def apply_decision(plan, raw, context, warnings=None):
                  attempts=0, reviews=focus.get("reviews", 0) + 1)
     focus.pop("recent_actions", None)
     focus.pop("repeating", None)
+    if decision["mode"] == "act":
+        focus["steps"] = decision["steps"]
+    else:
+        focus.pop("steps", None)  # Expand and blocked leave no leaf steps to run.
     result.update(reason=decision["reason"], revision=result["revision"] + 1)
     if decision["mode"] == "blocked":
         give_up(result, focus["id"], decision["reason"])

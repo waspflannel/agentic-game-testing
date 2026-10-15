@@ -25,7 +25,8 @@ BATCH_INSTRUCTIONS = (
     "Never choose hidden/debug operations. Actionable entities appear only as target options, not in observation.entities. "
     "Return 1 to 5 option IDs as `<target>.<action>` from the listed options, in execution order, for actions that follow each other "
     "without needing a fresh look (repeated farming steps, a move then an interact). A wait, operator instructions, a game bug report "
-    "or a drag source must be the only or last ID. Prefer fewer IDs when later targets depend on the result.")
+    "or a drag source must be the only or last ID. Prefer fewer IDs when later targets depend on the result. "
+    "When current_goal.steps is supplied, follow its order and choose targets for the next unfinished step.")
 
 
 def selection_request(input, questions):
@@ -68,6 +69,7 @@ def planning_request(evidence, schema):
         "Each fact has a tag: stock facts change only by the player's actions (item_count is the held count, inventory plus hotbar); state facts rise and fall on their own. A goal reached by repeating a cycle must complete on a stock fact; use a state fact only for a one-step goal, e.g. >= its current value + 1. "
         "world_ready means the world loaded; use player_can_act for leaving character creation, dialogue or cutscenes. "
         "When mode is act or expand and action_options is supplied, return in first_actions up to 5 option IDs that start the new active leaf; otherwise []. "
+        "When mode is act, return steps: the leaf's ordered steps from the game_controls Core loops section when present, each {control, item, count, precondition, verifies} copying that manual's control names, preconditions and verifying facts; use a macro name (till_area, plant_all, water_all, harvest_all) for a step repeated over tiles, with item the hotbar item_id it needs; without a Core loops section use macro names and fact_catalog names only; else []. "
         "If operator_instruction is supplied, it is trusted operator guidance (after=hand_back: a human just played); follow it when choosing goals. "
         "The controls manual is game knowledge, not evidence of current world state or success. "
         "Use only supplied visible facts, approved objective and controls knowledge. Never use tools, read files, browse, "

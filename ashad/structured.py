@@ -1,6 +1,7 @@
 """Shared structured-play handlers for Decisions, dashboard inspection and MCP."""
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -16,12 +17,13 @@ from .game_controls import run_configuration
 from .models import MODEL, PROVIDERS, provider_of
 from .repository import Repository
 from .store import uid
-from . import facts, repair_tasks, subgoals
+from . import facts, macros, recipes, repair_tasks, subgoals
 
 LOG = logging.getLogger(__name__)
 LOOP_BACKSTOP_DECISIONS = 6
 MOVEMENT_STALL_LIMIT = 2  # Failed moves from one unchanged position: input is not reaching the character.
 BATCH_LIMIT = 5  # Actions per turn from one batch decide.
+MACRO_LIMIT = 30  # Actions per turn from one code macro.
 SNAPSHOT_RESET_CHARS = 12000  # A delta this large costs more than a fresh snapshot (one cache write).
 TIMER_FACTS = ("crops_harvestable", "crop_growth_stage_min")  # Growth facts the code waits on after the model chose to wait.
 CODE_WAIT_STEP = 10
@@ -32,7 +34,7 @@ PLAN_TRIGGERS = (("The last action failed", "action_failed"),
                  ("Observed objectives changed", "knowledge_changed"), ("Control or game binding changed", "rebound"),
                  ("No supported direct action fits", "needs_instructions"), ("The game state did not change across", "loop_backstop"),
                  ("You said the primary goal is not done", "completion_rejected"),
-                 ("Repeating the same action", "action_repeat"))
+                 ("Repeating the same action", "action_repeat"), ("Recipe replay stopped", "recipe_failed"))
 
 
 def meaningful_signature(observation):
@@ -89,6 +91,17 @@ def settle_effect(result, before, observation):
         result["status"] = "no_effect"
 
 
+def queued_actions(context, keys):
+    """A model batch's next_action: pop the next queued option key and re-find it on the fresh observation."""
+    queue = list(keys)
+    def next_action(fresh):
+        if not queue:
+            return None, "done"
+        action = resolve({**context, "observation": fresh}, queue.pop(0))
+        return (action, "queued") if action else (None, "not_offered")
+    return next_action
+
+
 def own_action_line(event):
     """One short line per own event for the decision context, keeping only keys with values."""
     payload = event["payload"]
@@ -107,7 +120,7 @@ def observed_entity(observation, target_id):
     return next((e for e in observation.get("entities", []) if target_id and e.get("id") == target_id), {})
 
 
-GOAL_CONTEXT_KEYS = ("id", "parent_id", "objective", "completion", "status", "actionable", "measured", "attempts")
+GOAL_CONTEXT_KEYS = ("id", "parent_id", "objective", "completion", "status", "actionable", "measured", "attempts", "steps")
 FAILED_STATUSES = frozenset({"failed", "rejected", "expired", "cancelled"})
 DELIVERED_STATUSES = frozenset({"completed", "no_effect"})
 
@@ -147,14 +160,19 @@ class StructuredPlayers:
         self.turn_ended_at = {}
         self.snapshots = {}  # (run_id, player_id) -> (goal_id, generation, prompt observation at subgoal start)
         self.code_waits = {}  # (run_id, player_id) -> (goal_id, seconds of code waits used)
+        self.step_index = {}  # (run_id, player_id) -> (goal_id, index of the goal's next unfinished step, decider takes the next turn)
+        self.goal_intents = {}  # (run_id, player_id) -> (goal_id, [macros.step_for of each agent action]), saved as a recipe when the goal completes
+        # (run_id, player_id) -> (next leaf's goal_id, plan revision once the current leaf completes, planning_scene at start, planner task).
+        # At most one per player, started while a code macro runs; advance_plan uses or cancels it.
+        self.lookahead = {}
         self.crashes_recorded = set()
 
     def _forget_turn(self, key):
         self.waits.pop(key, None)
         self.last_decisions.pop(key, None)
-        # The snapshot and code-wait budget belong to one goal; a replan of the same goal keeps them.
+        # The snapshot, code-wait budget, step index and intents belong to one goal; a replan of the same goal keeps them.
         plan = self.store.require("runs", key[0]).get("subgoal_plan") or {}
-        for kept in (self.snapshots, self.code_waits):
+        for kept in (self.snapshots, self.code_waits, self.step_index, self.goal_intents):
             if key in kept and kept[key][0] != plan.get("active_goal_id"):
                 del kept[key]
 
@@ -305,6 +323,11 @@ class StructuredPlayers:
                               "before": effect_basis(observation)}
         if owner == "agent" and run.get("subgoal_plan", {}).get("player_id") == player_id:
             subgoals.record_action(run["subgoal_plan"], payload)
+            goal_id = run["subgoal_plan"].get("active_goal_id")
+            if self.goal_intents.get(key, (None,))[0] != goal_id:
+                self.goal_intents[key] = (goal_id, [])
+            goal_fact = (subgoals.active_goal(run["subgoal_plan"]) or {}).get("completion", {}).get("fact", "")
+            self.goal_intents[key][1].append(macros.step_for(payload, observation, goal_fact))
         self.store.put("runs", run)
         self.status(run_id, player_id, "acting", str(args.get("reason") or f"Performing {args['verb']}"), generation, action_id=action_id)
         self.last_decisions.pop(key, None)
@@ -591,9 +614,12 @@ class StructuredPlayers:
             LOG.exception("Could not record false completion for %s/%s", run_id, player_id)
 
     def forget_run(self, run_id):
-        for counters in (self.loop_counts, self.movement_stalls, self.bug_reports, self.turn_ended_at, self.snapshots, self.code_waits):
+        for counters in (self.loop_counts, self.movement_stalls, self.bug_reports, self.turn_ended_at, self.snapshots, self.code_waits, self.step_index,
+                         self.goal_intents):
             for key in [k for k in counters if k[0] == run_id]:
                 del counters[key]
+        for key in [k for k in self.lookahead if k[0] == run_id]:
+            self.lookahead.pop(key)[3].cancel()
         self.crashes_recorded -= {e for e in self.crashes_recorded if e[0] == run_id}
 
     async def _loop_backstop(self, run_id, player_id, generation, signature, observation, result):
@@ -708,6 +734,7 @@ class StructuredPlayers:
         if completed:
             self.store.event(run_id, "subgoals_verified", {"player_id": player_id, "goal_ids": completed,
                              "evidence": subgoals.observation_ref(observation), "full_observation": observation})
+            self._save_recipes(run_id, player_id, run, plan, completed)
         if completed or previous_active != plan.get("active_goal_id"):
             self._forget_turn((run_id, player_id))
         if plan["status"] == "blocked":
@@ -726,6 +753,8 @@ class StructuredPlayers:
             return await self._give_up(run_id, player_id, generation, observation, kind="stuck", tried=tried, missing=stuck)
         if not needs_plan:
             return {"observation": observation, "first_actions": []}
+        if self._replay_recipe(run_id, player_id, run, plan, observation):
+            return {"observation": observation, "first_actions": []}
         # The replan reason is input too: a failed action or first repeat on unchanged state still replans once.
         planning_key = hashlib.sha256(json.dumps([plan["active_goal_id"], generation, wait_signature(observation), plan.get("reason")]).encode()).hexdigest()
         if planning_key == plan.get("last_planning_key"):
@@ -742,10 +771,27 @@ class StructuredPlayers:
         self.status(run_id, player_id, "planning", "Finding the next achievable prerequisite for: " + context["current_goal"]["objective"], generation)
         warnings = []
         self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": revision, "context": context})
+        # A look-ahead planned while the last macro ran is this leaf's first attempt when nothing it saw has changed.
+        proposal, ahead = None, self.lookahead.pop((run_id, player_id), None)
+        if ahead:
+            ahead_goal_id, ahead_revision, scene, task = ahead
+            why = ("goal_changed" if ahead_goal_id != plan["active_goal_id"] else "plan_changed" if ahead_revision != revision
+                   else "scene_changed" if scene != subgoals.planning_scene(observation) else None)
+            if why:
+                task.cancel()
+            else:
+                try:
+                    with timed(timing, "plan_model"):
+                        # Its first_actions name the macro-start observation's options, so the decider picks instead.
+                        proposal = {**await task, "first_actions": []}
+                except Exception:
+                    why = "error"
+            self.store.event(run_id, "lookahead_discarded" if why else "lookahead_used", {"player_id": player_id, "goal_id": ahead_goal_id, "why": why})
         for attempt in range(2):
             warnings = []
-            with timed(timing, "plan_model"):
-                proposal = await self.coordinator.ai.plan_subgoals(context, run_id, prefix=static_prefix(context, None))
+            if attempt or proposal is None:
+                with timed(timing, "plan_model"):
+                    proposal = await self.coordinator.ai.plan_subgoals(context, run_id, prefix=static_prefix(context, None))
             if not current():
                 self.store.event(run_id, "subgoal_planning_cancelled", {"player_id": player_id, "reason": "Run control changed during planning"})
                 return None
@@ -798,6 +844,64 @@ class StructuredPlayers:
         picked = picked_options({"actions": proposal.get("first_actions")}, groups, context["action_options"])
         self.status(run_id, player_id, "ready", "Plan updated; acting on fresh state.", generation)
         return {"observation": fresh, "first_actions": [option_key(a) for _, _, a in picked if a and a["tool"] == "perform_action"]}
+
+    def _save_recipes(self, run_id, player_id, run, plan, completed):
+        """Save each completed non-root leaf's steps as a win for its completion shape: the planner's or a replayed
+        recipe's steps, else the steps its own actions took. Runs before the turn state of the old goal is forgotten."""
+        configuration_id = run_configuration(run)[0]
+        if not configuration_id:
+            return
+        intents = self.goal_intents.get((run_id, player_id))
+        for goal in plan["goals"]:
+            if (goal["id"] not in completed or goal["id"] == plan["root_id"]
+                    or any(g.get("parent_id") == goal["id"] for g in plan["goals"])):
+                continue
+            steps = goal.get("steps") or (recipes.from_intents(intents[1]) if intents and intents[0] == goal["id"] else [])
+            if steps:
+                saved = recipes.save(self.store, configuration_id, goal["completion"], steps, True)
+                self.store.event(run_id, "recipe_saved", {"player_id": player_id, "goal_id": goal["id"], "shape": saved["shape"], "steps": saved["steps"]})
+
+    def _replay_recipe(self, run_id, player_id, run, plan, observation):
+        """Give a just-activated leaf a saved recipe's steps instead of calling the planner; True when replayed.
+
+        A leaf reached by a controller replan (a PLAN_TRIGGERS reason, including a failed replay) is planned instead."""
+        goal = subgoals.active_goal(plan)
+        configuration_id = run_configuration(run)[0]
+        if (not configuration_id or goal["id"] == plan["root_id"] or any(g.get("parent_id") == goal["id"] for g in plan["goals"])
+                or any((plan.get("reason") or "").startswith(prefix) for prefix, _ in PLAN_TRIGGERS)):
+            return False
+        recipe = recipes.find(self.store, configuration_id, goal["completion"])
+        if not recipe:
+            return False
+        first = recipe["steps"][0]["verifies"]
+        check = goal["completion"] if goal["completion"]["fact"] == first else {"fact": first, "args": []}
+        if subgoals.measure({**check, "op": ">=", "value": 0}, observation)[1] is None:
+            return False
+        goal.update(steps=recipes.bind(recipe["steps"], goal["completion"], replay=True, measured=goal.get("measured")),
+                    actionable=True, recipe=recipe["shape"])
+        self.store.put("runs", run)
+        self.step_index.pop((run_id, player_id), None)  # Replay starts at the recipe's first step.
+        ahead = self.lookahead.pop((run_id, player_id), None)
+        if ahead:  # The replayed leaf needs no planner call, so its look-ahead is dropped.
+            ahead[3].cancel()
+            self.store.event(run_id, "lookahead_discarded", {"player_id": player_id, "goal_id": ahead[0], "why": "recipe"})
+        self.store.event(run_id, "recipe_replayed", {"player_id": player_id, "shape": recipe["shape"], "goal_id": goal["id"]})
+        return True
+
+    def _recipe_failed(self, run_id, player_id, generation, goal_id, reason):
+        """Count a failed replay against the recipe and hand the leaf to the planner; True when the replan was requested."""
+        run = self.store.require("runs", run_id)
+        goal = subgoals.active_goal(run.get("subgoal_plan") or {"goals": []})
+        if not goal or goal["id"] != goal_id or not goal.get("recipe"):
+            return False
+        shape = goal.pop("recipe")
+        goal.pop("steps", None)
+        goal["actionable"] = False
+        self.store.put("runs", run)
+        self.step_index.pop((run_id, player_id), None)
+        recipes.save(self.store, run_configuration(run)[0], goal["completion"], None, False)
+        self.store.event(run_id, "recipe_failed", {"player_id": player_id, "goal_id": goal_id, "shape": shape, "reason": reason})
+        return self.request_replan(run_id, player_id, generation, f"Recipe replay stopped ({reason}); plan this leaf.")
 
     def request_replan(self, run_id, player_id, generation, reason):
         run = self.store.require("runs", run_id)
@@ -861,19 +965,22 @@ class StructuredPlayers:
                 self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
         return False
 
-    async def _run_batch(self, run_id, player_id, generation, current, context, start, fresh, last, keys, timing):
-        """Run queued option keys back to back, each re-resolved on the observation the previous action left.
+    async def _run_batch(self, run_id, player_id, generation, current, context, start, fresh, last, next_action, timing, limit=BATCH_LIMIT, tried=None):
+        """Run actions from `next_action(fresh) -> (action | None, why)` back to back, each chosen on the observation the previous action left.
 
         `start` is the observation the batch was chosen on. `last` is the result of the batch action already run (its
-        post-action observation is `fresh`), or None when the batch starts here on `fresh`. Returns the stop reason and
-        the actions dispatched here."""
+        post-action observation is `fresh`), or None when the batch starts here on `fresh`. With a `tried` set (macros),
+        one no_effect that is not a move is tolerated: a use_item's tile joins `tried` and the next pick skips it; a
+        second no_effect in a row stops. Returns the stop reason and the actions dispatched here."""
         key = (run_id, player_id)
         run = self.store.require("runs", run_id)
         plan = run.get("subgoal_plan")
-        checks = [g["completion"] for g in subgoals.goal_path(plan)] if plan and plan["player_id"] == player_id else []
+        mine = plan and plan["player_id"] == player_id
+        checks = [g["completion"] for g in subgoals.goal_path(plan)] if mine else []
+        goal = subgoals.active_goal(plan) if mine else None
         facts_before = [subgoals.measure(check, start)[1] for check in checks]
         scene = subgoals.planning_scene(start)
-        queue, done, ran = list(keys), int(last is not None), []
+        done, ran, missed = int(last is not None), [], False
         while True:
             if not current():
                 return "cancelled", ran
@@ -883,25 +990,82 @@ class StructuredPlayers:
                     return ("cancelled" if status == "cancelled" else "failed"), ran
                 if fresh is None or key in self.pending:
                     return "pending", ran  # Still running after the settle wait; the next turn reconciles it.
-                if last.get("effect") != "changed":
+                if last.get("effect") == "changed":
+                    missed = False
+                elif tried is None or missed or not ran or ran[-1]["args"].get("verb") == "move_to":
                     return "no_effect", ran
-            if [subgoals.measure(check, fresh)[1] for check in checks] != facts_before:
-                return "fact_changed", ran
+                elif str(ran[-1]["args"].get("parameters", {}).get("name", "")).startswith("slot_"):
+                    pass  # Re-selecting the equipped tool changes nothing; that is not a missed tile.
+                else:
+                    position = ran[-1]["args"].get("parameters", {}).get("world_position")
+                    if position:
+                        tried.add(tuple(position))
+                    missed = True
+            if goal and subgoals.measure(goal["completion"], fresh)[0]:
+                return "goal_met", ran
+            # Progress toward a goal-path target continues the batch; any other move of those facts is a surprise.
+            facts_now = [subgoals.measure(check, fresh)[1] for check in checks]
+            if any(old != new and not subgoals.toward(check, old, new) for check, old, new in zip(checks, facts_before, facts_now)):
+                return "fact_moved_away", ran
+            facts_before = facts_now
             if subgoals.planning_scene(fresh) != scene:
                 return "scene_changed", ran
-            if not queue:
-                return "done", ran
-            if done >= BATCH_LIMIT:
-                return "limit", ran
-            action = resolve({**context, "observation": fresh}, queue.pop(0))
+            action, why = next_action(fresh)
             if action is None:
-                return "not_offered", ran
+                return why, ran  # "done" for an empty queue, else "not_offered".
+            if done >= limit:
+                return "limit", ran
             with timed(timing, "tool:perform_action"):
                 last = await self.dispatch(run_id, player_id, "perform_action",
                                            {**action["args"], "reason": "Batch: " + action["description"]}, fresh, generation)
             fresh = last.pop("observation", None)
             ran.append(action)
             done += 1
+
+    def _start_lookahead(self, run_id, player_id, run, player, plan, observation):
+        """Start planning the leaf after this one in parallel with a code macro, unless a saved recipe will replay it.
+
+        Builds the planning context exactly as advance_plan does, from a copy of the plan with the current leaf completed."""
+        key = (run_id, player_id)
+        ahead_plan = subgoals.next_leaf(plan)
+        if not ahead_plan:
+            return
+        leaf = subgoals.active_goal(ahead_plan)
+        configuration_id = run_configuration(run)[0]
+        if (configuration_id and not any(g.get("parent_id") == leaf["id"] for g in ahead_plan["goals"])
+                and recipes.find(self.store, configuration_id, leaf["completion"])):
+            return
+        kept = self.lookahead.get(key)
+        if kept and kept[:2] == (leaf["id"], ahead_plan["revision"]):
+            return
+        if kept:
+            kept[3].cancel()
+            self.store.event(run_id, "lookahead_discarded", {"player_id": player_id, "goal_id": kept[0], "why": "replaced"})
+        context = self.decision_context({**run, "subgoal_plan": ahead_plan}, player, observation)
+        context["fact_catalog"] = facts.catalog(observation, self.item_ids(run))
+        _, context["action_options"] = batch_options(context)
+        task = asyncio.create_task(self.coordinator.ai.plan_subgoals(context, run_id, prefix=static_prefix(context, None)))
+        # Retrieve a dropped task's error so asyncio never logs "Task exception was never retrieved".
+        task.add_done_callback(lambda done: done.cancelled() or done.exception())
+        self.lookahead[key] = (leaf["id"], ahead_plan["revision"], subgoals.planning_scene(observation), task)
+        self.store.event(run_id, "lookahead_started", {"player_id": player_id, "goal_id": leaf["id"]})
+
+    async def _run_macro(self, run_id, player_id, generation, current, context, observation, step, timing):
+        """Run one macro step (`step["control"]` names a MACROS entry, `step["item"]` the hotbar item) in code, with no model call.
+
+        Selects the item's hotbar slot first, then moves to and uses each matching tile until a stop. Returns the stop
+        reason and the actions dispatched."""
+        macro, selected, tried = step["control"], False, set()
+        def next_action(fresh):
+            nonlocal selected
+            action, why = macros.next_action(macro, step, {**context, "observation": fresh}, selected, tried)
+            selected = selected or why == "select"
+            return action, why
+        stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None,
+                                          next_action, timing, MACRO_LIMIT, tried)
+        timing["counts"]["macro_actions"] = timing["counts"].get("macro_actions", 0) + len(ran)
+        self.store.event(run_id, "macro_stopped", {"player_id": player_id, "macro": macro, "item": step.get("item", ""), "reason": stop, "actions": len(ran)})
+        return stop, ran
 
     async def turn(self, run_id, player_id, tick_seconds=None):
         key = (run_id, player_id)
@@ -918,6 +1082,10 @@ class StructuredPlayers:
             self.bug_reports.pop(key, None)
             self.snapshots.pop(key, None)
             self.code_waits.pop(key, None)
+            self.step_index.pop(key, None)
+            ahead = self.lookahead.pop(key, None)
+            if ahead:
+                ahead[3].cancel()
             self.generations[key] = generation
         def current():
             live = self.store.require("runs", run_id)
@@ -998,11 +1166,39 @@ class StructuredPlayers:
                 kept = self.snapshots[key] = (goal_id, generation, view)
             self.last_decisions[key] = (signature, time.time(), generation)
             decision_started_at = time.time()
-            result, first, stop, ran = None, {}, None, []
+            result, first, stop, ran, finished = None, {}, None, [], False
+            # The leaf's next unfinished step runs in code when it names a macro. A macro stop that leaves the step
+            # unfinished after dispatching actions hands the next turn to the decider; then the macro is tried again.
+            steps = (goal or {}).get("steps") or []
+            goal_id, index, decider_turn = self.step_index.get(key) or (None, 0, False)
+            if not goal or goal_id != goal["id"]:
+                index, decider_turn = 0, False
+            # A select right before a macro on the same item is redundant: the macro selects its own item first.
+            if (index + 1 < len(steps) and (steps[index]["control"] == "select" or steps[index]["control"].startswith("slot_"))
+                    and steps[index + 1]["control"] in macros.MACROS and steps[index + 1]["item"] == steps[index]["item"]):
+                index += 1
+            step = steps[index] if index < len(steps) else None
+            if steps and context.get("current_goal"):
+                # The decider and relevant_groups' tile filter see only the unfinished steps, so a finished macro's tiles are not the ones kept.
+                context["current_goal"]["steps"] = steps[index:]
             if planned_keys:
                 # The planner named the first batch: run it on the post-planning observation, with no decide call.
-                stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None, planned_keys, timing)
-            if stop is None or (stop == "not_offered" and not ran):
+                stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None, queued_actions(context, planned_keys), timing)
+            elif step and step["control"] in macros.MACROS and not decider_turn:
+                # The verifying fact reads the goal's plant_id when the goal checks another fact (e.g. item_count), else it would read the zero default.
+                check = {"fact": step["verifies"], "args": [a for a in goal["completion"]["args"] if goal["completion"]["fact"] == step["verifies"] or a["name"] == "plant_id"], "op": ">=", "value": 0}
+                before = subgoals.measure(check, observation)[1]
+                self._start_lookahead(run_id, player_id, run, player, plan, observation)
+                stop, ran = await self._run_macro(run_id, player_id, generation, current, context, observation, step, timing)
+                after = subgoals.measure(check, self.store.get("observations", f"{run_id}:{player_id}") or {})[1]
+                finished = stop == "goal_met" or bool(step["count"] and before is not None and after is not None and abs(after - before) >= step["count"])
+                self.step_index[key] = (goal["id"], index + finished, not finished and bool(ran))
+            elif decider_turn:
+                self.step_index[key] = (goal["id"], index, False)
+            # A replayed recipe whose step stops unfinished hands the leaf to the planner on the next turn, with no decide call now.
+            replanned = bool(goal and goal.get("recipe") and not finished and stop in ("failed", "no_effect", "not_offered")
+                             and self._recipe_failed(run_id, player_id, generation, goal["id"], stop))
+            if not replanned and (stop is None or (stop == "not_offered" and not ran)):
                 # No planner batch, or its first option is gone: the model decides in this same turn.
                 label = PROVIDERS[provider_of(run.get("model") or run["plan"].get("model", MODEL))]["label"]
                 self.status(run_id, player_id, "thinking", f"Waiting for {label} to choose the next action.", generation)
@@ -1032,7 +1228,7 @@ class StructuredPlayers:
                     stop = "done"  # A game bug report: nothing was dispatched.
                 else:
                     stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, fresh,
-                                                      result["result"], result["queued"], timing)
+                                                      result["result"], queued_actions(context, result["queued"]), timing)
             timing["outcome"] = "decided"
             timing["counts"]["batch_actions"] = len(ran) + (first.get("tool") == "perform_action")
             timing["batch_stop"] = stop

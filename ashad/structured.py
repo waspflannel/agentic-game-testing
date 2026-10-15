@@ -868,7 +868,7 @@ class StructuredPlayers:
         for attempt in range(2):
             warnings = []
             with timed(timing, "plan_model"):
-                proposal = await self.coordinator.ai.plan_subgoals(sent, run_id, prefix=prefix)
+                proposal = await self._plan_subgoals(run_id, player_id, sent, prefix, snapshot, view)
             if not current():
                 self.store.event(run_id, "subgoal_planning_cancelled", {"player_id": player_id, "reason": "Run control changed during planning"})
                 return None
@@ -922,6 +922,27 @@ class StructuredPlayers:
         picked = picked_options({"actions": proposal.get("first_actions")}, groups, context["action_options"])
         self.status(run_id, player_id, "ready", "Plan updated; acting on fresh state.", generation)
         return {"observation": fresh, "first_actions": [option_key(a) for _, _, a in picked if a and a["tool"] == "perform_action"]}
+
+    async def _plan_subgoals(self, run_id, player_id, sent, prefix, snapshot, view):
+        """plan_subgoals, retried once on context_limit with a trimmed context."""
+        try:
+            return await self.coordinator.ai.plan_subgoals(sent, run_id, prefix=prefix)
+        except ProviderError as exc:
+            if exc.status != "context_limit":
+                raise
+        trimmed = {k: v for k, v in sent.items() if k != "known_locations"} | {
+            "action_options": sent["action_options"][:40], "recent_own_actions": sent["recent_own_actions"][-3:],
+            "guidance": json.dumps(sent["guidance"], ensure_ascii=False)[:1000],
+            "observation_delta": capped_delta(snapshot, view, SNAPSHOT_RESET_CHARS // 2)}
+        size = json_bytes(trimmed)
+        self.store.event(run_id, "planner_context_trimmed", {"player_id": player_id, "before_bytes": json_bytes(sent), "after_bytes": size})
+        try:
+            return await self.coordinator.ai.plan_subgoals(trimmed, run_id, prefix=prefix)
+        except ProviderError as exc:
+            if exc.status != "context_limit":
+                raise
+            raise ProviderError("context_limit", f"Planner context still exceeds the budget after trimming ({size} bytes). "
+                                "Report this; Resume will not help until the game state shrinks.") from exc
 
     def _save_skills(self, run_id, player_id, run, plan, completed):
         """Save each completed non-root leaf's steps as a win for its completion shape: the planner's or a replayed

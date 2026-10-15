@@ -9,6 +9,7 @@ import { settingsSkeleton, accountSkeleton, accountRegions, accountBlocker, sett
   limitsSkeleton, limitsRegions, limitsPayload, SECTIONS } from './views/settings.js';
 import { newUsageUi, usageSkeleton, usageRegions } from './views/usage.js';
 import { boardModel, boardSkeleton, boardRegions, issueSkeleton, issueViewRegions } from './views/issues.js';
+import { skillsSkeleton, skillsRegions } from './views/skills.js';
 import { newOverview, readinessDue, overviewModel, overviewSkeleton, overviewRegions, validatedProjectBuilds, defaultRegatherBuildId, regatherDialogHTML } from './views/project.js';
 import { PAGE, MAX_EVENTS, createTimeline, beginPage, applyPage, failPage, seedFromRun, applyLive, timelineCards, timelineRegions, syncCards, cardBody, rawJSON, eventIndex } from './views/timeline.js';
 
@@ -42,6 +43,7 @@ const state = {
   usageUi: newUsageUi(),
   issues: null,              // { key, rows, loading, error, at } for the open project board; fetched on view open and Refresh only
   issue: null,               // { id, record, loading, error, missing, exampleId, pending } for the open issue view
+  skills: null,              // { key, rows, loading, error, at, deleting } for the open project's Skills page; fetched on view open and Refresh only
 };
 const epoch = createEpoch();
 const setDirty = dirtyBridge(() => window.ashadDesktop);
@@ -137,6 +139,7 @@ function viewFor(route, data) {
     case 'project': return notFound('Project');  // renderOverview handles existing projects.
     case 'instance': return state.runMissing ? notFound('Instance') : `<div class="boot"><p>Loading instance…</p></div>`;
     case 'issues': return notFound('Project');
+    case 'skills': return notFound('Project');
     case 'issue': return findProject(route.id) ? notFound('Issue') : notFound('Project');
     case 'setup': return notFound('Project');  // renderSetup handles every setup route whose project exists.
     case 'settings': return notFound('Settings section');  // renderSettings handles the known sections.
@@ -152,6 +155,7 @@ function windowTitle(route, data) {
   if (route.name === 'project' || route.name === 'composer') return projects.find(p => p.id === route.id)?.name || '';
   if (route.name === 'issues') return `Issues · ${projects.find(p => p.id === route.id)?.name || ''}`;
   if (route.name === 'issue') return state.issue?.record?.title || 'Issue';
+  if (route.name === 'skills') return `Skills · ${projects.find(p => p.id === route.id)?.name || ''}`;
   return { setup: 'Setup', usage: 'Usage', settings: 'Settings' }[route.name] || '';
 }
 
@@ -171,6 +175,7 @@ function renderView() {
   if (route.name === 'usage') return renderUsage(view);
   if (route.name === 'issues' && findProject(route.id)) return renderIssues(view);
   if (route.name === 'issue' && findProject(route.id) && !issueMissing(route)) return renderIssue(view);
+  if (route.name === 'skills' && findProject(route.id)) return renderSkills(view);
   if (route.name === 'project' && findProject(route.id)) return renderOverview(view);
   if (view.dataset.mount) { view.dataset.mount = ''; view.renderedHTML = undefined; }
   patchAnnounced(view, viewFor(route, state.data));
@@ -765,6 +770,43 @@ async function setIssueStatus(status) {
   if (state.issue === view) renderView();
 }
 
+// ── Project skills ──────────────────────────────────────────────────────────
+function renderSkills(view) {
+  const id = state.route.id;
+  mount(view, `skills:${id}`, skillsSkeleton());
+  const page = state.skills?.key === id ? state.skills : null;
+  patchRegions(view, skillsRegions(id, findProject(id)?.name || id, page));
+  updateTimes(view);
+}
+
+async function loadSkills() {
+  const key = state.route.id;
+  const previous = state.skills?.key === key ? state.skills : null;
+  if (previous?.loading) return;
+  const record = state.skills = { ...previous, key, loading: true, error: '' };
+  renderView();
+  try { Object.assign(record, { rows: (await api(`/api/projects/${enc(key)}/skills`)).skills || [], at: Date.now() / 1000 }); }
+  catch (error) { record.error = error.message; if (record.rows) toast(`Skills refresh failed: ${error.message}`, 'error'); }
+  record.loading = false;
+  if (state.skills === record) renderView();
+}
+
+async function deleteSkill(id) {
+  const page = state.skills;
+  const skill = page?.rows?.find(s => s.id === id);
+  if (!skill || page.deleting) return;
+  if (!await confirmDialog({ title: 'Delete skill?', body: `"${skill.name}" is forgotten for this project. ASHAD plans that step with the model again and may save it anew. This cannot be undone.`, confirm: 'Delete', danger: true })) return;
+  page.deleting = id;
+  renderView();
+  try {
+    await api(`/api/projects/${enc(page.key)}/skills/${enc(id)}`, { method: 'DELETE' });
+    page.rows = page.rows.filter(s => s.id !== id);
+    toast('Skill deleted.', 'ok');
+  } catch (error) { toast(`Could not delete the skill: ${error.message}`, 'error'); }
+  page.deleting = null;
+  if (state.skills === page) renderView();
+}
+
 // ── Project overview (C7) ───────────────────────────────────────────────────
 function overviewFor(id) {
   if (!state.overviews.has(id)) state.overviews.set(id, newOverview(id));
@@ -1239,7 +1281,7 @@ const syncNavToggle = () => $('#nav-toggle').setAttribute('aria-expanded', Strin
 // ── Routing ─────────────────────────────────────────────────────────────────
 function rememberProject(route) {
   const run = route.name === 'instance' ? (state.data?.runs || []).find(r => r.id === route.id) : null;
-  const id = ['project', 'composer', 'issues', 'issue'].includes(route.name) ? route.id : run?.project_id;
+  const id = ['project', 'composer', 'issues', 'issue', 'skills'].includes(route.name) ? route.id : run?.project_id;
   if (id && (state.data?.projects || []).some(p => p.id === id)) state.ui.lastProject = id;
 }
 
@@ -1285,6 +1327,7 @@ async function onRoute() {
   // Compared with the loaded record, not the previous route: on a deep link the initial state.route already equals route.
   if (route.name === 'issues' && (previous.name !== 'issues' || state.issues?.key !== boardKey(route))) loadIssues();
   if (route.name === 'issue' && (previous.name !== 'issue' || state.issue?.id !== route.issueId)) loadIssue(route.issueId);
+  if (route.name === 'skills' && (previous.name !== 'skills' || state.skills?.key !== route.id)) loadSkills();
   if (route.name === 'project' && (previous.name !== 'project' || previous.id !== route.id)) overviewFor(route.id).readiness = null;  // Probe on view open.
   rememberProject(route);
   syncDirty();
@@ -1387,6 +1430,10 @@ document.addEventListener('click', async event => {
     loadUsage();
   } else if (action === 'issues-refresh') {
     if (target.getAttribute('aria-disabled') !== 'true') loadIssues();
+  } else if (action === 'skills-refresh') {
+    if (target.getAttribute('aria-disabled') !== 'true') loadSkills();
+  } else if (action === 'skill-delete') {
+    if (target.getAttribute('aria-disabled') !== 'true') deleteSkill(id);
   } else if (action === 'issue-status') {
     if (target.getAttribute('aria-disabled') !== 'true') setIssueStatus(target.dataset.status);
   } else if (action === 'usage-range' || action === 'usage-sort' || action === 'usage-more') {

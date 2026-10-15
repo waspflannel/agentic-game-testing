@@ -2,7 +2,7 @@
 import { esc, icon, href, dropdownHTML, since, humanize, runGoal, runTime } from '../core.js';
 import { checkText } from './goals.js';
 
-export const ISSUE_TYPES = [['unsupported_action', 'Unsupported action', 'Unsupported actions'], ['crash', 'Crash', 'Crashes'], ['game_bug', 'Game bug', 'Game bugs'], ['false_completion', 'False completion', 'False completions'], ['capability_gap', 'MCP or game needs updating', 'MCP or game needs updating']];
+export const ISSUE_TYPES = [['unsupported_action', 'Unsupported action', 'Unsupported actions'], ['crash', 'Crash', 'Crashes'], ['game_bug', 'Game bug', 'Game bugs'], ['false_completion', 'False completion', 'False completions'], ['capability_gap', 'MCP or game needs updating', 'MCP or game needs updating'], ['skill_regression', 'Likely skill regression', 'Likely skill regressions']];
 export const typeLabel = type => ISSUE_TYPES.find(([t]) => t === type)?.[1] || humanize(type);
 export const statusWord = status => ({ open: 'Open', closed: 'Closed' })[status] || humanize(status);
 
@@ -106,7 +106,7 @@ const SHOT_NOTES = { pending: 'Saved when the instance ends.', deleted: 'Deleted
 
 export function issueInfoHTML(issue, example, { runIds }) {
   const type = issue.type;
-  const { wanted, outcome, capabilities, crash, report, planner, claim, gap } = example;
+  const { wanted, outcome, capabilities, crash, report, planner, claim, gap, regression } = example;
   const intent = example.intent || {};
   const sections = [];
 
@@ -124,6 +124,9 @@ export function issueInfoHTML(issue, example, { runIds }) {
   } else if (type === 'false_completion') {
     happened = fields([['Goal', intent.primary_goal], ["Planner's reason", claim?.reason], ['Your note', claim?.operator_note],
       ['Verified goals', (claim?.verified_goals || []).map(g => g.objective)]]);
+  } else if (type === 'skill_regression') {
+    happened = fields([['Skill', regression?.skill], ['Kind', humanize(regression?.kind)], ['Worked on build', regression?.good_build], ['Failed on build', regression?.build_id],
+      ['Stopped because', humanize(regression?.reason)], ['Builds it worked on', regression?.won_builds]]);
   }
   sections.push(section('What happened', happened));
 

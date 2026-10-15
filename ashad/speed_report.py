@@ -284,6 +284,7 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
             "decision_replays": sum(1 for event in events if event["kind"] == "decision_replayed"),
             "decision_failures": sum(1 for event in events if event["kind"] == "decision_failed"),
             "decision_saves": sum(1 for event in events if event["kind"] == "decision_saved"),
+            "batch_prefixes": len({(e["payload"].get("bytes") or {}).get("prefix_sha") for e in events if e["kind"] == "decision_selected"} - {None}),
             "decision_skips": sum(1 for event in events if event["kind"] in ("decision_skipped", "skill_skipped")),
             "lookahead_used": sum(1 for event in events if event["kind"] == "lookahead_used"),
             "lookahead_discarded": sum(1 for event in events if event["kind"] == "lookahead_discarded"),

@@ -158,7 +158,7 @@ class StructuredPlayers:
         self.movement_stalls = {}
         self.bug_reports = {}
         self.turn_ended_at = {}
-        self.snapshots = {}  # (run_id, player_id) -> (goal_id, generation, prompt observation at subgoal start)
+        self.snapshots = {}  # (run_id, player_id) -> (generation, prompt observation the cached prefix holds)
         self.code_waits = {}  # (run_id, player_id) -> (goal_id, seconds of code waits used)
         self.step_index = {}  # (run_id, player_id) -> (goal_id, index of the goal's next unfinished step, decider takes the next turn)
         self.goal_intents = {}  # (run_id, player_id) -> (goal_id, [repeat.step_for of each agent action]), saved as a skill when the goal completes
@@ -172,9 +172,9 @@ class StructuredPlayers:
     def _forget_turn(self, key):
         self.waits.pop(key, None)
         self.last_decisions.pop(key, None)
-        # The snapshot, code-wait budget, step index, intents and failed decision belong to one goal; a replan of the same goal keeps them.
+        # The code-wait budget, step index, intents and failed decision belong to one goal; a replan of the same goal keeps them.
         plan = self.store.require("runs", key[0]).get("subgoal_plan") or {}
-        for kept in (self.snapshots, self.code_waits, self.step_index, self.goal_intents, self.decision_failed):
+        for kept in (self.code_waits, self.step_index, self.goal_intents, self.decision_failed):
             if key in kept and kept[key][0] != plan.get("active_goal_id"):
                 del kept[key]
 
@@ -1260,13 +1260,11 @@ class StructuredPlayers:
                     "observation_ref": subgoals.observation_ref(observation), "source_revision": run["build"].get("source_revision")})
             timing["bytes"].update(prompt_observation=json_bytes(context["observation"]), decision_context=json_bytes(context))
             timing["context_truncated"] = bool(context["observation"].get("context_truncated"))
-            # One snapshot per subgoal sits in the cached prefix; each call sends only the delta against it.
-            goal_id = (context.get("current_goal") or {}).get("id")
+            # One snapshot per player generation sits in the cached prefix; it is replaced only when the delta outgrows it.
             view = prompt_observation(context["observation"], max_chars=SNAPSHOT_CHARS)
             kept = self.snapshots.get(key)
-            if (not kept or kept[:2] != (goal_id, generation)
-                    or len(json.dumps(observation_delta(kept[2], view))) > SNAPSHOT_RESET_CHARS):
-                kept = self.snapshots[key] = (goal_id, generation, view)
+            if not kept or kept[0] != generation or len(json.dumps(observation_delta(kept[1], view))) > SNAPSHOT_RESET_CHARS:
+                kept = self.snapshots[key] = (generation, view)
             self.last_decisions[key] = (signature, time.time(), generation)
             decision_started_at = time.time()
             result, first, stop, ran, finished, replayed = None, {}, None, [], False, None
@@ -1333,7 +1331,7 @@ class StructuredPlayers:
                 # Keyed by the observation and held item the model decides on, before its first action changes them.
                 sig = skills.signature(goal["completion"], observation, self.held.get(key, "")) if goal else None
                 with timed(timing, "decide"):
-                    result = await self.coordinator.ai.batch_turn(context, kept[2], dispatch, current, run_id)
+                    result = await self.coordinator.ai.batch_turn(context, kept[1], dispatch, current, run_id)
                 first = (result or {}).get("action") or {}
                 if result is None:
                     stop = "cancelled"

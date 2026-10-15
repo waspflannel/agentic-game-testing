@@ -311,6 +311,22 @@ class StructuredPlayers:
             run, ps = self.binding(run_id, player_id)
             if run["state"] not in {"Starting", "Running"} or ps["generation"] != generation or self.control_owners.get(key, "agent") != owner:
                 return {"status": "cancelled", "reason": "Run control changed while reconciling the last action"}
+        if owner == "agent" and args.get("target_id"):
+            # Fact ticks (crop growth) bump target versions while a batch, repeat or skill step waits; send the current one.
+            latest = self.store.get("observations", f"{run_id}:{player_id}") or observation
+            player = next(p for p in run["plan"]["players"] if p["id"] == player_id)
+            menu = {"observation": latest, "player": player, "transport": run["plan"]["transport"],
+                    "world_namespace": run.get("world_namespace"), "seed": run["plan"].get("seed"), "bug_already_reported": True}
+            offered = resolve(menu, option_key({"tool": "perform_action", "args": args}))
+            entity = observed_entity(latest, args["target_id"])
+            if offered is None and not entity:
+                return {"status": "rejected", "reason": "Target changed: no longer offered on the latest observation"}
+            # A drag onto an expanded destination is not in the menu; its source entity's version is the one to send.
+            if offered:
+                args = {**args, "target_version": offered["args"]["target_version"]}
+            elif type(entity.get("version")) is int:
+                args = {**args, "target_version": entity["version"]}
+            observation = latest
         action_id = uid("game_")
         payload = {"action_id": action_id, "observation_id": observation["observation_id"],
                    "expires_at": time.time() + 30, "verb": args["verb"],

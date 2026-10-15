@@ -33,7 +33,7 @@ RUN_ISSUE_HITS_SHOWN = 20
 ISSUE_EVENT_KINDS = ("unsupported_action_recorded", "crash_recorded", "game_bug_recorded", "planner_rejected_recorded", "false_completion_recorded", "capability_gap_recorded", "skill_regression_recorded")
 CRASH_TITLES = {"game_exit": "Game process exited", "game_hang": "Game stopped responding",
                 "worker_lost": "Game worker was lost", "desktop_lost": "Game desktop was lost",
-                "investigation": "Run paused for investigation"}
+                "investigation": "Run paused for investigation", "agent_turn_failure": "Agent turn failed"}
 
 
 def task_directory(store):

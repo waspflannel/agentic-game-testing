@@ -222,7 +222,7 @@ export function limitsSkeleton(data) {
     + field('l-reserve', 'Storage reserve (GB)', `<input id="l-reserve" class="input" name="reserve" inputmode="decimal" value="${esc(Number.isFinite(s.storage_reserve_bytes) ? +(s.storage_reserve_bytes / GB).toFixed(2) : '')}" aria-describedby="l-reserve-error">`, 'Free disk space kept back for evidence.', 'l-reserve-error')
     + field('l-decide', 'Claude action model', `<select id="l-decide" class="select" name="decide">${decideOptions}</select>`, "Chooses each action batch on Claude instances. The instance's model still plans.")
     + field('l-engine', 'Decision engine', `<select id="l-engine" class="select" name="engine">${option('today', 'Today (Default)', engine)}${option('jev_hybrid', 'Jev hybrid', engine)}</select>`,
-      `${data?.jev?.message || ''} Jev hybrid records its routing; decisions still use Today's flow until Jev routing ships.`.trim())
+      data?.jev?.message || '')
     + field('l-jev-model', 'Jev model', `<select id="l-jev-model" class="select" name="jev_model">${option('jev-1.13.0', 'jev-1.13.0 (Default)', jevModel)}${option('jev-preview', 'jev-preview', jevModel)}</select>`,
       'Pinned so confidence thresholds stay tuned. Preview tracks the newest Jev.')
     + `<p class="hint">Concurrent instances: 1 (fixed in this release).</p>`

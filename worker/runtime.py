@@ -548,18 +548,57 @@ class Runtime:
                           "reason": "Bridge acknowledgement lost; inspect status before another action"}
             else:
                 raise self.bridge_error(exc) from exc
-        if operation == "observe" and result.get("observation_id"):
-            if captured_epoch != self.game_control_epoch:
-                raise HTTPException(409, "Observation invalidated by pause or rebind")
-            if result.get("run_id") != self.binding.run_id or result.get("player_id") != self.binding.player_id:
-                raise HTTPException(409, "Game observation belongs to a different binding")
-            game_id = result["observation_id"]
-            result["observation_id"] = game_id + ":" + captured_epoch
-            self.game_observations[result["observation_id"]] = {"at": time.time(), "game_id": game_id}
-            self.game_observations = dict(list(self.game_observations.items())[-32:])
+        if operation == "observe":
+            result = self._register_observation(result, captured_epoch)
+        settle = (operation == "perform_action" and request.settle_seconds > 0
+                  and result.get("status") in {"running", "accepted"})
+        if settle:
+            acknowledged_status = result["status"]
+            result, observation = await self._settle_action(
+                result, args["action_id"], captured_epoch, request.settle_seconds)
         if operation in {"perform_action", "cancel_action"}:
             self._event("structured_action", {"operation": operation, "request": args, "result": result})
+        if settle and observation is not None:
+            return {**result, "acknowledged_status": acknowledged_status, "observation": observation}
         return result
+
+    def _register_observation(self, result, captured_epoch) -> dict:
+        """Give a game observation the epoch-suffixed id that perform_action checks for freshness."""
+        if not result.get("observation_id"):
+            return result
+        if captured_epoch != self.game_control_epoch:
+            raise HTTPException(409, "Observation invalidated by pause or rebind")
+        if result.get("run_id") != self.binding.run_id or result.get("player_id") != self.binding.player_id:
+            raise HTTPException(409, "Game observation belongs to a different binding")
+        game_id = result["observation_id"]
+        result["observation_id"] = game_id + ":" + captured_epoch
+        self.game_observations[result["observation_id"]] = {"at": time.time(), "game_id": game_id}
+        self.game_observations = dict(list(self.game_observations.items())[-32:])
+        return result
+
+    async def _settle_action(self, status, action_id, captured_epoch, settle_seconds) -> tuple[dict, dict | None]:
+        """Poll a running action for up to settle_seconds, then observe once.
+
+        Returns the last known status and the registered observation, or None for the observation
+        when the epoch changed or the bridge failed. Never raises: the action may already have run.
+        """
+        deadline = time.monotonic() + settle_seconds
+        while status.get("status") in {"running", "accepted"} and time.monotonic() < deadline:
+            await asyncio.sleep(0.1)
+            if captured_epoch != self.game_control_epoch:
+                return status, None
+            try:
+                status = await self.game_bridge.request(
+                    "get_action_status", {"action_id": action_id, "epoch": captured_epoch})
+            except (OSError, ValueError, asyncio.TimeoutError):
+                return status, None
+        if captured_epoch != self.game_control_epoch:
+            return status, None
+        try:
+            observation = await self.game_bridge.request("observe", {"epoch": captured_epoch})
+            return status, self._register_observation(observation, captured_epoch)
+        except (OSError, ValueError, asyncio.TimeoutError, HTTPException):
+            return status, None
 
 
 

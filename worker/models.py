@@ -75,6 +75,8 @@ class Pin(BoundCommand):
 class GameRequest(BoundCommand):
     operation: Literal["observe", "read_changes", "inspect_entity", "list_actions", "perform_action", "get_action_status", "cancel_action"]
     arguments: dict[str, Any] = Field(default_factory=dict)
+    # perform_action only: wait up to this long for the action to settle, then return a post-action observation.
+    settle_seconds: float = Field(default=0, ge=0, le=1)
 
 
 class GameParameters(BaseModel):

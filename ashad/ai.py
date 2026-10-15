@@ -578,11 +578,11 @@ class OpenAI:
 
         model is the answer's model; started is the decision's monotonic start, so latency_ms covers the Jev request."""
         confidence = answer["confidence"]
-        if confidence < ACT_CONFIDENCE:
-            return {"status": "fallback", "reason": "low_confidence", "confidence": confidence, "latency_ms": int((time.monotonic() - started) * 1000)}
         ranked = sorted(answer["probabilities"], key=answer["probabilities"].get, reverse=True)[:QUEUE]
         # Same id check and same "a non-perform_action ends the batch" rule as Sonnet's picks.
         picked = picked_options({"actions": ranked}, groups, listings)
+        if confidence < ACT_CONFIDENCE or not picked:
+            return {"status": "fallback", "reason": "low_confidence", "confidence": confidence, "latency_ms": int((time.monotonic() - started) * 1000)}
         player_id = context["player"]["id"]
         if not can_continue():
             self.store.event(run_id, "decision_cancelled", {"player_id": player_id, "reason": "Session state or generation changed during target selection"})

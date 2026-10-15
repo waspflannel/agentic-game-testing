@@ -150,6 +150,8 @@ class Plan(Contract):
     configuration_id: str | None = None
     model: str = MODEL
     decide_model: str | None = None
+    decision_engine: Literal["today", "jev_hybrid"] = "today"
+    jev_model: str = JEV_MODEL
     play_mode: Literal["structured"] = "structured"
     guidance: Literal["rules", "guided"] = "guided"
     structured_version: int = Field(default=1, ge=1, le=1)
@@ -195,6 +197,8 @@ class Plan(Contract):
             raise ValueError("Select a supported model: " + ", ".join(SUPPORTED_MODELS))
         if self.decide_model is not None:
             require_same_provider(self.decide_model, self.model, "the action model")
+        if self.jev_model not in JEV_MODELS:
+            raise ValueError("Select a Jev model: " + ", ".join(JEV_MODELS))
         ids = [p.id for p in self.players]
         if len(set(ids)) != len(ids):
             raise ValueError("Player IDs must be unique")

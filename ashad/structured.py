@@ -28,7 +28,7 @@ SNAPSHOT_RESET_CHARS = 12000  # A delta this large costs more than a fresh snaps
 TIMER_FACTS = ("crops_harvestable", "crop_growth_stage_min")  # Growth facts the code waits on after the model chose to wait.
 CODE_WAIT_STEP = 10
 CODE_WAIT_LIMIT = 120  # Seconds of code waits per goal before the model decides again.
-ISSUE_PREFIXES = {"unsupported_action": "uae_", "crash": "crash_", "game_bug": "bug_", "false_completion": "done_", "capability_gap": "gap_"}
+ISSUE_PREFIXES = {"unsupported_action": "uae_", "crash": "crash_", "game_bug": "bug_", "false_completion": "done_", "capability_gap": "gap_", "skill_regression": "reg_"}
 # Controller replan reasons, by prefix, as category labels; planner prose never reaches the timing row.
 PLAN_TRIGGERS = (("The last action failed", "action_failed"),
                  ("Observed objectives changed", "knowledge_changed"), ("Control or game binding changed", "rebound"),
@@ -607,6 +607,19 @@ class StructuredPlayers:
         except Exception:
             LOG.exception("Could not record capability gap for %s/%s", run_id, player_id)
 
+    async def report_skill_regression(self, run_id, player_id, record, kind, reason):
+        """Record a skill that worked on an earlier build failing on this one; never raises or blocks the turn."""
+        try:
+            run, ps = self.binding(run_id, player_id)
+            build_id = run["build"].get("id")
+            basis = {"skill": record["name"][:160], "kind": kind, "build_id": build_id, "good_build": record["won_builds"][-1]}
+            sections = {"regression": {"skill": record["name"], "kind": kind, "good_build": basis["good_build"], "build_id": build_id,
+                                       "won_builds": record["won_builds"], "reason": reason, "wins": record["wins"], "fails": record["fails"]}}
+            await self._record(run, ps, player_id, "skill_regression", basis, "agent",
+                               self.store.get("observations", f"{run_id}:{player_id}") or {}, sections)
+        except Exception:
+            LOG.exception("Could not record skill regression for %s/%s", run_id, player_id)
+
     async def report_false_completion(self, run_id, player_id, plan, note):
         """Record a completion claim the operator rejected; never raises."""
         try:
@@ -866,7 +879,7 @@ class StructuredPlayers:
                 continue
             steps = goal.get("steps") or (skills.from_intents(intents[1]) if intents and intents[0] == goal["id"] else [])
             if steps:
-                saved = skills.save(self.store, project_id, goal["completion"], steps, True)
+                saved = skills.save(self.store, project_id, goal["completion"], steps, True, build_id=run["build"].get("id"), run_id=run_id)
                 self.store.event(run_id, "skill_saved", {"player_id": player_id, "goal_id": goal["id"], "skill": saved["name"], "steps": saved["steps"]})
 
     def _replay_skill(self, run_id, player_id, run, plan, observation):
@@ -910,7 +923,7 @@ class StructuredPlayers:
         self.store.event(run_id, "skill_replayed", {"player_id": player_id, "skill": skill["name"], "goal_id": goal["id"]})
         return True
 
-    def _skill_failed(self, run_id, player_id, generation, goal_id, reason):
+    async def _skill_failed(self, run_id, player_id, generation, goal_id, reason):
         """Count a failed replay against the skill and hand the leaf to the planner; True when the replan was requested."""
         run = self.store.require("runs", run_id)
         goal = subgoals.active_goal(run.get("subgoal_plan") or {"goals": []})
@@ -921,8 +934,10 @@ class StructuredPlayers:
         goal["actionable"] = False
         self.store.put("runs", run)
         self.step_index.pop((run_id, player_id), None)
-        skills.save(self.store, run.get("project_id"), goal["completion"], None, False)
+        saved = skills.save(self.store, run.get("project_id"), goal["completion"], None, False, build_id=run["build"].get("id"), run_id=run_id)
         self.store.event(run_id, "skill_failed", {"player_id": player_id, "goal_id": goal_id, "skill": skill, "reason": reason})
+        if saved["last_result"]["regression"]:
+            await self.report_skill_regression(run_id, player_id, saved, "subgoal", reason)
         return self.request_replan(run_id, player_id, generation, f"Skill replay stopped ({reason}); plan this leaf.")
 
     def request_replan(self, run_id, player_id, generation, reason):
@@ -1105,7 +1120,8 @@ class StructuredPlayers:
 
         Returns the stop reason, the actions dispatched and the replayed record, or (None, [], None) when nothing was replayed."""
         key = (run_id, player_id)
-        project_id = self.store.require("runs", run_id).get("project_id")
+        run = self.store.require("runs", run_id)
+        project_id = run.get("project_id")
         if not project_id or not goal:
             return None, [], None
         sig = skills.signature(goal["completion"], observation, self.held.get(key, ""))
@@ -1147,9 +1163,11 @@ class StructuredPlayers:
         self.store.event(run_id, "decision_replayed", {"player_id": player_id, "goal_id": goal["id"], "key": decision_key,
                                                        "name": record["name"], "reason": stop, "actions": len(ran)})
         if stop in ("failed", "no_effect", "fact_moved_away", "not_offered"):
-            skills.save_decision(self.store, project_id, sig, goal["completion"], None, False)
+            failed = skills.save_decision(self.store, project_id, sig, goal["completion"], None, False, build_id=run["build"].get("id"), run_id=run_id)
             self.decision_failed[key] = (goal["id"], decision_key)
             self.store.event(run_id, "decision_failed", {"player_id": player_id, "goal_id": goal["id"], "key": decision_key, "reason": stop})
+            if failed["last_result"]["regression"]:
+                await self.report_skill_regression(run_id, player_id, failed, "decision", stop)
         return stop, ran, record
 
     async def turn(self, run_id, player_id, tick_seconds=None):
@@ -1292,7 +1310,7 @@ class StructuredPlayers:
             # A replayed skill whose step stops unfinished hands the leaf to the planner on the next turn, with no decide call now.
             # A failed decision replay is not the subgoal skill's failure: the next turn decides.
             replanned = bool(goal and goal.get("skill") and not replayed and not finished and stop in ("failed", "no_effect", "not_offered")
-                             and self._skill_failed(run_id, player_id, generation, goal["id"], stop))
+                             and await self._skill_failed(run_id, player_id, generation, goal["id"], stop))
             if not replanned and (stop is None or (stop == "not_offered" and not ran)):
                 # No planner batch, or its first option is gone: the model decides in this same turn.
                 label = PROVIDERS[provider_of(run.get("model") or run["plan"].get("model", MODEL))]["label"]
@@ -1330,7 +1348,8 @@ class StructuredPlayers:
                         # The model's batch becomes this situation's decision skill: non-move actions only, read against the observation it was chosen on.
                         steps = [s for s in (repeat.step_for(a["args"], observation) for a in [first] + ran) if s["control"] != "move_to"]
                         if steps:
-                            saved = skills.save_decision(self.store, run["project_id"], sig, goal["completion"], steps, True)
+                            saved = skills.save_decision(self.store, run["project_id"], sig, goal["completion"], steps, True,
+                                                          build_id=run["build"].get("id"), run_id=run_id)
                             self.store.event(run_id, "decision_saved", {"player_id": player_id, "goal_id": goal["id"],
                                                                         "key": skills.decision_key(run["project_id"], sig), "name": saved["name"]})
             timing["outcome"] = "decided"

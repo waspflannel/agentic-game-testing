@@ -51,15 +51,18 @@ def next_action(macro, step, context, selected, tried):
     return (action, why) if action else (None, "not_offered")
 
 
-def step_for(payload, observation):
-    """The step one dispatched perform_action payload took, read against the observation it was chosen from."""
+def step_for(payload, observation, goal_fact=""):
+    """The step one dispatched perform_action payload took, read against the observation it was chosen from.
+
+    A tile several macros match is read as the macro verifying goal_fact, else the first in MACROS order."""
     parameters = payload.get("parameters") or {}
     name = parameters.get("name")
     step = {"control": name if payload.get("verb") == "input" else payload.get("verb", ""), "item": "", "count": 1, "precondition": "", "verifies": "unknown"}
     if name == "use_item" and not payload.get("target_id"):
         tile = next((t for t in observation.get("state", {}).get("tiles", []) if t.get("position") == parameters.get("world_position")), None)
-        # A tilled empty tile matches both plant_all and water_all; the first in MACROS order wins.
-        macro = tile and next((m for m, (matches, _, _) in MACROS.items() if matches(tile)), None)
+        # A tilled empty tile matches both plant_all and water_all; the goal's own fact decides which the use was.
+        found = [m for m, (matches, _, _) in MACROS.items() if tile and matches(tile)]
+        macro = next((m for m in found if MACROS[m][1] == goal_fact), found[0] if found else None)
         if macro:
             step.update(control=macro, verifies=MACROS[macro][1])
     elif isinstance(name, str) and name.startswith("slot_"):

@@ -326,7 +326,8 @@ class StructuredPlayers:
             goal_id = run["subgoal_plan"].get("active_goal_id")
             if self.goal_intents.get(key, (None,))[0] != goal_id:
                 self.goal_intents[key] = (goal_id, [])
-            self.goal_intents[key][1].append(macros.step_for(payload, observation))
+            goal_fact = (subgoals.active_goal(run["subgoal_plan"]) or {}).get("completion", {}).get("fact", "")
+            self.goal_intents[key][1].append(macros.step_for(payload, observation, goal_fact))
         self.store.put("runs", run)
         self.status(run_id, player_id, "acting", str(args.get("reason") or f"Performing {args['verb']}"), generation, action_id=action_id)
         self.last_decisions.pop(key, None)
@@ -993,6 +994,8 @@ class StructuredPlayers:
                     missed = False
                 elif tried is None or missed or not ran or ran[-1]["args"].get("verb") == "move_to":
                     return "no_effect", ran
+                elif str(ran[-1]["args"].get("parameters", {}).get("name", "")).startswith("slot_"):
+                    pass  # Re-selecting the equipped tool changes nothing; that is not a missed tile.
                 else:
                     position = ran[-1]["args"].get("parameters", {}).get("world_position")
                     if position:
@@ -1182,13 +1185,13 @@ class StructuredPlayers:
                 # The planner named the first batch: run it on the post-planning observation, with no decide call.
                 stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None, queued_actions(context, planned_keys), timing)
             elif step and step["control"] in macros.MACROS and not decider_turn:
-                # The goal's own args read the verifying fact when it checks the same fact; otherwise only argless facts read.
-                check = {"fact": step["verifies"], "args": goal["completion"]["args"] if goal["completion"]["fact"] == step["verifies"] else [], "op": ">=", "value": 0}
+                # The verifying fact reads the goal's plant_id when the goal checks another fact (e.g. item_count), else it would read the zero default.
+                check = {"fact": step["verifies"], "args": [a for a in goal["completion"]["args"] if goal["completion"]["fact"] == step["verifies"] or a["name"] == "plant_id"], "op": ">=", "value": 0}
                 before = subgoals.measure(check, observation)[1]
                 self._start_lookahead(run_id, player_id, run, player, plan, observation)
                 stop, ran = await self._run_macro(run_id, player_id, generation, current, context, observation, step, timing)
                 after = subgoals.measure(check, self.store.get("observations", f"{run_id}:{player_id}") or {})[1]
-                finished = stop == "goal_met" or bool(step["count"] and before is not None and after is not None and after - before >= step["count"])
+                finished = stop == "goal_met" or bool(step["count"] and before is not None and after is not None and abs(after - before) >= step["count"])
                 self.step_index[key] = (goal["id"], index + finished, not finished and bool(ran))
             elif decider_turn:
                 self.step_index[key] = (goal["id"], index, False)

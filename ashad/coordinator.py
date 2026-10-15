@@ -1405,6 +1405,8 @@ class Coordinator:
             return run
         self.finishing[run_id] = asyncio.current_task()
         run.update(state="Stopping", ending_reason=reason)
+        if reason == "goal_reached":
+            run["goal_complete"] = True  # The operator accepted the planner's claim, which ended the run.
         if limitation:
             run["limitations"].append(limitation)
         if reason in {"infrastructure_failure", "controller_failure", "host_lost"}:

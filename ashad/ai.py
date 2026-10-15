@@ -273,8 +273,9 @@ def static_prefix(context, snapshot):
     """Everything that stays the same within a subgoal, so the provider can cache it ahead of the per-call evidence."""
     static = {k: context.get(k) for k in PREFIX_KEYS}
     # last_seen_revision changes on every observation and would break the cache on every call.
-    static["known_locations"] = [{k: v for k, v in place.items() if k != "last_seen_revision"} if isinstance(place, dict) else place
-                                 for place in static["known_locations"] or []]
+    places = [{k: v for k, v in place.items() if k != "last_seen_revision"} if isinstance(place, dict) else place
+              for place in static["known_locations"] or []]
+    static["known_locations"] = sorted(places, key=lambda place: json.dumps(place, sort_keys=True))  # Discovery order must not change the bytes.
     return json.dumps({**static, "subgoal_snapshot": snapshot}, sort_keys=True, ensure_ascii=False)
 
 

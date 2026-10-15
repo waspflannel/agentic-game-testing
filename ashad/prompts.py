@@ -70,6 +70,7 @@ def planning_request(evidence, schema):
         "world_ready means the world loaded; use player_can_act for leaving character creation, dialogue or cutscenes. "
         "When mode is act or expand and action_options is supplied, return in first_actions up to 5 option IDs (the numbers before `)` in the listing, e.g. `3.0`, never names, entity ids or verbs) that start the new active leaf; otherwise []. "
         "When mode is act, return steps: the leaf's ordered steps from the game_controls Core loops section when present, each {control, item, count, precondition, verifies} copying that manual's control names, preconditions and verifying facts; use a macro name (till_area, plant_all, water_all, harvest_all) for a step repeated over tiles, with item the hotbar item_id it needs; without a Core loops section use macro names and fact_catalog names only; else []. "
+        "Farm with one goal for the whole job (e.g. item_count wheat >= N with till_area, plant_all, water_all, harvest_all steps), never one till or plant goal per tile. "
         "If operator_instruction is supplied, it is trusted operator guidance (after=hand_back: a human just played); follow it when choosing goals. "
         "The controls manual is game knowledge, not evidence of current world state or success. "
         "Use only supplied visible facts, approved objective and controls knowledge. Never use tools, read files, browse, "

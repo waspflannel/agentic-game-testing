@@ -42,7 +42,7 @@ def next_action(macro, step, context, selected, tried):
         return None, "not_offered"
     matches = [t for t in state.get("tiles", []) if ai.point(t.get("position")) and MACROS[macro][0](t) and tuple(t["position"]) not in tried]
     if not matches:
-        return None, "not_offered"
+        return None, "done"  # Nothing is left for this macro to act on, so its step is finished.
     position = min(matches, key=lambda t: math.dist(here, t["position"]))["position"]
     if math.dist(here, position) > USE_RANGE:
         action, why = _offered(context, "move_to", {"position": position}), "move"

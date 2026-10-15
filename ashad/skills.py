@@ -1,6 +1,8 @@
 """Skill library from wins: a leaf's steps as a general pattern over its completion fact's args, shared by every configuration of a project."""
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 
 from . import facts, repeat
@@ -97,4 +99,38 @@ def save(store, project_id, check, steps, won):
 def find(store, project_id, check):
     """The usable skill for the check's shape in the project: it has steps and has not failed more often than it won; else None."""
     record = store.get("skills", f"{project_id}:{shape(check)}")
+    return record if record and record["steps"] and record["fails"] <= record["wins"] else None
+
+
+def signature(check, observation, held):
+    """Where the player is, in terms that repeat across runs: the subgoal's shape, the actionable UI controls by node, the held item and the highlighted target's kind; no positions or ids."""
+    entities = observation.get("entities", [])
+    closest = (observation.get("state", {}).get("player") or {}).get("closest_target")
+    return {"subgoal": shape(check),
+            "screen": sorted({f"{e.get('parent', '')}/{(e.get('state') or {}).get('node_name') or str(e.get('label', ''))[:40]}"
+                              for e in entities if e.get("kind") == "ui" and e.get("actions")}),
+            "held": held or "",
+            "target_kind": next((str(e.get("kind", "")) for e in entities if closest and e.get("id") == closest), "")}
+
+
+def decision_key(project_id, sig):
+    """The store key of a decision skill: the project plus a hash of the signature (a shape key always contains '(', so they never collide)."""
+    return f"{project_id}:decision:" + hashlib.sha256(json.dumps(sig, sort_keys=True).encode()).hexdigest()[:16]
+
+
+def save_decision(store, project_id, sig, check, steps, won):
+    """Count a win (replacing the steps when given) or a failure for the decision skill of this situation; returns the record."""
+    key = decision_key(project_id, sig)
+    record = store.get("skills", key) or {"scope": "decision", "project_id": project_id, "name": "", "signature": sig, "steps": [], "wins": 0, "fails": 0}
+    if won and steps:
+        record["name"] = (f"{sig['subgoal']} on {len(sig['screen'])} controls: " + ", ".join(f"{s['control']} {s['targets']}".strip() for s in steps))[:160]
+        record["steps"] = bind(steps, check)
+    record["wins" if won else "fails"] += 1
+    record["updated"] = time.time()
+    return store.put("skills", record, key)
+
+
+def find_decision(store, project_id, sig):
+    """The usable decision skill for this situation: it has steps and has not failed more often than it won; else None."""
+    record = store.get("skills", decision_key(project_id, sig))
     return record if record and record["steps"] and record["fails"] <= record["wins"] else None

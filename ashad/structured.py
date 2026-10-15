@@ -880,6 +880,10 @@ class StructuredPlayers:
                     actionable=True, recipe=recipe["shape"])
         self.store.put("runs", run)
         self.step_index.pop((run_id, player_id), None)  # Replay starts at the recipe's first step.
+        ahead = self.lookahead.pop((run_id, player_id), None)
+        if ahead:  # The replayed leaf needs no planner call, so its look-ahead is dropped.
+            ahead[3].cancel()
+            self.store.event(run_id, "lookahead_discarded", {"player_id": player_id, "goal_id": ahead[0], "why": "recipe"})
         self.store.event(run_id, "recipe_replayed", {"player_id": player_id, "shape": recipe["shape"], "goal_id": goal["id"]})
         return True
 
@@ -1166,6 +1170,10 @@ class StructuredPlayers:
             goal_id, index, decider_turn = self.step_index.get(key) or (None, 0, False)
             if not goal or goal_id != goal["id"]:
                 index, decider_turn = 0, False
+            # A select right before a macro on the same item is redundant: the macro selects its own item first.
+            if (index + 1 < len(steps) and (steps[index]["control"] == "select" or steps[index]["control"].startswith("slot_"))
+                    and steps[index + 1]["control"] in macros.MACROS and steps[index + 1]["item"] == steps[index]["item"]):
+                index += 1
             step = steps[index] if index < len(steps) else None
             if steps and context.get("current_goal"):
                 # The decider and relevant_groups' tile filter see only the unfinished steps, so a finished macro's tiles are not the ones kept.

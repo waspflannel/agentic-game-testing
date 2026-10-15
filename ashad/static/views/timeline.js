@@ -15,6 +15,7 @@ export const KINDS = {
   outcome: { label: 'Outcome', icon: 'circle-check' },
   tool: { label: 'Tool', icon: 'wrench' },
   model: { label: 'Model', icon: 'bot' },
+  decision: { label: 'Decision', icon: 'network' },
   control: { label: 'Control', icon: 'sliders' },
   problem: { label: 'Problem', icon: 'alert' },
   other: { label: 'Other', icon: 'info' },
@@ -27,6 +28,7 @@ const EXACT = {
   structured_action_outcome: 'outcome', action_result: 'outcome',
   mcp_tool_result: 'tool', structured_tool_result: 'tool',
   inference_usage: 'model',
+  decision_routed: 'decision', jev_check: 'decision', jev_skill_replayed: 'decision', jev_skill_skipped: 'decision',
   launch_approved: 'control', run_paused: 'control', intervention: 'control', resume_failed: 'control', stopping: 'control', run_ended: 'control',
   // Lifecycle milestones read as control rows rather than "Other".
   capacity_reserved: 'control', player_launched: 'control', player_ready: 'control', world_ready: 'control', session_running: 'control', inputs_released: 'control', coordinator_restarted: 'control',
@@ -71,6 +73,40 @@ const tokens = n => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 export const clip = (text, n = 160) => { const s = String(text ?? ''); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 const args = value => clip(Object.entries(value || {}).filter(([k]) => k !== 'reason').map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', '), 120);
 
+// ── Decision routing and Jev checks ─────────────────────────────────────────
+const ROUTES = { jev: 'Jev', cache: 'cache', repeat: 'repeat' };
+const FALLBACKS = { low_confidence: 'low confidence', not_offered: 'pick not offered here', too_large: 'request too large' };
+const round = n => String(Math.round(Number(n) * 100) / 100);
+const words = value => String(value ?? '').replaceAll('_', ' ');
+// Model IDs read as their family name ("claude-sonnet-4-5" → "Sonnet"); anything else stays as recorded.
+const modelName = id => { const family = String(id || '').match(/opus|sonnet|haiku/i)?.[0].toLowerCase(); return family ? family[0].toUpperCase() + family.slice(1) : id || 'unknown model'; };
+
+// "jev_error:bad_request:422:field" → "Jev error (bad request 422 on field)"; other reasons read in words.
+function fallbackText(reason) {
+  const [head, status, code, field] = String(reason).split(':');
+  if (head !== 'jev_error') return FALLBACKS[reason] || words(reason);
+  if (status !== 'bad_request') return `Jev error (${words(status) || 'unknown'})`;
+  if (code === 'local') return 'Jev error (bad request, not sent)';
+  return `Jev error (bad request${code ? ` ${code}` : ''}${field ? ` on ${field}` : ''})`;
+}
+
+function decisionSummary(kind, p) {
+  if (kind === 'decision_routed') {
+    const jev = p.route === 'jev';
+    const confidence = p.confidence == null ? null : `${jev ? '' : 'Jev '}${Math.round(p.confidence * 100)}% confident`;
+    const text = [`Decided by ${ROUTES[p.route] || modelName(p.route)}`, confidence, p.fallback ? `fell back: ${fallbackText(p.fallback)}` : null].filter(Boolean).join(' · ');
+    return { text, tone: p.fallback ? 'attention' : undefined };
+  }
+  if (kind === 'jev_check') {
+    const applied = p.applied ? ' · applied' : p.reason ? ` · not applied: ${words(p.reason)}` : '';
+    if (p.check === 'triage') return { text: `Jev check · triage: ${p.choice ? `${p.choice} (${round(p.confidence)})` : p.confidence == null ? 'no answer' : `unsure (${round(p.confidence)})`}${applied}` };
+    if (p.check === 'effect') return { text: `Jev check · effect: ${p.band === 'unsure' ? 'unsure about' : p.disagree ? 'disagrees with' : 'agrees with'} fact (${p.band} ${round(p.noul)})` };
+    return { text: `Jev check · ${words(p.check)}: ${p.band} (${round(p.noul)})${applied}` };
+  }
+  if (kind === 'jev_skill_replayed') return { text: `Jev replayed skill ${p.name || short(p.key)} · ${words(p.reason) || 'no stop reason'}, ${p.actions ?? 0} action${p.actions === 1 ? '' : 's'}` };
+  return { text: `Jev skipped skill (${p.why === 'not_offered' ? 'not offered here' : words(p.why) || 'no reason recorded'})` };
+}
+
 function summary(event, kind, finals) {
   const p = event.payload || {};
   const reasoned = text => (p.reason || p.error ? `${text}: ${p.reason || p.error}` : text);
@@ -97,6 +133,7 @@ function summary(event, kind, finals) {
       const o = outcomeLabel(final || p.result);
       return { text: o.text, tone: o.tone };
     }
+    case 'decision': return decisionSummary(event.kind, p);
     case 'tool': return { text: `${p.tool || 'tool'} · ${p.result?.status || 'returned'}` };
     case 'problem': return { text: reasoned(humanize(event.kind)), tone: event.kind.endsWith('_failed') ? 'danger' : 'attention' };
     case 'plan':

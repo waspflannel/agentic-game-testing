@@ -22,6 +22,7 @@ SUBSCRIPTION_PRICING = PROVIDERS["codex"]["pricing"]
 GAME_VERBS = ("move_to", "interact", "input", "ui_click", "ui_drag", "ui_text", "ui_scroll", "fish_follow")  # worker/models.py GameAction.verb
 STRUCTURED_TOOLS = ("observe", "explain_objective", "list_entities", "inspect_entity", "list_actions",
                     "get_action_status", "cancel_action", "read_changes", "wait_for_change", "perform_action")
+SNAPSHOT_CHARS = 28000  # The per-subgoal snapshot and the view its delta is compared in.
 FARM_FACTS = ("tiles_tilled", "tiles_watered", "crops_planted", "crops_harvestable", "crop_growth_stage_min")
 
 
@@ -579,7 +580,8 @@ class OpenAI:
         base = {"current_goal": context.get("current_goal"), "goal_path": context.get("goal_path", []),
                 "recent_own_actions": context.get("recent_own_actions", [])[-5:], "repeated_failures": context.get("repeated_failures"),
                 "operator_instruction": context.get("operator_instruction"), "bug_already_reported": bool(context.get("bug_already_reported")),
-                "delta": observation_delta(snapshot, context["observation"])}
+                # Compared in the snapshot's own view, so targets beyond its cap never show as added on every call.
+                "delta": observation_delta(snapshot, prompt_observation(context["observation"], max_chars=SNAPSHOT_CHARS))}
 
         async def ask(groups, listings):
             shown = [text for _, text in bounded_descriptions(list(enumerate(listings)), json.dumps(base, ensure_ascii=False) + prefix)]

@@ -591,8 +591,8 @@ class OpenAI:
             shorts = [short for _, short, _ in library[:MAX_OPTIONS]]
             questions["skill"] = jev.choice("Which saved skill in criteria would achieve `goal` from the current `player` situation?",
                                             {key: short for key, short, _ in library[:MAX_OPTIONS]})
-            questions["skill_gate"] = jev.noul("Should a saved multi-step skill be replayed now instead of one single action? "
-                                               "True only if one of `skills` achieves `goal` from here.", json.dumps({"skills": shorts}, ensure_ascii=False))
+            questions["skill_gate"] = jev.noul({"skills": shorts, "question": "Should a saved multi-step skill be replayed now instead of one single action? "
+                                                "True only if one of `skills` achieves `goal` from here."})
         if len(state.encode("utf-8")) + len(json.dumps(questions).encode("utf-8")) > QUESTION_BYTES:
             return fallback("too_large")
         try:
@@ -617,7 +617,7 @@ class OpenAI:
                 shortlist = sorted(skill["probabilities"], key=skill["probabilities"].get, reverse=True)[:SHORTLIST]
                 retry = {"shortlist": jev.choice("Which saved skill in criteria would achieve `goal` from the current `player` situation?",
                                                  {key: texts[key] for key in shortlist}),
-                         **{f"fits_{n}": jev.noul(f"Does saved skill `{key}` fit `goal` from the current situation? {texts[key]}")
+                         **{f"fits_{n}": jev.noul({"skill": texts[key], "question": "Does saved skill `skill` fit `goal` from the current situation?"})
                             for n, key in enumerate(shortlist)}}
                 calls = 2
                 try:

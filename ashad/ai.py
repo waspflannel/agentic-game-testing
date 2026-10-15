@@ -48,6 +48,13 @@ def bounded_descriptions(options, evidence):
     return [(value, description.encode("utf-8")[:limit].decode("utf-8", errors="ignore")) for value, description in options]
 
 
+def bounded_listings(listings, evidence):
+    """Like bounded_descriptions, but trims only each listing's Detail so its target and T.A) IDs always survive."""
+    parts = [text.partition(" Detail: ") for text in listings]
+    trimmed = bounded_descriptions([(i, detail) for i, (_, _, detail) in enumerate(parts)], evidence)
+    return [head + (" Detail: " + detail if detail else "") for (head, _, _), (_, detail) in zip(parts, trimmed)]
+
+
 def action_groups(context):
     """Bind every option to one complete, observed action before inference."""
     observation = context["observation"]
@@ -266,23 +273,24 @@ def static_prefix(context, snapshot):
 
 
 def picked_options(answers, groups, shown):
-    """The leading run of offered T.A IDs as (id, group, action); the action is None for a drag source.
+    """The offered T.A IDs as (id, group, action), skipping invalid ones; the action is None for a drag source.
 
     Only the first ID may be something other than a plain perform_action (a wait, a report, a drag source, show all targets);
     such an item ends the batch, because later actions are re-resolved and sent as perform_action on fresh observations."""
     ids = answers.get("actions")
     picked = []
     for option_id in ids[:5] if isinstance(ids, list) else []:
-        match = re.fullmatch(r"(\d+)\.(\d+)", option_id.strip()) if isinstance(option_id, str) else None
-        # The ID must appear in the listing the model saw; trimmed or invented IDs are not offered.
+        # Tolerate quoting, backticks or a trailing ")" around the ID.
+        match = re.fullmatch(r"\W*(\d+)\.(\d+)\W*", option_id) if isinstance(option_id, str) else None
+        # The ID must appear in the listing the model saw; invented IDs are skipped.
         if not match or int(match[1]) >= len(groups) or f"{match[1]}.{match[2]})" not in shown[int(match[1])]:
-            break
+            continue
         group = groups[int(match[1])]
         action = None if group.get("drag_source") else group["actions"][int(match[2])]
         ends_batch = action is None or action["tool"] != "perform_action"
         if ends_batch and picked:
             break
-        picked.append((match[0], group, action))
+        picked.append((f"{match[1]}.{match[2]}", group, action))
         if ends_batch:
             break
     return picked
@@ -599,7 +607,7 @@ class OpenAI:
                 "delta": observation_delta(snapshot, prompt_observation(context["observation"], max_chars=SNAPSHOT_CHARS))}
 
         async def ask(groups, listings):
-            shown = [text for _, text in bounded_descriptions(list(enumerate(listings)), json.dumps(base, ensure_ascii=False) + prefix)]
+            shown = bounded_listings(listings, json.dumps(base, ensure_ascii=False) + prefix)
             evidence = json.dumps({**base, "options": shown}, ensure_ascii=False, separators=(",", ":"))
             size = len(evidence.encode("utf-8"))
             if size + len(prefix.encode("utf-8")) + 4608 > 128000:
@@ -608,8 +616,25 @@ class OpenAI:
             return evidence, answers, picked_options(answers, groups, shown)
 
         groups, listings = batch_options(context)
-        evidence, answers, picked = await ask(groups, listings)
-        calls = 1
+        calls, failure = 1, None
+        try:
+            evidence, answers, picked = await ask(groups, listings)
+        except ProviderError as exc:
+            if exc.status != "invalid_decision":
+                raise
+            picked, failure = [], exc
+        if not picked:  # One retry on the unfiltered target list, in case the filter hid the target the model needed.
+            if not can_continue():
+                return
+            groups = action_groups(context)
+            try:
+                evidence, answers, picked = await ask(groups, [listed(g, i) for i, g in enumerate(groups)])
+                failure = None
+            except ProviderError as exc:
+                if exc.status != "invalid_decision":
+                    raise
+                failure = exc
+            calls = 2
         if picked and picked[0][2] and picked[0][2]["tool"] == "show_all_targets":
             if not can_continue():
                 self.store.event(run_id, "decision_cancelled", {"player_id": player_id, "reason": "Session state or generation changed during target selection"})
@@ -618,7 +643,8 @@ class OpenAI:
             evidence, answers, picked = await ask(groups, [listed(g, i) for i, g in enumerate(groups)])
             calls = 2
         if not picked:
-            raise ProviderError("invalid_decision", f"{PROVIDERS[provider_of(model)]['label']} returned no offered option ID; no action was executed.")
+            reply = failure.message if failure else f"returned no offered option ID (actions: {json.dumps(answers.get('actions'), ensure_ascii=False)[:200]})"
+            raise ProviderError("invalid_decision", f"{PROVIDERS[provider_of(model)]['label']} batch decide failed after one retry: {reply}; no action was executed.")
         if not can_continue():
             self.store.event(run_id, "decision_cancelled", {"player_id": player_id, "reason": "Session state or generation changed during target selection"})
             return

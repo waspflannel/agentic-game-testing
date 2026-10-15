@@ -80,15 +80,18 @@ def next_action(step, context, state):
             return action, "select"
         # Use whatever is equipped instead; a wrong equipped item shows as two no-effect uses, which stop the run.
     here = observation.get("state", {}).get("player", {}).get("position")
-    if not ai.point(here):
-        return None, "not_offered"
     candidates = []
     for group in ai.action_groups(context):
         target = view(group)
-        # A UI control has a rect, not a position, so it counts at distance 0.
-        pos = target and target.get("position")
-        if target and (ai.point(pos) or target.get("kind") == "ui") and key(group) not in state["tried"] and matches(target, step["targets"]):
-            candidates.append((math.dist(here, pos) if ai.point(pos) else 0, group))
+        if not target or key(group) in state["tried"] or not matches(target, step["targets"]):
+            continue
+        # A UI control has a rect, not a position, so it counts at distance 0, even on a menu with no player yet.
+        if target.get("kind") == "ui":
+            candidates.append((0, group))
+        elif ai.point(target.get("position")) and ai.point(here):
+            candidates.append((math.dist(here, target["position"]), group))
+    if not candidates and not ai.point(here):
+        return None, "not_offered"
     wanted = step.get("parameters") or {}
     for distance, group in sorted(candidates, key=lambda c: c[0]):
         actions = group["actions"]

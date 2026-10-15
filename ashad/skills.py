@@ -33,7 +33,7 @@ def bind(steps, check, replay=False, measured=None):
     (wheat_seed with item_id=wheat becomes {item_id}_seed). On replay, a step verifying the check's own fact
     gets the count still needed: the target minus the value measured at activation, or 0 (until the check is
     met) when that was not readable."""
-    args = {a["name"]: a["value"] for a in check["args"] if isinstance(a["value"], str)}
+    args = {a["name"]: a["value"] for a in check["args"] if isinstance(a["value"], str) and a["value"]}
     bound = []
     for step in steps:
         step = dict(step)

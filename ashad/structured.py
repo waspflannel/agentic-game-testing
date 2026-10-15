@@ -321,8 +321,7 @@ class StructuredPlayers:
         fresh = result.pop("observation", None)
         if fresh is not None:
             fresh = self._accept_observation(run_id, player_id, fresh)
-        settled = (fresh is not None and result.get("acknowledged_status") in {"running", "accepted"}
-                   and result.get("status", "unknown") not in {"running", "accepted", "unknown"})
+        settled = fresh is not None and result.get("status", "unknown") not in {"running", "accepted", "unknown"}
         # The ledger keeps the acknowledgement as action_result and the final status as structured_action_outcome.
         ack = {**result, "status": result["acknowledged_status"]} if settled else result
         outcome_event = self.store.event(run_id, "action_result", {"player_id": player_id, "action_id": action_id,

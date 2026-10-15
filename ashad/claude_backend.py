@@ -132,7 +132,7 @@ class ClaudeBackend:
         self.auth_error = None
 
     async def select(self, input, questions, *, model=CLAUDE_MODEL, prefix=""):
-        payload, schema, instructions, prefix = selection_request(input, questions, prefix)
+        payload, schema, instructions = selection_request(input, questions)
         return await self._complete(payload, schema, instructions, model, operation="selection", prefix=prefix)
 
     async def batch(self, evidence, *, model, prefix):
@@ -140,7 +140,7 @@ class ClaudeBackend:
         return await self._complete(payload, schema, instructions, model, operation="batch", prefix=prefix)
 
     async def plan(self, evidence, schema, *, model=CLAUDE_MODEL, prefix=""):
-        payload, schema, instructions, prefix = planning_request(evidence, schema, prefix)
+        payload, schema, instructions = planning_request(evidence, schema)
         return await self._complete(payload, schema, instructions, model, operation="planning", prefix=prefix)
 
     async def write_controls(self, evidence, *, model, stage="manual", repair=False):
@@ -151,8 +151,11 @@ class ClaudeBackend:
         """Content-addressed, so every call with the same instructions and prefix sends a byte-identical system block (prompt cache hit)."""
         folder = self.home / "prompts"
         path = folder / f"{hashlib.sha256(text.encode()).hexdigest()}.txt"
-        if path.exists():
+        try:
+            os.utime(path)  # In use: keep it out of the age-based cleanup below.
             return path
+        except FileNotFoundError:
+            pass
         folder.mkdir(parents=True, exist_ok=True)
         cutoff = time.time() - PROMPT_FILE_MAX_AGE_SECONDS
         for old in folder.glob("*.txt"):

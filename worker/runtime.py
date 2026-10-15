@@ -551,7 +551,7 @@ class Runtime:
         if operation == "observe":
             result = self._register_observation(result, captured_epoch)
         settle = (operation == "perform_action" and request.settle_seconds > 0
-                  and result.get("status") in {"running", "accepted"})
+                  and result.get("status") in {"running", "accepted", "completed"})
         if settle:
             acknowledged_status = result["status"]
             result, observation = await self._settle_action(
@@ -577,7 +577,7 @@ class Runtime:
         return result
 
     async def _settle_action(self, status, action_id, captured_epoch, settle_seconds) -> tuple[dict, dict | None]:
-        """Poll a running action for up to settle_seconds, then observe once.
+        """Poll a running action for up to settle_seconds (none when it already completed), then observe once.
 
         Returns the last known status and the registered observation, or None for the observation
         when the epoch changed or the bridge failed. Never raises: the action may already have run.

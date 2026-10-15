@@ -152,7 +152,7 @@ class GrokBackend:
         return result
 
     async def select(self, input, questions, *, model=GROK_MODEL, prefix=""):
-        payload, schema, instructions, prefix = selection_request(input, questions, prefix)
+        payload, schema, instructions = selection_request(input, questions)
         return await self._complete(payload, schema, instructions, model, operation="selection", prefix=prefix)
 
     async def batch(self, evidence, *, model, prefix):
@@ -160,7 +160,7 @@ class GrokBackend:
         return await self._complete(payload, schema, instructions, model, operation="batch", prefix=prefix)
 
     async def plan(self, evidence, schema, *, model=GROK_MODEL, prefix=""):
-        payload, schema, instructions, prefix = planning_request(evidence, schema, prefix)
+        payload, schema, instructions = planning_request(evidence, schema)
         return await self._complete(payload, schema, instructions, model, operation="planning", prefix=prefix)
 
     async def _complete(self, payload, schema, instructions, model, *, operation, prefix=""):

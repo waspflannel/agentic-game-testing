@@ -150,7 +150,7 @@ class CodexBackend:
             raise provider_error(exc) from None
 
     async def select(self, input, questions, *, model=MODEL, prefix=""):
-        payload, schema, instructions, prefix = selection_request(input, questions, prefix)
+        payload, schema, instructions = selection_request(input, questions)
         return await self._complete(payload, schema, instructions, model, prefix=prefix)
 
     async def batch(self, evidence, *, model, prefix):
@@ -158,7 +158,7 @@ class CodexBackend:
         return await self._complete(payload, schema, instructions, model, prefix=prefix)
 
     async def plan(self, evidence, schema, *, model=MODEL, prefix=""):
-        payload, schema, instructions, prefix = planning_request(evidence, schema, prefix)
+        payload, schema, instructions = planning_request(evidence, schema)
         return await self._complete(payload, schema, instructions, model, operation="planning", prefix=prefix)
 
     async def _complete(self, payload, schema, instructions, model, *, operation="selection", prefix=""):

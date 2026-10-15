@@ -298,7 +298,7 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
             "action_effects": dict(Counter((event["payload"].get("result") or {}).get("effect") or "none" for event in events if event["kind"] == "structured_action_outcome")),
             "settle_poll_seconds": round(sum(((e["payload"].get("result") or {}).get("settle") or {}).get("poll_seconds", 0) for e in outcomes), 6),
             "settle_observe_seconds": round(sum(((e["payload"].get("result") or {}).get("settle") or {}).get("observe_seconds", 0) for e in outcomes), 6),
-            "turn_failures":dict(Counter(event["payload"].get("category", "unknown") for event in events if event["kind"] == "agent_turn_failed")),
+            "turn_failures": dict(Counter(event["payload"].get("category", "unknown") for event in events if event["kind"] == "agent_turn_failed")),
         },
         "polling_waits": {
             "gap_share": _ratio(gap_total, turn_total + gap_total),

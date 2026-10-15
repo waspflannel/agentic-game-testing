@@ -148,10 +148,16 @@ def _routing(events):
     by_route = {}
     for event in events:
         if event["kind"] == "decision_routed":
-            by_route.setdefault(event["payload"]["route"], []).append(event["payload"]["latency_ms"])
-    total = sum(len(latencies) for latencies in by_route.values())
-    return {route: {"count": len(latencies), "share": _ratio(len(latencies), total), "latency_ms": spread(latencies)}
-            for route, latencies in by_route.items()}
+            by_route.setdefault(event["payload"]["route"], []).append(event["payload"])
+    total = sum(len(payloads) for payloads in by_route.values())
+    report = {}
+    for route, payloads in by_route.items():
+        latencies = [payload["latency_ms"] for payload in payloads]
+        actions = sum(payload["actions"] for payload in payloads)
+        report[route] = {"count": len(payloads), "share": _ratio(len(payloads), total), "latency_ms": spread(latencies), "actions": actions,
+                         "s_per_action": _ratio(sum(latencies) / 1000, actions),
+                         "fallbacks": dict(Counter(payload["fallback"] for payload in payloads if payload.get("fallback")))}
+    return report
 
 
 CACHE_TOKENS = ("cache_read_input_tokens", "cache_creation_input_tokens", "input_tokens")
@@ -366,6 +372,7 @@ def summarize(run, events, data):
     turns = {}
     for row in timings:
         turns.setdefault(row["outcome"], []).append(row.get("total_seconds") or 0)
+    routing = _routing(events)
     return {
         "run": {
             "id": run["id"],
@@ -376,6 +383,7 @@ def summarize(run, events, data):
             "first_event_at": first,
             "last_event_at": last,
             "wall_seconds": round(last - first, 6),
+            "s_per_action": _ratio(last - first, sum(entry["actions"] for entry in routing.values())),
         },
         "turns": {
             outcome: {"count": len(samples), "total_seconds": round(sum(samples), 6), "mean_seconds": round(sum(samples) / len(samples), 6)}
@@ -384,7 +392,7 @@ def summarize(run, events, data):
         "steps": steps,
         "gaps": gaps,
         "model_calls": calls,
-        "routing": _routing(events),
+        "routing": routing,
         "ledger": ledger,
         "hypotheses": _hypotheses(timings, events, steps, calls, gaps, turn_total, ledger["event_bytes"]),
         "environment": _environment(),
@@ -415,7 +423,7 @@ def _ordered_steps(steps):
 def print_report(summary, path):
     run = summary["run"]
     turn_count = sum(item["count"] for item in summary["turns"].values())
-    print(f"run {run['id']}  model {run['model']}  engine {run['decision_engine']}  turns {turn_count}  wall {run['wall_seconds']}s")
+    print(f"run {run['id']}  model {run['model']}  engine {run['decision_engine']}  s/action {_fmt(run['s_per_action'])}  turns {turn_count}  wall {run['wall_seconds']}s")
     print("step calls total_s mean_s p50_s p95_s max_s share")
     steps = summary["steps"]
     for name in _ordered_steps(steps):
@@ -432,10 +440,12 @@ def print_report(summary, path):
         latency = entry["latency"]
         print(" ".join([name, _fmt(latency["count"]), _fmt(latency["mean"]), _fmt(latency["p50"]), _fmt(latency["p95"]), _fmt(latency["max"]), _fmt(entry["input_bytes"]["mean"]),
             *(_fmt(entry["tokens"][name]) for name in CACHE_TOKENS)]))
-    print("route count share mean_ms p50_ms p95_ms")
+    print("route count share mean_ms p50_ms p95_ms actions s_per_action")
     for route, entry in summary["routing"].items():
         latency = entry["latency_ms"]
-        print(" ".join([route, _fmt(entry["count"]), _fmt(entry["share"]), _fmt(latency["mean"]), _fmt(latency["p50"]), _fmt(latency["p95"])]))
+        print(" ".join([route, _fmt(entry["count"]), _fmt(entry["share"]), _fmt(latency["mean"]), _fmt(latency["p50"]), _fmt(latency["p95"]),
+                        _fmt(entry["actions"]), _fmt(entry["s_per_action"])]))
+    print("fallbacks " + " ".join(f"{route}:{reason}={count}" for route, entry in summary["routing"].items() for reason, count in entry["fallbacks"].items()))
     for heading, key in (
         ("H1 serial model calls", "serial_model_calls"),
         ("H2 observation payloads", "observation_payloads"),

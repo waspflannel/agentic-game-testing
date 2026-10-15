@@ -16,12 +16,13 @@ from .game_controls import run_configuration
 from .models import MODEL, PROVIDERS, provider_of
 from .repository import Repository
 from .store import uid
-from . import facts, repair_tasks, subgoals
+from . import facts, macros, repair_tasks, subgoals
 
 LOG = logging.getLogger(__name__)
 LOOP_BACKSTOP_DECISIONS = 6
 MOVEMENT_STALL_LIMIT = 2  # Failed moves from one unchanged position: input is not reaching the character.
 BATCH_LIMIT = 5  # Actions per turn from one batch decide.
+MACRO_LIMIT = 30  # Actions per turn from one code macro.
 SNAPSHOT_RESET_CHARS = 12000  # A delta this large costs more than a fresh snapshot (one cache write).
 TIMER_FACTS = ("crops_harvestable", "crop_growth_stage_min")  # Growth facts the code waits on after the model chose to wait.
 CODE_WAIT_STEP = 10
@@ -87,6 +88,17 @@ def settle_effect(result, before, observation):
     result["effect"] = action_effect(before, observation)
     if result["effect"] == "no_effect":
         result["status"] = "no_effect"
+
+
+def queued_actions(context, keys):
+    """A model batch's next_action: pop the next queued option key and re-find it on the fresh observation."""
+    queue = list(keys)
+    def next_action(fresh):
+        if not queue:
+            return None, "done"
+        action = resolve({**context, "observation": fresh}, queue.pop(0))
+        return (action, "queued") if action else (None, "not_offered")
+    return next_action
 
 
 def own_action_line(event):
@@ -861,19 +873,22 @@ class StructuredPlayers:
                 self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
         return False
 
-    async def _run_batch(self, run_id, player_id, generation, current, context, start, fresh, last, keys, timing):
-        """Run queued option keys back to back, each re-resolved on the observation the previous action left.
+    async def _run_batch(self, run_id, player_id, generation, current, context, start, fresh, last, next_action, timing, limit=BATCH_LIMIT, tried=None):
+        """Run actions from `next_action(fresh) -> (action | None, why)` back to back, each chosen on the observation the previous action left.
 
         `start` is the observation the batch was chosen on. `last` is the result of the batch action already run (its
-        post-action observation is `fresh`), or None when the batch starts here on `fresh`. Returns the stop reason and
-        the actions dispatched here."""
+        post-action observation is `fresh`), or None when the batch starts here on `fresh`. With a `tried` set (macros),
+        one no_effect that is not a move is tolerated: a use_item's tile joins `tried` and the next pick skips it; a
+        second no_effect in a row stops. Returns the stop reason and the actions dispatched here."""
         key = (run_id, player_id)
         run = self.store.require("runs", run_id)
         plan = run.get("subgoal_plan")
-        checks = [g["completion"] for g in subgoals.goal_path(plan)] if plan and plan["player_id"] == player_id else []
+        mine = plan and plan["player_id"] == player_id
+        checks = [g["completion"] for g in subgoals.goal_path(plan)] if mine else []
+        goal = subgoals.active_goal(plan) if mine else None
         facts_before = [subgoals.measure(check, start)[1] for check in checks]
         scene = subgoals.planning_scene(start)
-        queue, done, ran = list(keys), int(last is not None), []
+        done, ran, missed = int(last is not None), [], False
         while True:
             if not current():
                 return "cancelled", ran
@@ -883,25 +898,52 @@ class StructuredPlayers:
                     return ("cancelled" if status == "cancelled" else "failed"), ran
                 if fresh is None or key in self.pending:
                     return "pending", ran  # Still running after the settle wait; the next turn reconciles it.
-                if last.get("effect") != "changed":
+                if last.get("effect") == "changed":
+                    missed = False
+                elif tried is None or missed or not ran or ran[-1]["args"].get("verb") == "move_to":
                     return "no_effect", ran
-            if [subgoals.measure(check, fresh)[1] for check in checks] != facts_before:
-                return "fact_changed", ran
+                else:
+                    position = ran[-1]["args"].get("parameters", {}).get("world_position")
+                    if position:
+                        tried.add(tuple(position))
+                    missed = True
+            if goal and subgoals.measure(goal["completion"], fresh)[0]:
+                return "goal_met", ran
+            # Progress toward a goal-path target continues the batch; any other move of those facts is a surprise.
+            facts_now = [subgoals.measure(check, fresh)[1] for check in checks]
+            if any(old != new and not subgoals.toward(check, old, new) for check, old, new in zip(checks, facts_before, facts_now)):
+                return "fact_moved_away", ran
+            facts_before = facts_now
             if subgoals.planning_scene(fresh) != scene:
                 return "scene_changed", ran
-            if not queue:
-                return "done", ran
-            if done >= BATCH_LIMIT:
-                return "limit", ran
-            action = resolve({**context, "observation": fresh}, queue.pop(0))
+            action, why = next_action(fresh)
             if action is None:
-                return "not_offered", ran
+                return why, ran  # "done" for an empty queue, else "not_offered".
+            if done >= limit:
+                return "limit", ran
             with timed(timing, "tool:perform_action"):
                 last = await self.dispatch(run_id, player_id, "perform_action",
                                            {**action["args"], "reason": "Batch: " + action["description"]}, fresh, generation)
             fresh = last.pop("observation", None)
             ran.append(action)
             done += 1
+
+    async def _run_macro(self, run_id, player_id, generation, current, context, observation, step, timing):
+        """Run one macro step (`step["control"]` names a MACROS entry, `step["item"]` the hotbar item) in code, with no model call.
+
+        Selects the item's hotbar slot first, then moves to and uses each matching tile until a stop. Returns the stop
+        reason and the actions dispatched."""
+        macro, selected, tried = step["control"], False, set()
+        def next_action(fresh):
+            nonlocal selected
+            action, why = macros.next_action(macro, step, {**context, "observation": fresh}, selected, tried)
+            selected = selected or why == "select"
+            return action, why
+        stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None,
+                                          next_action, timing, MACRO_LIMIT, tried)
+        timing["counts"]["macro_actions"] = timing["counts"].get("macro_actions", 0) + len(ran)
+        self.store.event(run_id, "macro_stopped", {"player_id": player_id, "macro": macro, "item": step.get("item", ""), "reason": stop, "actions": len(ran)})
+        return stop, ran
 
     async def turn(self, run_id, player_id, tick_seconds=None):
         key = (run_id, player_id)
@@ -1001,7 +1043,7 @@ class StructuredPlayers:
             result, first, stop, ran = None, {}, None, []
             if planned_keys:
                 # The planner named the first batch: run it on the post-planning observation, with no decide call.
-                stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None, planned_keys, timing)
+                stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None, queued_actions(context, planned_keys), timing)
             if stop is None or (stop == "not_offered" and not ran):
                 # No planner batch, or its first option is gone: the model decides in this same turn.
                 label = PROVIDERS[provider_of(run.get("model") or run["plan"].get("model", MODEL))]["label"]
@@ -1032,7 +1074,7 @@ class StructuredPlayers:
                     stop = "done"  # A game bug report: nothing was dispatched.
                 else:
                     stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, fresh,
-                                                      result["result"], result["queued"], timing)
+                                                      result["result"], queued_actions(context, result["queued"]), timing)
             timing["outcome"] = "decided"
             timing["counts"]["batch_actions"] = len(ran) + (first.get("tool") == "perform_action")
             timing["batch_stop"] = stop

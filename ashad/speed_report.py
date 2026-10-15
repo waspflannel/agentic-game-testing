@@ -127,20 +127,33 @@ def _max_concurrent(payloads):
     return peak
 
 
+CACHE_TOKENS = ("cache_read_input_tokens", "cache_creation_input_tokens", "input_tokens")
+
+
 def _model_calls(events):
     grouped = {}
     payloads = []
+    usage = None
     for event in events:
+        # _request writes each call's inference_usage event right before its provider_request_finished, with no await between.
+        if event["kind"] == "inference_usage":
+            usage = event["payload"].get("usage")
+            continue
         if event["kind"] != "provider_request_finished":
             continue
         payload = event["payload"]
         payloads.append(payload)
         key = payload["purpose"] + "/" + "/".join(payload.get("question_names") or [])
-        bucket = grouped.setdefault(key, {"latency": [], "input_bytes": [], "status": {}})
+        bucket = grouped.setdefault(key, {"latency": [], "input_bytes": [], "status": {}, "tokens": dict.fromkeys(CACHE_TOKENS, 0)})
         bucket["latency"].append(payload["latency_seconds"])
         bucket["input_bytes"].append(payload["input_bytes"])
         status = payload.get("status") or "unknown"
         bucket["status"][status] = bucket["status"].get(status, 0) + 1
+        for name in CACHE_TOKENS:
+            value = usage.get(name) if isinstance(usage, dict) else None
+            if type(value) in (int, float):
+                bucket["tokens"][name] += value
+        usage = None
     report = {}
     for key, bucket in grouped.items():
         report[key] = {
@@ -150,6 +163,7 @@ def _model_calls(events):
                 "max": max(bucket["input_bytes"]),
             },
             "status": bucket["status"],
+            "tokens": bucket["tokens"],
         }
     report["max_concurrent"] = _max_concurrent(payloads)
     return report
@@ -366,12 +380,13 @@ def print_report(summary, path):
     print(f"unaccounted - {_fmt(steps['unaccounted'])} - - - - -")
     store = steps["store"]
     print(" ".join(["store", "-", _fmt(store.get("total")), _fmt(store.get("mean")), _fmt(store.get("p50")), _fmt(store.get("p95")), _fmt(store.get("max")), "-"]))
-    print("call count mean_s p50_s p95_s max_s mean_in_bytes")
+    print("call count mean_s p50_s p95_s max_s mean_in_bytes cache_read_tokens cache_write_tokens input_tokens")
     for name, entry in summary["model_calls"].items():
         if name == "max_concurrent":
             continue
         latency = entry["latency"]
-        print(" ".join([name, _fmt(latency["count"]), _fmt(latency["mean"]), _fmt(latency["p50"]), _fmt(latency["p95"]), _fmt(latency["max"]), _fmt(entry["input_bytes"]["mean"])]))
+        print(" ".join([name, _fmt(latency["count"]), _fmt(latency["mean"]), _fmt(latency["p50"]), _fmt(latency["p95"]), _fmt(latency["max"]), _fmt(entry["input_bytes"]["mean"]),
+            *(_fmt(entry["tokens"][name]) for name in CACHE_TOKENS)]))
     for heading, key in (
         ("H1 serial model calls", "serial_model_calls"),
         ("H2 observation payloads", "observation_payloads"),

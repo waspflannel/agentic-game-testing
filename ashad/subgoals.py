@@ -196,6 +196,19 @@ def select_active(plan):
     return selected
 
 
+def next_leaf(plan):
+    """A copy of the plan as reconcile would leave it once the active goal completes, or None when the copy's
+    next goal is the root or blocked. The input plan is not changed."""
+    ahead = copy.deepcopy(plan)
+    active_goal(ahead)["status"] = "completed"
+    ahead["revision"] += 1  # reconcile counts the completion as a revision.
+    selected = select_active(ahead)
+    if selected["id"] == ahead["root_id"] or selected["status"] == "blocked":
+        return None
+    selected["actionable"] = False  # reconcile makes a newly active goal plan again.
+    return ahead
+
+
 def reconcile(plan, observation, control_generation):
     """Refresh verified progress without inference, retaining history across pause/restart."""
     now = time.time()

@@ -1,6 +1,7 @@
 """Shared structured-play handlers for Decisions, dashboard inspection and MCP."""
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -161,6 +162,9 @@ class StructuredPlayers:
         self.code_waits = {}  # (run_id, player_id) -> (goal_id, seconds of code waits used)
         self.step_index = {}  # (run_id, player_id) -> (goal_id, index of the goal's next unfinished step, decider takes the next turn)
         self.goal_intents = {}  # (run_id, player_id) -> (goal_id, [macros.step_for of each agent action]), saved as a recipe when the goal completes
+        # (run_id, player_id) -> (next leaf's goal_id, plan revision once the current leaf completes, planning_scene at start, planner task).
+        # At most one per player, started while a code macro runs; advance_plan uses or cancels it.
+        self.lookahead = {}
         self.crashes_recorded = set()
 
     def _forget_turn(self, key):
@@ -613,6 +617,8 @@ class StructuredPlayers:
                          self.goal_intents):
             for key in [k for k in counters if k[0] == run_id]:
                 del counters[key]
+        for key in [k for k in self.lookahead if k[0] == run_id]:
+            self.lookahead.pop(key)[3].cancel()
         self.crashes_recorded -= {e for e in self.crashes_recorded if e[0] == run_id}
 
     async def _loop_backstop(self, run_id, player_id, generation, signature, observation, result):
@@ -764,10 +770,27 @@ class StructuredPlayers:
         self.status(run_id, player_id, "planning", "Finding the next achievable prerequisite for: " + context["current_goal"]["objective"], generation)
         warnings = []
         self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": revision, "context": context})
+        # A look-ahead planned while the last macro ran is this leaf's first attempt when nothing it saw has changed.
+        proposal, ahead = None, self.lookahead.pop((run_id, player_id), None)
+        if ahead:
+            ahead_goal_id, ahead_revision, scene, task = ahead
+            why = ("goal_changed" if ahead_goal_id != plan["active_goal_id"] else "plan_changed" if ahead_revision != revision
+                   else "scene_changed" if scene != subgoals.planning_scene(observation) else None)
+            if why:
+                task.cancel()
+            else:
+                try:
+                    with timed(timing, "plan_model"):
+                        # Its first_actions name the macro-start observation's options, so the decider picks instead.
+                        proposal = {**await task, "first_actions": []}
+                except Exception:
+                    why = "error"
+            self.store.event(run_id, "lookahead_discarded" if why else "lookahead_used", {"player_id": player_id, "goal_id": ahead_goal_id, "why": why})
         for attempt in range(2):
             warnings = []
-            with timed(timing, "plan_model"):
-                proposal = await self.coordinator.ai.plan_subgoals(context, run_id, prefix=static_prefix(context, None))
+            if attempt or proposal is None:
+                with timed(timing, "plan_model"):
+                    proposal = await self.coordinator.ai.plan_subgoals(context, run_id, prefix=static_prefix(context, None))
             if not current():
                 self.store.event(run_id, "subgoal_planning_cancelled", {"player_id": player_id, "reason": "Run control changed during planning"})
                 return None
@@ -992,6 +1015,34 @@ class StructuredPlayers:
             ran.append(action)
             done += 1
 
+    def _start_lookahead(self, run_id, player_id, run, player, plan, observation):
+        """Start planning the leaf after this one in parallel with a code macro, unless a saved recipe will replay it.
+
+        Builds the planning context exactly as advance_plan does, from a copy of the plan with the current leaf completed."""
+        key = (run_id, player_id)
+        ahead_plan = subgoals.next_leaf(plan)
+        if not ahead_plan:
+            return
+        leaf = subgoals.active_goal(ahead_plan)
+        configuration_id = run_configuration(run)[0]
+        if (configuration_id and not any(g.get("parent_id") == leaf["id"] for g in ahead_plan["goals"])
+                and recipes.find(self.store, configuration_id, leaf["completion"])):
+            return
+        kept = self.lookahead.get(key)
+        if kept and kept[:2] == (leaf["id"], ahead_plan["revision"]):
+            return
+        if kept:
+            kept[3].cancel()
+            self.store.event(run_id, "lookahead_discarded", {"player_id": player_id, "goal_id": kept[0], "why": "replaced"})
+        context = self.decision_context({**run, "subgoal_plan": ahead_plan}, player, observation)
+        context["fact_catalog"] = facts.catalog(observation, self.item_ids(run))
+        _, context["action_options"] = batch_options(context)
+        task = asyncio.create_task(self.coordinator.ai.plan_subgoals(context, run_id, prefix=static_prefix(context, None)))
+        # Retrieve a dropped task's error so asyncio never logs "Task exception was never retrieved".
+        task.add_done_callback(lambda done: done.cancelled() or done.exception())
+        self.lookahead[key] = (leaf["id"], ahead_plan["revision"], subgoals.planning_scene(observation), task)
+        self.store.event(run_id, "lookahead_started", {"player_id": player_id, "goal_id": leaf["id"]})
+
     async def _run_macro(self, run_id, player_id, generation, current, context, observation, step, timing):
         """Run one macro step (`step["control"]` names a MACROS entry, `step["item"]` the hotbar item) in code, with no model call.
 
@@ -1025,6 +1076,9 @@ class StructuredPlayers:
             self.snapshots.pop(key, None)
             self.code_waits.pop(key, None)
             self.step_index.pop(key, None)
+            ahead = self.lookahead.pop(key, None)
+            if ahead:
+                ahead[3].cancel()
             self.generations[key] = generation
         def current():
             live = self.store.require("runs", run_id)
@@ -1120,6 +1174,7 @@ class StructuredPlayers:
                 # The goal's own args read the verifying fact when it checks the same fact; otherwise only argless facts read.
                 check = {"fact": step["verifies"], "args": goal["completion"]["args"] if goal["completion"]["fact"] == step["verifies"] else [], "op": ">=", "value": 0}
                 before = subgoals.measure(check, observation)[1]
+                self._start_lookahead(run_id, player_id, run, player, plan, observation)
                 stop, ran = await self._run_macro(run_id, player_id, generation, current, context, observation, step, timing)
                 after = subgoals.measure(check, self.store.get("observations", f"{run_id}:{player_id}") or {})[1]
                 finished = stop == "goal_met" or bool(step["count"] and before is not None and after is not None and after - before >= step["count"])

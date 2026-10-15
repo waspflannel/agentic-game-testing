@@ -30,7 +30,7 @@ MAX_RUNS = 50
 MAX_BUILDS = 20
 RUN_ISSUE_EVENTS = 500
 RUN_ISSUE_HITS_SHOWN = 20
-ISSUE_EVENT_KINDS = ("unsupported_action_recorded", "crash_recorded", "game_bug_recorded", "planner_rejected_recorded", "false_completion_recorded", "capability_gap_recorded")
+ISSUE_EVENT_KINDS = ("unsupported_action_recorded", "crash_recorded", "game_bug_recorded", "planner_rejected_recorded", "false_completion_recorded", "capability_gap_recorded", "skill_regression_recorded")
 CRASH_TITLES = {"game_exit": "Game process exited", "game_hang": "Game stopped responding",
                 "worker_lost": "Game worker was lost", "desktop_lost": "Game desktop was lost"}
 
@@ -101,6 +101,8 @@ def issue_title(issue_type, basis):
     if issue_type == "capability_gap":
         label = {"game_bug": "game bug", "mcp_gap": "MCP gap", "planner_gap": "planner gap"}[basis["cause"]]
         return f"MCP or game needs updating ({label}): {basis['missing']} while working on “{basis['focus_objective']}”"
+    if issue_type == "skill_regression":
+        return f"Likely regression: skill {basis['skill']} worked on build {basis['good_build']}, failed on build {basis['build_id']}"
     verb = basis["verb"] if basis["verb"] not in (None, "other") else "perform an action this interface does not offer"
     target = basis["target_label"] or (basis["target_kind"] if basis["target_kind"] not in (None, "none") else "")
     return f"Agent could not {verb}{f' on {target}' if target else ''}"

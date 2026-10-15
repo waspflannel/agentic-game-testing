@@ -12,7 +12,7 @@ export function sidebarModel(data, ui) {
   const route = ui.route || {};
   const currentRun = route.name === 'instance' ? runs.find(r => r.id === route.id) : undefined;
   const projectIds = new Set(projects.map(p => p.id));
-  const routeProject = ['project', 'composer', 'issues', 'issue'].includes(route.name) ? route.id : currentRun?.project_id;
+  const routeProject = ['project', 'composer', 'issues', 'issue', 'skills'].includes(route.name) ? route.id : currentRun?.project_id;
 
   const thread = run => ({ id: run.id, goal: runGoal(run), ts: runTime(run), age: ago(runTime(run), ui.now), status: runStatus(run, ownerByRun.get(run.id)), current: run.id === currentRun?.id, deletable: !ownerByRun.has(run.id) });
   const group = (id, groupRuns, extra) => {

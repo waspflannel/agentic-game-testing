@@ -7,6 +7,8 @@ import time
 
 from . import facts, repeat
 
+MAX_WON_BUILDS = 20
+
 # Verb-style display names by the fact that proves the skill; facts not listed fall back to the fact name.
 VERBS = {
     "item_count": "take(<item>)",
@@ -79,7 +81,33 @@ def from_intents(intents):
     return repeat.steps_from(steps)
 
 
-def save(store, project_id, check, steps, won):
+def tally(record, won, build_id, run_id):
+    """Count one result and remember the builds a skill has worked on, so a later failure on a new build reads as a likely regression."""
+    regression = not won and regressed(record, build_id)
+    record["wins" if won else "fails"] += 1
+    builds = record.setdefault("won_builds", [])
+    if won and build_id and build_id not in builds:
+        builds.append(build_id)
+        del builds[:-MAX_WON_BUILDS]
+    record["last_result"] = {"result": "won" if won else "failed", "build_id": build_id, "run_id": run_id,
+                             "at": time.time(), "regression": regression}
+    record["updated"] = time.time()
+    return regression
+
+
+def regressed(record, build_id):
+    """Worked on some build, never on this one."""
+    return bool(build_id and record.get("won_builds") and build_id not in record["won_builds"])
+
+
+def summary(key, record):
+    """The Skills page row for a stored skill record under its store key."""
+    return {"id": key, "name": record["name"], "kind": "decision" if record.get("scope") == "decision" else "subgoal",
+            "uses": record["wins"] + record["fails"], "wins": record["wins"], "fails": record["fails"],
+            "last_result": record.get("last_result"), "updated": record.get("updated")}
+
+
+def save(store, project_id, check, steps, won, build_id=None, run_id=None):
     """Count a win (replacing the steps when given) or a failure for the check's shape in the project; returns the record."""
     key = f"{project_id}:{shape(check)}"
     effect = "rises" if check["op"] == ">=" else "falls" if check["op"] == "<=" else "reaches the value"
@@ -91,8 +119,7 @@ def save(store, project_id, check, steps, won):
     if steps is not None and (any(s.get("targets") for s in steps) or not any(s.get("targets") for s in record["steps"])):
         record["steps"] = bind(steps, check)
         record["preconditions"] = list(dict.fromkeys(s["precondition"] for s in record["steps"] if s.get("precondition")))
-    record["wins" if won else "fails"] += 1
-    record["updated"] = time.time()
+    tally(record, won, build_id, run_id)
     return store.put("skills", record, key)
 
 
@@ -118,15 +145,14 @@ def decision_key(project_id, sig):
     return f"{project_id}:decision:" + hashlib.sha256(json.dumps(sig, sort_keys=True).encode()).hexdigest()[:16]
 
 
-def save_decision(store, project_id, sig, check, steps, won):
+def save_decision(store, project_id, sig, check, steps, won, build_id=None, run_id=None):
     """Count a win (replacing the steps when given) or a failure for the decision skill of this situation; returns the record."""
     key = decision_key(project_id, sig)
     record = store.get("skills", key) or {"scope": "decision", "project_id": project_id, "name": "", "signature": sig, "steps": [], "wins": 0, "fails": 0}
     if won and steps:
         record["name"] = (f"{sig['subgoal']} on {len(sig['screen'])} controls: " + ", ".join(f"{s['control']} {s['targets']}".strip() for s in steps))[:160]
         record["steps"] = bind(steps, check)
-    record["wins" if won else "fails"] += 1
-    record["updated"] = time.time()
+    tally(record, won, build_id, run_id)
     return store.put("skills", record, key)
 
 

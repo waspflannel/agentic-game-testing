@@ -334,6 +334,8 @@ class StructuredPlayers:
                 # The press is assumed to land, because a failed slot press is rare and the next press corrects it.
                 hotbar = observation.get("state", {}).get("player", {}).get("hotbar") or []
                 self.held[key] = next((e.get("item_id") or "" for e in hotbar if isinstance(e, dict) and e.get("input") == name), "")
+        elif owner != "agent":
+            self.held.pop(key, None)  # A human or MCP session may have changed the hotbar, so the held item is unknown again.
         self.store.put("runs", run)
         self.status(run_id, player_id, "acting", str(args.get("reason") or f"Performing {args['verb']}"), generation, action_id=action_id)
         self.last_decisions.pop(key, None)
@@ -1141,7 +1143,7 @@ class StructuredPlayers:
         if replay()(observation)[0] is None:
             self.store.event(run_id, "decision_skipped", {"player_id": player_id, "goal_id": goal["id"], "key": decision_key, "why": "not_offered"})
             return None, [], None
-        stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None, replay(), timing)
+        stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None, replay(), timing, REPEAT_LIMIT)
         self.store.event(run_id, "decision_replayed", {"player_id": player_id, "goal_id": goal["id"], "key": decision_key,
                                                        "name": record["name"], "reason": stop, "actions": len(ran)})
         if stop in ("failed", "no_effect", "fact_moved_away", "not_offered"):
@@ -1281,6 +1283,12 @@ class StructuredPlayers:
             if stop is None and not planned_keys and goal:
                 # Cache first: a decision this project's model already made in this situation replays without a decide call.
                 stop, ran, replayed = await self._run_decision(run_id, player_id, generation, current, context, observation, goal, timing)
+                if replayed and self.decision_failed.get(key, (None,))[0] == goal["id"] and stop in ("failed", "no_effect", "fact_moved_away", "not_offered"):
+                    # The failed replay does not use up the decider's turn: it decides now, or on the next turn once the replay dispatched actions.
+                    if decider_turn:
+                        self.step_index[key] = (goal["id"], index, True)
+                    if not ran:
+                        stop = None
             # A replayed skill whose step stops unfinished hands the leaf to the planner on the next turn, with no decide call now.
             # A failed decision replay is not the subgoal skill's failure: the next turn decides.
             replanned = bool(goal and goal.get("skill") and not replayed and not finished and stop in ("failed", "no_effect", "not_offered")

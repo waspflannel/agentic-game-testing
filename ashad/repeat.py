@@ -138,10 +138,11 @@ def ordinary(step, context):
 
 
 def steps_from(intents):
-    """Collapse runs of the same step (control, item and targets) into one step, summing count."""
+    """Collapse runs of the same step (control, item, targets and click/scroll parameters) into one step, summing count."""
     steps = []
     for step in intents:
-        if steps and (steps[-1]["control"], steps[-1]["item"], steps[-1]["targets"]) == (step["control"], step["item"], step["targets"]):
+        same = ("control", "item", "targets")
+        if steps and [steps[-1][k] for k in same] + [steps[-1].get("parameters")] == [step[k] for k in same] + [step.get("parameters")]:
             steps[-1]["count"] += step["count"]
         else:
             steps.append(dict(step))

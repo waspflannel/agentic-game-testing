@@ -144,7 +144,7 @@ class Coordinator:
             return {"deleted": run_id, "files_removed": self._remove_run_dir(run_id)}
 
     async def delete_project(self, project_id):
-        """Forget a project with its instances, project configurations, game controls files, build registrations and issues; build files on disk are kept."""
+        """Forget a project with its instances, project configurations, game controls files, build registrations, issues and skills; build files on disk are kept."""
         from .projects import Projects
         async with self.lock:
             self.store.require("projects", project_id)

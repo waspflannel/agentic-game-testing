@@ -26,7 +26,7 @@ from . import repair_tasks
 from .repository import Repository, sha256_file
 from .reports import generate_report
 from .game_controls import BUSY, MODEL_NOT_ALLOWED, SIGN_IN_WAIT, GameControls, migrate_configuration_names, migrate_tuned_configurations
-from .migrations import retire_fixer, migrate_issue_projects, retire_saves, drop_run_observations
+from .migrations import retire_fixer, migrate_issue_projects, retire_saves, drop_run_observations, drop_recipes
 from .projects import Projects
 from .workspace_environment import inspect_fresh_environment, prepare_environment, validate_build
 from .instances import Instances, InstanceRequest, default_model
@@ -99,6 +99,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
     migrate_issue_projects(store)
     retire_saves(store)
     drop_run_observations(store)
+    drop_recipes(store)
     controls = GameControls(store, ai)
     coordinator = Coordinator(store, credentials, ai)
     instances = Instances(coordinator)

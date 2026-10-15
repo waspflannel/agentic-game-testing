@@ -32,7 +32,7 @@ QUEUE = 3                # Ranked action options run as one batch: Jev's pick, t
 MAX_OPTIONS = 255        # Jev Choice limit.
 OPTION_CHARS = 200       # Criteria text per action option, so 255 options stay inside one 32k-token question.
 EXCERPT_CHARS = 700      # Skill text in the shortlist request (cookbook).
-QUESTION_BYTES = 100000  # State plus the largest question; above this the turn goes to Sonnet ("too_large").
+QUESTION_BYTES = 100000  # State plus all questions; above this the turn goes to Sonnet ("too_large").
 NOUL_YES = 0.7            # Noul at or above: yes. Noul has no confidence field; threshold the probability (docs).
 NOUL_NO = 0.3             # Noul at or below: no. Between the two is unsure and ignored.
 TRIAGE_CONFIDENCE = 0.5   # Choice confidence at or above which Jev labels a gap the fixed rule can't decide.
@@ -593,7 +593,7 @@ class OpenAI:
                                             {key: short for key, short, _ in library[:MAX_OPTIONS]})
             questions["skill_gate"] = jev.noul("Should a saved multi-step skill be replayed now instead of one single action? "
                                                "True only if one of `skills` achieves `goal` from here.", json.dumps({"skills": shorts}, ensure_ascii=False))
-        if len(state.encode("utf-8")) + len(json.dumps(questions["action"]).encode("utf-8")) > QUESTION_BYTES:
+        if len(state.encode("utf-8")) + len(json.dumps(questions).encode("utf-8")) > QUESTION_BYTES:
             return fallback("too_large")
         try:
             response = await jev.ask(state, questions, credentials=self.credentials, model=model)

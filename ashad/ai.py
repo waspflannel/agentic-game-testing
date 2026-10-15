@@ -568,7 +568,7 @@ class OpenAI:
                     picked_key = skill["choice"]
             if picked_key is not None:
                 return {"status": "skill", "key": picked_key, "confidence": skill["confidence"], "model": skill_model,
-                        "latency_ms": int((time.monotonic() - started) * 1000),
+                        "latency_ms": int((time.monotonic() - started) * 1000), "calls": calls,
                         "action": answers["action"], "groups": groups, "listings": listings}
         return await self.jev_act(context, groups, listings, answers["action"], dispatch, can_continue, run_id,
                                   model=response["model"], started=started, calls=calls)

@@ -1199,7 +1199,7 @@ class StructuredPlayers:
                 return None, stop, ran
             # Not offered here: act on request 1's action answer, with no second ask.
             res = await self.coordinator.ai.jev_act(context, res["groups"], res["listings"], res["action"], dispatch, current, run_id,
-                                                    model=res["model"], started=started)
+                                                    model=res["model"], started=started, calls=res["calls"])
         if res is None:
             return None, "cancelled", []
         routing.update(confidence=res["confidence"], jev_ms=res["latency_ms"])

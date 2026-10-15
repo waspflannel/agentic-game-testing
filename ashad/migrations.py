@@ -98,3 +98,9 @@ def drop_run_observations(store):
                 del ps["structured_context"]
             if stale:
                 store.put("runs", run)
+
+
+def drop_recipes(store):
+    """Per-configuration recipes were replaced by the project skill library; their configuration-bound steps are not migrated."""
+    with store.transaction() as db:
+        db.execute("DELETE FROM records WHERE kind='recipes'")

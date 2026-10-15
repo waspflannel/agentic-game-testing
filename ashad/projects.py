@@ -71,14 +71,14 @@ class Projects:
             return project
 
     def delete(self, project_id):
-        """Remove a project and its project configurations, build registrations and issue records; the caller holds the transaction and has removed its runs."""
+        """Remove a project and its project configurations, build registrations, issue records and skills; the caller holds the transaction and has removed its runs."""
         self.store.require("projects", project_id)
         db = self.store.db
         db.execute("DELETE FROM commands WHERE scope='tuning' AND json_extract(result,'$.configuration_id') IN "
                    "(SELECT id FROM records WHERE kind='configurations' AND json_extract(data,'$.project_id')=?)", (project_id,))
         db.execute("DELETE FROM records WHERE kind='tuning_notes' AND json_extract(data,'$.build_id') IN "
                    "(SELECT id FROM records WHERE kind='builds' AND json_extract(data,'$.project_id')=?)", (project_id,))
-        db.execute("DELETE FROM records WHERE kind IN ('configurations','builds','issues') AND json_extract(data,'$.project_id')=?", (project_id,))
+        db.execute("DELETE FROM records WHERE kind IN ('configurations','builds','issues','skills') AND json_extract(data,'$.project_id')=?", (project_id,))
         db.execute("DELETE FROM records WHERE kind='environment_preparations' AND json_extract(data,'$.request.project_id')=?", (project_id,))
         db.execute("DELETE FROM commands WHERE scope='project' AND json_extract(result,'$.project_id')=?", (project_id,))
         db.execute("DELETE FROM records WHERE kind='projects' AND id=?", (project_id,))

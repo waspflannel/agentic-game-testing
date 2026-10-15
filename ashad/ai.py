@@ -248,10 +248,16 @@ def observation_delta(snapshot, observation):
             "entities_changed": {id: changed(before[id], entity) for id, entity in after.items() if id in before and before[id] != entity}}
 
 
+PREFIX_KEYS = ("game_controls", "player", "setup", "transport", "world_namespace", "seed", "configuration_id", "item_ids", "known_locations")
+
+
 def static_prefix(context, snapshot):
     """Everything that stays the same within a subgoal, so the provider can cache it ahead of the per-call evidence."""
-    keys = ("game_controls", "player", "setup", "transport", "world_namespace", "seed", "configuration_id", "item_ids", "known_locations")
-    return json.dumps({**{k: context.get(k) for k in keys}, "subgoal_snapshot": snapshot}, sort_keys=True, ensure_ascii=False)
+    static = {k: context.get(k) for k in PREFIX_KEYS}
+    # last_seen_revision changes on every observation and would break the cache on every call.
+    static["known_locations"] = [{k: v for k, v in place.items() if k != "last_seen_revision"} if isinstance(place, dict) else place
+                                 for place in static["known_locations"] or []]
+    return json.dumps({**static, "subgoal_snapshot": snapshot}, sort_keys=True, ensure_ascii=False)
 
 
 def picked_options(answers, groups, shown):
@@ -349,6 +355,8 @@ class OpenAI:
         if not isinstance(context, dict):
             raise ValueError(f"{label} planning requires a context object")
         schema = PlanningDecision.model_json_schema()
+        if prefix:
+            context = {k: v for k, v in context.items() if k not in PREFIX_KEYS}  # Sent once, in the cached prefix.
         input_bytes = len(json.dumps({"evidence": context, "schema": schema}, ensure_ascii=False).encode("utf-8"))
         if input_bytes + len(prefix.encode("utf-8")) + 4608 > 128000:
             raise ProviderError("context_limit", "Planning evidence exceeds the bounded context budget. Reduce context before continuing.")

@@ -144,6 +144,16 @@ def _repeat_breakdown(events):
             "by_control_reason": dict(Counter(f"{stop.get('control')}/{stop.get('reason', 'unknown')}" for stop in stops))}
 
 
+def _routing(events):
+    by_route = {}
+    for event in events:
+        if event["kind"] == "decision_routed":
+            by_route.setdefault(event["payload"]["route"], []).append(event["payload"]["latency_ms"])
+    total = sum(len(latencies) for latencies in by_route.values())
+    return {route: {"count": len(latencies), "share": _ratio(len(latencies), total), "latency_ms": spread(latencies)}
+            for route, latencies in by_route.items()}
+
+
 CACHE_TOKENS = ("cache_read_input_tokens", "cache_creation_input_tokens", "input_tokens")
 
 
@@ -360,6 +370,7 @@ def summarize(run, events, data):
         "run": {
             "id": run["id"],
             "model": run.get("model") or run["plan"].get("model"),
+            "decision_engine": run["plan"].get("decision_engine", "today"),
             "state": run["state"],
             "players": len(run["players"]),
             "first_event_at": first,
@@ -373,6 +384,7 @@ def summarize(run, events, data):
         "steps": steps,
         "gaps": gaps,
         "model_calls": calls,
+        "routing": _routing(events),
         "ledger": ledger,
         "hypotheses": _hypotheses(timings, events, steps, calls, gaps, turn_total, ledger["event_bytes"]),
         "environment": _environment(),
@@ -403,7 +415,7 @@ def _ordered_steps(steps):
 def print_report(summary, path):
     run = summary["run"]
     turn_count = sum(item["count"] for item in summary["turns"].values())
-    print(f"run {run['id']}  model {run['model']}  turns {turn_count}  wall {run['wall_seconds']}s")
+    print(f"run {run['id']}  model {run['model']}  engine {run['decision_engine']}  turns {turn_count}  wall {run['wall_seconds']}s")
     print("step calls total_s mean_s p50_s p95_s max_s share")
     steps = summary["steps"]
     for name in _ordered_steps(steps):
@@ -420,6 +432,10 @@ def print_report(summary, path):
         latency = entry["latency"]
         print(" ".join([name, _fmt(latency["count"]), _fmt(latency["mean"]), _fmt(latency["p50"]), _fmt(latency["p95"]), _fmt(latency["max"]), _fmt(entry["input_bytes"]["mean"]),
             *(_fmt(entry["tokens"][name]) for name in CACHE_TOKENS)]))
+    print("route count share mean_ms p50_ms p95_ms")
+    for route, entry in summary["routing"].items():
+        latency = entry["latency_ms"]
+        print(" ".join([route, _fmt(entry["count"]), _fmt(entry["share"]), _fmt(latency["mean"]), _fmt(latency["p50"]), _fmt(latency["p95"])]))
     for heading, key in (
         ("H1 serial model calls", "serial_model_calls"),
         ("H2 observation payloads", "observation_payloads"),

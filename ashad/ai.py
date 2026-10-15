@@ -607,6 +607,7 @@ class OpenAI:
 
     async def batch_turn(self, context, snapshot, dispatch, can_continue, run_id):
         """One batch-decide call. Runs the first chosen action here; returns the rest as option keys that the caller re-resolves on fresh observations."""
+        started = time.monotonic()
         if not can_continue():
             return
         context = copy.deepcopy(context)
@@ -706,7 +707,8 @@ class OpenAI:
                     "evidence_truncated": bool(context["observation"].get("context_truncated")), "calls": calls, "fallback": fallback,
                     "batch": [option_id for option_id, _, _ in picked], "reason": answers.get("reason"),
                     "bytes": {"batch_evidence": len(evidence.encode("utf-8")), "prefix": len(prefix.encode("utf-8")),
-                              "prefix_sha": hashlib.sha256(prefix.encode()).hexdigest()[:12]}}
+                              "prefix_sha": hashlib.sha256(prefix.encode()).hexdigest()[:12]},
+                    "latency_ms": int((time.monotonic() - started) * 1000), "model": model}
         self.store.event(run_id, "decision_selected", decision)
         if action["tool"] == "needs_instructions":
             report = await self._stuck_report(evidence, context["observation"], run_id)

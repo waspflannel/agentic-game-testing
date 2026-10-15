@@ -1261,6 +1261,7 @@ class StructuredPlayers:
             self.last_decisions[key] = (signature, time.time(), generation)
             decision_started_at = time.time()
             result, first, stop, ran, finished, replayed = None, {}, None, [], False, None
+            route, route_model, route_ms = None, None, 0
             # The leaf's next unfinished step runs in code when it is a repeat step. A repeat stop that leaves the step
             # unfinished after dispatching actions hands the next turn to the decider; then the repeat step is tried again.
             steps = (goal or {}).get("steps") or []
@@ -1277,6 +1278,8 @@ class StructuredPlayers:
                 context["current_goal"]["steps"] = steps[index:]
             if planned_keys:
                 # The planner named the first batch: run it on the post-planning observation, with no decide call.
+                route = route_model = run.get("model") or run["plan"].get("model", MODEL)
+                route_ms = int(timing["seconds"].get("plan_model", 0) * 1000)
                 with timed(timing, "act"):
                     stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None, queued_actions(context, planned_keys), timing)
             elif step and step.get("targets") and not decider_turn:
@@ -1285,6 +1288,7 @@ class StructuredPlayers:
                 before = subgoals.measure(check, observation)[1]
                 with timed(timing, "act"):
                     stop, ran = await self._run_repeat(run_id, player_id, generation, current, context, observation, step, check, timing)
+                route = "repeat"
                 after = subgoals.measure(check, self.store.get("observations", f"{run_id}:{player_id}") or {})[1]
                 finished = stop in ("goal_met", "done") or bool(step["count"] and before is not None and after is not None and abs(after - before) >= step["count"])
                 self.step_index[key] = (goal["id"], index + finished, not finished and bool(ran))
@@ -1294,6 +1298,8 @@ class StructuredPlayers:
                 # Cache first: a decision this project's model already made in this situation replays without a decide call.
                 with timed(timing, "act"):
                     stop, ran, replayed = await self._run_decision(run_id, player_id, generation, current, context, observation, goal, timing)
+                if replayed and ran:
+                    route = "cache"
                 if replayed and self.decision_failed.get(key, (None,))[0] == goal["id"] and stop in ("failed", "no_effect", "fact_moved_away", "not_offered"):
                     # The failed replay does not use up the decider's turn: it decides now, or on the next turn once the replay dispatched actions.
                     if decider_turn:
@@ -1328,6 +1334,9 @@ class StructuredPlayers:
                 with timed(timing, "decide"):
                     result = await self.coordinator.ai.batch_turn(context, snapshot, dispatch, current, run_id)
                 first = (result or {}).get("action") or {}
+                if result:
+                    route = route_model = result["model"]
+                    route_ms = result["latency_ms"]
                 if result is None:
                     stop = "cancelled"
                 elif first.get("tool") == "wait_for_change":
@@ -1351,6 +1360,9 @@ class StructuredPlayers:
             timing["batch_stop"] = stop
             if result:
                 timing["bytes"].update(result["bytes"])
+            if route:
+                self.store.event(run_id, "decision_routed", {"player_id": player_id, "route": route, "latency_ms": route_ms, "confidence": None,
+                                                             "model": route_model, "actions": timing["counts"]["batch_actions"] or len(ran)})
             self.store.event(run_id, "batch_stopped", {"player_id": player_id, "reason": stop, "actions": timing["counts"]["batch_actions"]})
             # Code waits start only after the model itself chose to wait on a growth goal; any other batch ends them.
             current_goal = context.get("current_goal") or {}

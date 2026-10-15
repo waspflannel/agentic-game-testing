@@ -802,7 +802,7 @@ function updateRegatherDialog(buildId, buildName) {
   const input = document.querySelector('#refresh-build-id');
   if (input) input.value = buildId;
   const desc = document.querySelector('#refresh-build-desc');
-  if (desc) desc.innerHTML = `ASHAD re-reads <strong>${esc(buildName)}</strong> with Claude Sonnet and updates this project configuration. This takes a few minutes and uses your Claude subscription.`;
+  if (desc) desc.innerHTML = `ASHAD re-reads <strong>${esc(buildName)}</strong> with Claude Opus and updates this project configuration. This takes a few minutes and uses your Claude subscription.`;
   const menu = document.querySelector('#ov-refresh-build-menu');
   const trigger = document.querySelector('[popovertarget="ov-refresh-build-menu"] .chip-text');
   if (trigger) trigger.textContent = buildName;
@@ -854,7 +854,7 @@ async function viewControls(id) {
   const agent = (state.data.configurations || []).find(a => a.id === id);
   try {
     const c = await api(`/api/configurations/${enc(id)}/controls`);
-    const by = c.generated_by?.method === 'legacy_tuning' ? `Converted from an earlier configuration written by ${modelLabel(state.data, c.generated_by.model)}` : 'Gathered by Claude Sonnet';
+    const by = c.generated_by?.method === 'legacy_tuning' ? `Converted from an earlier configuration written by ${modelLabel(state.data, c.generated_by.model)}` : 'Gathered by Claude Opus';
     openDialog({ title: agent?.name || id, confirm: null, cancel: 'Close', wide: true,
       html: `<p>${esc(by)}</p><pre class="instructions" tabindex="0">${esc(c.controls)}</pre>` });
   } catch (error) { toast(error.message, 'error'); }

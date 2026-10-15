@@ -258,7 +258,7 @@ export function limitsRegions(data, ui) {
     hardware: `<dl class="kv"><dt>CPU</dt><dd>${pct(h.cpu_percent)} in use</dd><dt>Memory</dt><dd>${pct(h.memory_percent)} in use · ${gb(h.memory_available)} available</dd><dt>Disk free</dt><dd>${gb(h.disk_free)}</dd><dt>GPU</dt><dd>${h.gpu ? esc(JSON.stringify(h.gpu)) : 'Not reported'}</dd></dl>`,
     'form-status': errorNote(ui.formError) + okNote(ui.saved),
     'jev-key': `<p class="hint">${ui.jevBusy ? 'Working…' : esc(jevKeyWords(data?.jev || {}))}</p>`
-      + errorNote(ui.jevError || (jevKeyBadShape(data?.jev) ? "Saved key doesn't look like a TypeSafe key." : '')),
+      + errorNote(ui.jevError || (jevKeyBadShape(data?.jev) ? `${data.jev.env_set ? 'TYPESAFE_API_KEY' : 'Saved key'} doesn't look like a TypeSafe key.` : '')),
   };
 }
 

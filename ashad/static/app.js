@@ -1158,6 +1158,13 @@ function scheduleRun() {
   runTimer = setTimeout(() => (document.hidden ? scheduleRun() : pollRun()), live ? 2000 : 15000);
 }
 
+// Keeps the bootstrap row at least as fresh as the newest detail, so a later failed GET falls back to current state, not an older row.
+function keepRow(run) {
+  const rows = state.data?.runs || [];
+  const row = rows.find(r => r.id === run.id);
+  if (row) state.data.runs = rows.map(r => (r === row ? { ...row, state: run.state, players: run.players } : r));
+}
+
 async function pollRun() {
   if (state.route.name !== 'instance') return;
   const id = state.route.id;
@@ -1165,7 +1172,7 @@ async function pollRun() {
   const apply = state.runSlot.begin();
   try {
     const run = await api(`/api/runs/${enc(id)}`);
-    if (current() && apply(run)) state.runMissing = false;
+    if (current() && apply(run)) { state.runMissing = false; keepRow(run); }
   } catch (error) {
     if (current() && error.status === 404) state.runMissing = true;
     // A failed GET must not pin the last detail: the bootstrap row is the stored run, so its state and players win.
@@ -1188,7 +1195,7 @@ async function command(action, send, ok, runOf = value => value) {
   const onThread = state.route.name === 'instance' && state.route.id === runId;
   if (!error) {
     const run = runOf(value);
-    if (run?.id === runId) state.runSlot.set(run);  // Also drops any GET that started before this response.
+    if (run?.id === runId) { state.runSlot.set(run); keepRow(run); }  // set also drops any GET that started before this response.
     if (ok) toast(typeof ok === 'function' ? ok(value) : ok, 'ok');
   } else if (!onThread) toast(error.message, 'error');
   if (onThread) { renderView(); pollRun(); }

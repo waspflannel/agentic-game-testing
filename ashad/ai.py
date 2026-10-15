@@ -51,7 +51,8 @@ def bounded_descriptions(options, evidence):
 def bounded_listings(listings, evidence):
     """Like bounded_descriptions, but trims only each listing's Detail so its target and T.A) IDs always survive."""
     parts = [text.partition(" Detail: ") for text in listings]
-    trimmed = bounded_descriptions([(i, detail) for i, (_, _, detail) in enumerate(parts)], evidence)
+    heads = "".join(head for head, _, _ in parts)  # Untrimmed text still counts against the budget.
+    trimmed = bounded_descriptions([(i, detail) for i, (_, _, detail) in enumerate(parts)], evidence + heads)
     return [head + (" Detail: " + detail if detail else "") for (head, _, _), (_, detail) in zip(parts, trimmed)]
 
 

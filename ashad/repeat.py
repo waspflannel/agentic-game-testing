@@ -46,7 +46,11 @@ def matches(target, targets):
 
 
 def describe(entity, tile):
-    """Conditions for a step rebuilt from one dispatched action, naming the entity's kind or the tile's state, plant and true flags."""
+    """Conditions for a step rebuilt from one dispatched action, naming the entity's kind (and a UI control's node) or the tile's state, plant and true flags."""
+    if entity and entity.get("kind") == "ui":
+        # A UI control is the same node across runs, while its id and label are not. A value with whitespace cannot be one field=value token, so it is dropped.
+        node = {"parent": _text(entity.get("parent")), "node_name": _text((entity.get("state") or {}).get("node_name"))}
+        return "kind=ui" + "".join(f" {k}={v}" for k, v in node.items() if not any(c.isspace() for c in v))
     if entity:
         return f"kind={_text(entity.get('kind'))}"
     flags = "".join(f" {k}=true" for k, v in tile.items() if v is True and k != "ground")
@@ -62,13 +66,17 @@ def select_input(observation, item_id):
 
 
 def next_action(step, context, state):
-    """(action, why) for the step's next action; state is {"select", "tried", "skipped"}, owned by the caller across one run."""
+    """(action, why) for the step's next action; state is {"select", "tried", "skipped", "held"}, owned by the caller across one run."""
     observation = context["observation"]
+    if step.get("item") and not state["select"] and step["item"] == state.get("held", ""):
+        # The held slot is already selected, and re-pressing it is a no-op (#62).
+        state["select"] = "held"
     if step.get("item") and not state["select"]:
         slot = select_input(observation, step["item"])
         action = slot and ai.resolve(context, ai.option_key({"tool": "perform_action", "args": {"verb": "input", "parameters": {"name": slot, "duration_ms": 160}}}))
         state["select"] = "pressed" if action else "not_on_hotbar"
         if action:
+            state["held"] = step["item"]
             return action, "select"
         # Use whatever is equipped instead; a wrong equipped item shows as two no-effect uses, which stop the run.
     here = observation.get("state", {}).get("player", {}).get("position")
@@ -79,10 +87,13 @@ def next_action(step, context, state):
         target = view(group)
         if target and ai.point(target.get("position")) and key(group) not in state["tried"] and matches(target, step["targets"]):
             candidates.append((math.dist(here, target["position"]), group))
+    wanted = step.get("parameters") or {}
     for distance, group in sorted(candidates, key=lambda c: c[0]):
         actions = group["actions"]
+        # A stored ui_click keeps its button and a ui_scroll its direction.
         use = next((a for a in actions if a["args"].get("verb") != "move_to"
-                    and step["control"] in (a["args"].get("verb"), a["args"].get("parameters", {}).get("name"))), None)
+                    and step["control"] in (a["args"].get("verb"), a["args"].get("parameters", {}).get("name"))
+                    and all(a["args"].get("parameters", {}).get(k) == v for k, v in wanted.items())), None)
         move = next((a for a in actions if a["args"].get("verb") == "move_to"), None)
         if move and (not use or ("world_position" in use["args"]["parameters"] and distance > USE_RANGE)):
             return move, "move"
@@ -100,6 +111,8 @@ def step_for(payload, observation):
     name = parameters.get("name")
     verb = payload.get("verb", "")
     step = {"control": name if verb == "input" else verb, "item": "", "count": 1, "precondition": "", "verifies": "unknown", "targets": ""}
+    if verb in ("ui_click", "ui_scroll"):
+        step["parameters"] = {k: v for k, v in parameters.items() if k in ("button", "direction")}
     if isinstance(name, str) and name.startswith("slot_"):
         hotbar = observation.get("state", {}).get("player", {}).get("hotbar") or []
         item = next((e.get("item_id") for e in hotbar if isinstance(e, dict) and e.get("input") == name), "")
@@ -110,6 +123,13 @@ def step_for(payload, observation):
         if entity or tile:
             step["targets"] = describe(entity, tile)
     return step
+
+
+def ordinary(step, context):
+    """The offered input action of an untargeted step whose control is an input name, not select or a verb; None when not offered."""
+    if step["targets"] or step["control"] == "select" or step["control"] in ai.GAME_VERBS:
+        return None
+    return ai.resolve(context, ai.option_key({"tool": "perform_action", "args": {"verb": "input", "parameters": {"name": step["control"], "duration_ms": 160}}}))
 
 
 def steps_from(intents):

@@ -209,11 +209,15 @@ const gb = bytes => (Number.isFinite(bytes) ? `${(bytes / GB).toFixed(1)} GB` : 
 export function limitsSkeleton(data) {
   const s = data?.settings || {};
   const minutes = s.duration_seconds ? String(Math.round(s.duration_seconds / 60)) : '';
+  const decide = s.claude_decide_model || 'sonnet';
+  const decideOptions = (data?.model_options || []).filter(m => m.provider === 'claude')
+    .map(m => `<option value="${esc(m.id)}"${m.id === decide ? ' selected' : ''}>${esc(m.label)}${m.id === 'sonnet' ? ' (Default)' : ''}</option>`).join('');
   return head('Limits', 'Guards for every instance. Leave a field blank for no limit.')
     + `<form class="card settings-card settings-form" data-form="settings-limits" novalidate>`
     + field('l-duration', 'Session duration (minutes)', `<input id="l-duration" class="input" name="duration" inputmode="decimal" value="${esc(minutes)}" placeholder="No limit" aria-describedby="l-duration-error">`, 'An instance stops when it runs this long.', 'l-duration-error')
     + field('l-spend', 'Spend cap (USD, API-equivalent estimate)', `<input id="l-spend" class="input" name="spend" inputmode="decimal" value="${esc(s.spend_usd ?? '')}" placeholder="No limit" aria-describedby="l-spend-error">`, 'Estimates only apply to metered rows; subscription turns have no price.', 'l-spend-error')
     + field('l-reserve', 'Storage reserve (GB)', `<input id="l-reserve" class="input" name="reserve" inputmode="decimal" value="${esc(Number.isFinite(s.storage_reserve_bytes) ? +(s.storage_reserve_bytes / GB).toFixed(2) : '')}" aria-describedby="l-reserve-error">`, 'Free disk space kept back for evidence.', 'l-reserve-error')
+    + field('l-decide', 'Claude action model', `<select id="l-decide" class="select" name="decide">${decideOptions}</select>`, "Chooses each action batch on Claude instances. The instance's model still plans.")
     + `<p class="hint">Concurrent instances: 1 (fixed in this release).</p>`
     + `<div data-region="form-status"></div><div class="btn-row"><button type="submit" class="btn btn-primary" data-key="l-save">Save limits</button></div></form>`
     + `<section class="card settings-card"><h2 class="card-title">This computer</h2><div data-region="hardware"></div></section>`;
@@ -232,7 +236,7 @@ export function limitsPayload(values) {
   const spend = num('spend', 'Spend cap');
   const reserve = num('reserve', 'Storage reserve', GB, true);
   if (reserve === null) errors.reserve = 'Enter a reserve, or 0 for none.';
-  return { errors, body: { duration_seconds: duration, spend_usd: spend, storage_reserve_bytes: Number.isFinite(reserve) ? Math.round(reserve) : reserve } };
+  return { errors, body: { duration_seconds: duration, spend_usd: spend, storage_reserve_bytes: Number.isFinite(reserve) ? Math.round(reserve) : reserve, claude_decide_model: values.decide } };
 }
 
 export function limitsRegions(data, ui) {

@@ -21,7 +21,7 @@ from .codex_backend import CodexError
 from .grok_backend import GrokError
 from .coordinator import Coordinator, InstanceConflict
 from .credentials import Credentials
-from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, GROK_MODEL, PROVIDERS, provider_of, ACTIVE_STATES, RecalculateGoalsRequest, IssueStatusRequest
+from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, CLAUDE_MODELS, GROK_MODEL, PROVIDERS, provider_of, ACTIVE_STATES, RecalculateGoalsRequest, IssueStatusRequest
 from . import repair_tasks
 from .repository import Repository, sha256_file
 from .reports import generate_report
@@ -625,7 +625,9 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             raise ValueError("Storage reserve must be a nonnegative byte count")
         if "reasoning_effort" in body:
             raise ValueError("Gameplay selections use the configured Codex effort. Refresh the dashboard.")
-        allowed = {"concurrent_sessions", "storage_reserve_bytes", "duration_seconds", "spend_usd"}
+        if "claude_decide_model" in body and body["claude_decide_model"] not in CLAUDE_MODELS:
+            raise ValueError("Select a Claude action model: " + ", ".join(CLAUDE_MODELS))
+        allowed = {"concurrent_sessions", "storage_reserve_bytes", "duration_seconds", "spend_usd", "claude_decide_model"}
         current.update({k: v for k, v in body.items() if k in allowed})
         return store.put("settings", current)
 

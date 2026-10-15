@@ -10,7 +10,7 @@ from openai_codex.types import ReasoningEffort
 from openai_codex.generated.v2_all import ThreadUnsubscribeResponse
 
 from .models import MODEL, CODEX_MODELS
-from .prompts import planning_request, selection_request
+from .prompts import batch_request, planning_request, selection_request
 from .store import redact
 
 
@@ -149,15 +149,19 @@ class CodexBackend:
         except Exception as exc:
             raise provider_error(exc) from None
 
-    async def select(self, input, questions, *, model=MODEL):
+    async def select(self, input, questions, *, model=MODEL, prefix=""):
         payload, schema, instructions = selection_request(input, questions)
-        return await self._complete(payload, schema, instructions, model)
+        return await self._complete(payload, schema, instructions, model, prefix=prefix)
 
-    async def plan(self, evidence, schema, *, model=MODEL):
+    async def batch(self, evidence, *, model, prefix):
+        payload, schema, instructions = batch_request(evidence)
+        return await self._complete(payload, schema, instructions, model, prefix=prefix)
+
+    async def plan(self, evidence, schema, *, model=MODEL, prefix=""):
         payload, schema, instructions = planning_request(evidence, schema)
-        return await self._complete(payload, schema, instructions, model, operation="planning")
+        return await self._complete(payload, schema, instructions, model, operation="planning", prefix=prefix)
 
-    async def _complete(self, payload, schema, instructions, model, *, operation="selection"):
+    async def _complete(self, payload, schema, instructions, model, *, operation="selection", prefix=""):
         if self.ready_until.get(model, 0) <= time.monotonic():
             status = await self.status(model)
             if status["status"] != "ready":
@@ -168,7 +172,7 @@ class CodexBackend:
             async with asyncio.timeout(120):
                 thread = await client.thread_start(model=model, model_provider="openai",
                     ephemeral=True, cwd=str(self.workspace), approval_mode=ApprovalMode.deny_all,
-                    sandbox=Sandbox.read_only, base_instructions=instructions)
+                    sandbox=Sandbox.read_only, base_instructions=instructions + ("\n\n" + prefix if prefix else ""))
                 starting = asyncio.create_task(thread.turn(json.dumps(payload, ensure_ascii=False),
                     model=model, output_schema=schema, effort=ReasoningEffort.medium if operation == "planning" else ReasoningEffort.low,
                     approval_mode=ApprovalMode.deny_all, sandbox=Sandbox.read_only))

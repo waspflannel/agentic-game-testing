@@ -10,6 +10,7 @@ URL = "https://api.typesafe.ai/v1/systemone"
 TIMEOUT_SECONDS = 10.0
 ATTEMPTS = 3
 FAKE_ENV = "ASHAD_JEV_FAKE"
+FAKE_NOUL_ENV = "ASHAD_JEV_FAKE_NOUL"  # Set it to 0.5 / 0.1 to exercise the unsure and no bands.
 RETRY_STATUSES = {429: "rate_limited", 529: "overloaded"}
 
 
@@ -40,6 +41,11 @@ def score(instructions: str, levels: list[str]) -> dict:
     if not 2 <= len(levels) <= 10:
         raise ValueError("A Jev score needs 2-10 levels.")
     return {"type": "score", "instructions": instructions, "levels": levels}
+
+
+async def box(instructions, image=None):
+    """Box locates a region in an image. It needs jev-1.14.0 and image input; games without a bridge would need it, so it is a stub until then."""
+    return {"status": "not_available", "reason": "Box needs jev-1.14.0 and image input; ASHAD sends text only."}
 
 
 def _fake() -> bool:
@@ -113,7 +119,7 @@ def check_answers(questions: dict[str, dict], answers) -> None:
 
 
 def fake_answers(questions: dict[str, dict]) -> dict:
-    """Deterministic answers in the documented shapes: the first option, a 0.9 yes, and the lowest level."""
+    """Deterministic answers in the documented shapes: the first option, a 0.9 yes (or ASHAD_JEV_FAKE_NOUL), and the lowest level."""
     answers = {}
     for question_id, question in questions.items():
         if question["type"] == "choice":
@@ -123,7 +129,8 @@ def fake_answers(questions: dict[str, dict]) -> dict:
             confidence = 1.0 if n == 1 else (0.9 - 1 / n) / (1 - 1 / n)
             answers[question_id] = {"type": "choice", "choice": options[0], "probabilities": probabilities, "confidence": confidence}
         elif question["type"] == "noul":
-            answers[question_id] = {"type": "noul", "noul": 0.9}
+            noul_value = min(1.0, max(0.0, float(os.environ.get(FAKE_NOUL_ENV, "0.9"))))
+            answers[question_id] = {"type": "noul", "noul": noul_value}
         else:
             answers[question_id] = {"type": "score", "score": 0, "probabilities": {"0": 1.0},
                                     "legend": {str(index): level for index, level in enumerate(question["levels"])},

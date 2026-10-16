@@ -11,7 +11,7 @@ import traceback
 from collections import Counter
 from datetime import datetime, timezone
 
-from .ai import (DELTA_CHARS, EXCERPT_CHARS, NOUL_YES, OPTION_CHARS, PROMPT_OBSERVATION_CHARS, STUCK_DELTAS, ProviderError, band, jev_triage,
+from .ai import (DELTA_CHARS, EXCERPT_CHARS, FIT_NO, NOUL_YES, OPTION_CHARS, PROMPT_OBSERVATION_CHARS, STUCK_DELTAS, ProviderError, band, jev_triage,
                  planning_evidence, static_prefix)
 from .game_controls import run_configuration
 from .menu import GAME_VERBS, SNAPSHOT_CHARS, capability_summary, observation_delta, option_key, prompt_observation, resolve
@@ -1281,7 +1281,7 @@ class StructuredPlayers:
         """Jev decides the turn: a picked skill replays in code, else Jev's action is dispatched; a fallback leaves the turn to Sonnet.
 
         Fills routing. Returns (result, stop, ran): Jev's dispatched result with stop None, a replayed skill's stop and actions,
-        (None, "replan" | "stage_done", []) when a plan check applied, (None, "cancelled", []) when the turn was cancelled,
+        (None, "stage_done", []) when Jev completed the stage, (None, "cancelled", []) when the turn was cancelled,
         or (None, None, []) for a Sonnet fallback."""
         project_id = run.get("project_id")
         library = [(k, skills.describe(r, OPTION_CHARS), skills.describe(r, EXCERPT_CHARS))
@@ -1292,7 +1292,7 @@ class StructuredPlayers:
         if res:
             applied = self._apply_checks(run_id, player_id, generation, goal, context, observation, res["checks"])
             if applied:
-                return None, applied, []  # Re-planned or completed: nothing runs on this stage now.
+                return None, applied, []  # Completed: nothing runs on this stage now.
         if res and res["status"] == "skill":
             with timed(timing, "act"):
                 stop, ran = await self._run_jev_skill(run_id, player_id, generation, current, context, observation, goal, res["key"], timing)
@@ -1314,7 +1314,7 @@ class StructuredPlayers:
 
     def _apply_checks(self, run_id, player_id, generation, goal, context, observation, checks):
         """Logs each Jev quick check. A stuck yes acts as one more attempt, never against a fact that moved in the window.
-        A plan_fits no re-plans the stage and a stage_done yes completes it; returns "replan" or "stage_done" when one applied, else None."""
+        A plan_fits at or below FIT_NO re-plans the stage and a stage_done yes completes it; returns "replan" or "stage_done" when one applied, else None."""
         key = (run_id, player_id)
         applied = None
         for check, noul in checks.items():
@@ -1335,9 +1335,10 @@ class StructuredPlayers:
                 payload["applied"] = b == "yes"
             elif check == "plan_fits":
                 run = self.store.require("runs", run_id)
-                run["subgoal_plan"].pop("fit_check", None)  # Answered once per activation or rebound.
+                run["subgoal_plan"].pop("fit_check", None)  # Answered once per activation, rebound or knowledge change.
                 self.store.put("runs", run)
-                if b == "no" and self.request_replan(run_id, player_id, generation, "Jev says the plan no longer fits: " + goal["objective"]):
+                # Only a clear no re-plans: a replan is a planner call, and the kept stage usually still fits.
+                if noul <= FIT_NO and self.request_replan(run_id, player_id, generation, "Jev says the plan no longer fits: " + goal["objective"]):
                     payload["applied"], applied = True, "replan"
             elif check == "stage_done" and noul >= NOUL_YES:
                 run = self.store.require("runs", run_id)
@@ -1463,9 +1464,15 @@ class StructuredPlayers:
                 if line.get("effect") and line != self.judged.get(key):
                     context["judge_effect"] = True
                     self.judged[key] = line
-                # A kept stage on activation or rebound: Jev says whether it still fits. An unknown-fact leaf: Jev judges it done.
-                if plan.get("fit_check"):
-                    context["plan_fit"] = plan["fit_check"]
+                # A kept stage on activation, rebound or knowledge change: Jev says whether it still fits before its repeat steps
+                # or cached replays act, unless its check already passes here.
+                if plan.get("fit_check") and not subgoals.measure(goal["completion"], observation)[0]:
+                    with timed(timing, "decide"):
+                        noul = await self.coordinator.ai.jev_plan_fits(context, run_id)
+                    if noul is not None and self._apply_checks(run_id, player_id, generation, goal, context, observation, {"plan_fits": noul}):
+                        timing["outcome"] = "planning"
+                        return timing["outcome"]
+                # An unknown-fact leaf: Jev judges it done.
                 if (goal["id"] != plan["root_id"] and goal["completion"]["fact"] == "unknown"
                         and not any(g.get("parent_id") == goal["id"] for g in plan["goals"])):
                     context["judge_done"] = True

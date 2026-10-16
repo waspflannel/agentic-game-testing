@@ -34,6 +34,7 @@ EXCERPT_CHARS = 700      # Skill text in the shortlist request (cookbook).
 QUESTION_BYTES = 100000  # State plus all questions; above this the turn goes to Sonnet ("too_large").
 NOUL_YES = 0.7            # Noul at or above: yes. Noul has no confidence field; threshold the probability (docs).
 NOUL_NO = 0.3             # Noul at or below: no. Between the two is unsure and ignored.
+FIT_NO = 0.15             # plan_fits Noul at or below: a clear no, so the kept stage is re-planned; a replan costs a planner call.
 TRIAGE_CONFIDENCE = 0.5   # Choice confidence at or above which Jev labels a gap the fixed rule can't decide.
 STUCK_DELTAS = 3          # Observation deltas the stuck Noul reads; it is asked only once this many exist for the goal.
 DELTA_CHARS = 1500        # Each delta is cut to this many JSON characters, so the state stays small (docs: filter in code).
@@ -597,9 +598,6 @@ class OpenAI:
         if context.get("judge_effect"):
             questions["effect"] = jev.noul("Did the last entry of `recent_own_actions` have its intended effect? "
                                            "Judge only from the last entry of `recent_changes`.")
-        if context.get("plan_fit"):
-            questions["plan_fits"] = jev.noul("Can `goal` still be done from here with its `steps`, and is it still needed for `goal_path`? "
-                                              "False if it is blocked, already done another way, or its steps cannot work now.")
         if context.get("judge_done"):
             questions["stage_done"] = jev.noul("Is `goal` already achieved in the current state? Judge only from `ui`, `player` and `recent_changes`.")
         if library:
@@ -615,9 +613,9 @@ class OpenAI:
         except jev.JevError as exc:
             return fallback(f"jev_error:{exc.status}")
         answers, calls = response["answers"], 1
-        checks = {k: answers[k]["noul"] for k in ("blocker", "stuck", "effect", "plan_fits", "stage_done") if k in answers}
-        if band(checks.get("plan_fits", 0.5)) == "no" or checks.get("stage_done", 0) >= NOUL_YES:
-            return fallback("plan_check", checks=checks)  # The stage is re-planned or completed; no action on it this turn.
+        checks = {k: answers[k]["noul"] for k in ("blocker", "stuck", "effect", "stage_done") if k in answers}
+        if checks.get("stage_done", 0) >= NOUL_YES:
+            return fallback("plan_check", checks=checks)  # The stage is completed; no action on it this turn.
 
         if band(checks.get("blocker", 0.5)) == "yes":  # A blocking window comes first; the skill and action picks wait a turn.
             if "dismiss" in answers and answers["dismiss"]["confidence"] >= ACT_CONFIDENCE:
@@ -651,6 +649,20 @@ class OpenAI:
         result = await self.jev_act(context, groups, listings, answers["action"], dispatch, can_continue, run_id,
                                     model=response["model"], started=started, calls=calls)
         return result and {**result, "checks": checks}
+
+    async def jev_plan_fits(self, context, run_id):
+        """One Jev Noul, asked before a kept stage acts: can it still be done with its steps? Returns the noul, or None when Jev is not asked or errs."""
+        model = self.store.require("runs", run_id)["plan"].get("jev_model") or JEV_MODEL
+        state = json.dumps(jev_state(context), ensure_ascii=False)
+        questions = {"plan_fits": jev.noul("Can `goal` still be done from here with its `steps`, and is it still needed for `goal_path`? "
+                                           "False if it is blocked, already done another way, or its steps cannot work now.")}
+        if len(state.encode("utf-8")) + len(json.dumps(questions).encode("utf-8")) > QUESTION_BYTES:
+            return None
+        try:
+            response = await jev.ask(state, questions, credentials=self.credentials, model=model)
+        except jev.JevError:
+            return None
+        return response["answers"]["plan_fits"]["noul"]
 
     async def jev_plan_pick(self, objective, patterns, catalog, run_id):
         """One Jev request: which saved plan pattern [(key, record)] achieves objective, and the fact_catalog value of each of its args.

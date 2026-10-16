@@ -214,7 +214,8 @@ def reconcile(plan, observation, control_generation):
         fresh["revision"] = plan["revision"] + 1
         plan.clear()
         plan.update(fresh)
-    rebound = plan.get("observation_generation") not in (None, binding)
+    # Loading a world from a menu changes the generation too; only a change while a world was observed rebinds the kept plan.
+    rebound = plan.get("observation_generation") not in (None, binding) and bool((plan.get("last_observation") or {}).get("world_id"))
     resumed = plan.get("control_generation") not in (None, control_generation)
     if rebound or resumed:
         for goal in plan["goals"]:

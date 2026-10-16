@@ -150,7 +150,7 @@ def _routing(events):
 
 
 def _jev_menus(events):
-    """Jev action-menu sizes on decision_routed, and the narrowed top 3 options of each low-confidence fallback."""
+    """Jev action-menu sizes on decision_routed, and the top 3 options of each low-confidence fallback."""
     payloads = [event["payload"] for event in events if event["kind"] == "decision_routed" and "menu_size" in event["payload"]]
     sizes = [payload["menu_size"] for payload in payloads]
     return {"menu_size": {"mean": _ratio(sum(sizes), len(sizes)), "max": max(sizes, default=None)},

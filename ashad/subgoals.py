@@ -137,9 +137,9 @@ def toward(check, old, new):
 
 
 def credit_progress(goal, now):
-    """Progress clears the goal's no-progress counters and repeat tracking."""
+    """Progress clears the goal's no-progress counters, failure count and repeat tracking."""
     goal.update(attempts=0, reviews=0, progress_at=now)
-    for key in ("recent_actions", "repeating", "repeats"):
+    for key in ("recent_actions", "repeating", "repeats", "failures"):
         goal.pop(key, None)
 
 
@@ -485,6 +485,7 @@ def apply_decision(plan, raw, context, warnings=None):
                  attempts=0, reviews=focus.get("reviews", 0) + 1)
     focus.pop("recent_actions", None)
     focus.pop("repeating", None)
+    focus.pop("failures", None)  # A new plan for the stage gets its own failure count.
     if decision["mode"] == "act":
         focus["steps"] = decision["steps"]
     else:

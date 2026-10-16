@@ -25,6 +25,7 @@ LOOP_BACKSTOP_DECISIONS = 6
 MOVEMENT_STALL_LIMIT = 2  # Failed moves from one unchanged position: input is not reaching the character.
 BATCH_LIMIT = 5  # Actions per turn from one batch decide.
 REPEAT_LIMIT = 30  # Actions per turn from one repeat step.
+FAIL_REPLAN = 3  # Jev hybrid: failed actions on one kept stage with steps before it is re-planned; earlier failures retry.
 TIMER_FACTS = ("crops_harvestable", "crop_growth_stage_min")  # Growth facts the code waits on after the model chose to wait.
 # v6 wheat: 4-6 s per growth stage (wheat_seed.tres initial_growth_timer), 3 stages to max_growth_state 4,
 # and the timer runs only on a Watered tile (tile.gd:106). Watered wheat is ripe in 12-18 s; unwatered never.
@@ -398,9 +399,8 @@ class StructuredPlayers:
             self.clear_pending(run_id, player_id, generation)
         self._count_invalid(run_id, player_id, generation, result)
         if result.get("status") in FAILED_STATUSES:
-            if await self._pause_if_stalled(run_id, player_id, generation, payload["verb"], observation, result):
+            if await self._after_outcome(run_id, player_id, generation, payload["verb"], observation, result):
                 return result
-            self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
             self.status(run_id, player_id, "action_failed", str(result.get("reason") or result.get("status")), generation, action_id=action_id)
         return result
 
@@ -1158,12 +1158,27 @@ class StructuredPlayers:
         return await self._after_outcome(run_id, player_id, generation, verb, observation, result)
 
     async def _after_outcome(self, run_id, player_id, generation, verb, observation, result):
-        """Apply the settled-outcome rules: stalled-move pause, replan on the second failure; True when the turn must end."""
-        if result.get("status") in FAILED_STATUSES:
-            if await self._pause_if_stalled(run_id, player_id, generation, verb, observation, result):
-                return True
-            if self._failed_again(run_id, player_id):
-                self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
+        """Apply the outcome rules for a failure: stalled-move pause, then a replan once failures repeat; True when the turn must end.
+
+        Under Jev hybrid a kept stage with steps retries: the turn is cleared and the next decision (Jev, or Sonnet via
+        jev_missed) tries again, and only the FAIL_REPLAN-th failure on that stage replans. Other engines replan on the second
+        failure in a row."""
+        if result.get("status") not in FAILED_STATUSES:
+            return False
+        if await self._pause_if_stalled(run_id, player_id, generation, verb, observation, result):
+            return True
+        run = self.store.require("runs", run_id)
+        plan = run.get("subgoal_plan")
+        goal = subgoals.active_goal(plan) if plan and plan["player_id"] == player_id else None
+        if run["plan"].get("decision_engine") == "jev_hybrid" and goal and goal.get("steps"):
+            goal["failures"] = goal.get("failures", 0) + 1
+            self.store.put("runs", run)
+            if goal["failures"] < FAIL_REPLAN:
+                self._forget_turn((run_id, player_id))
+                return False
+        elif not self._failed_again(run_id, player_id):
+            return False
+        self.request_replan(run_id, player_id, generation, "The last action failed; reassess prerequisites and approach.")
         return False
 
     async def _run_batch(self, run_id, player_id, generation, current, context, start, fresh, last, next_action, timing, limit=BATCH_LIMIT, tried=None):

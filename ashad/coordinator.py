@@ -674,16 +674,23 @@ class Coordinator:
                 ps["telemetry"] = telemetry
                 if any(previous.get(k) != telemetry.get(k) for k in ("completed_quests", "handler", "votes", "connected", "world_synced", "resources", "world_id")):
                     self.store.event(run["id"], "monitor_observation", {"player_id": player["id"], "source": "read_only_diagnostics", "telemetry": telemetry})
+            loaded = False
             if telemetry:
                 self.check_identity(run, player, ps, telemetry)
-                ready = telemetry.get("connected") is True and telemetry.get("world_synced") is True and telemetry.get("world_loaded") is True
+                loaded = telemetry.get("connected") is True and telemetry.get("world_synced") is True and telemetry.get("world_loaded") is True
+                # The game reports a loaded world while character creation is still up: first readiness also needs a playable observation.
+                observation = self.store.get("observations", f"{run['id']}:{player['id']}") or {}
+                ready = loaded and (bool(ps.get("ready_at")) or subgoals.playable(observation))
+                if loaded and not ready and not ps.get("ready_wait_logged"):
+                    ps["ready_wait_logged"] = True
+                    self.store.event(run["id"], "player_ready_waiting", {"player_id": player["id"], "reason": "World loaded but the latest observation is not playable (no player, player cannot act, or a creation, loading or cutscene screen)"})
                 ps["phase"] = "ready" if ready else "synchronized" if telemetry.get("world_synced") else "connected" if telemetry.get("connected") else "authenticated" if telemetry.get("authenticated") else "launched"
                 if ready and not ps.get("ready_at"):
                     ps["ready_at"] = now
                     self.store.event(run["id"], "player_ready", {"player_id": player["id"], "telemetry_sequence": telemetry.get("sequence")})
-                if telemetry.get("sync_timed_out") and not ready:
+                if telemetry.get("sync_timed_out") and not loaded:
                     raise ValueError("World synchronization timed out; readiness not established")
-            if now - ps["launched_at"] > 180 and ps["phase"] != "ready" and run["state"] == "Starting":
+            if now - ps["launched_at"] > 180 and ps["phase"] != "ready" and not loaded and run["state"] == "Starting":
                 raise ValueError("Initial player readiness deadline expired")
         except Exception as exc:
             exc.monitoring_step = monitoring_step

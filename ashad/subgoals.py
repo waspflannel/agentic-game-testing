@@ -529,8 +529,9 @@ def _rounded(value):
 
 
 def playable(observation):
-    """The world is ready and the player is not known to be unable to act (not a loading, menu or cutscene screen)."""
-    return observation.get("ready") is True and facts.values(observation).get("player_can_act") is not False
+    """The world is ready, a player is present and is not known to be unable to act (not a loading, menu, character
+    creation or cutscene screen): the world_ready fact."""
+    return facts.values(observation)["world_ready"]
 
 
 def record_action(plan, observation, action=None):

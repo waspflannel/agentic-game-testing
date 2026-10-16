@@ -40,12 +40,24 @@ def _progress(value):
 
 def values(observation):
     """{fact: value tree}: the bridge's facts when it sends schema 2, else what the observation alone can prove."""
-    from .subgoals import held_counts  # subgoals imports facts
-
     state = observation.get("state", {})
     bridge = state.get("facts")
     if isinstance(bridge, dict) and bridge.get("schema_version") == BRIDGE_SCHEMA:
-        return {k: v for k, v in bridge.items() if k != "schema_version"}
+        result = {k: v for k, v in bridge.items() if k != "schema_version"}
+    else:
+        result = _observed(observation, state)
+    # world_ready means playable: the world loaded, a player is present and is not known to be unable to act. The bridge
+    # reports a loaded world while a full-screen flow such as character creation is still up; there player_can_act is false.
+    result["world_ready"] = (observation.get("ready") is True and result.get("world_ready") is True
+                             and isinstance(state.get("player"), dict) and result.get("player_can_act") is not False)
+    if "player_can_act" in result:
+        result["player_can_act"] = result["world_ready"]  # a false player_can_act already made world_ready false
+    return result
+
+
+def _observed(observation, state):
+    from .subgoals import held_counts  # subgoals imports facts
+
     result = {"world_ready": observation.get("ready") is True}
     activity = state.get("player", {}).get("activity")
     if isinstance(activity, str):

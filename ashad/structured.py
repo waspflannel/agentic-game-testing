@@ -39,7 +39,7 @@ PLAN_TRIGGERS = (("The last action failed", "action_failed"),
                  ("No supported direct action fits", "needs_instructions"), ("The game state did not change across", "loop_backstop"),
                  ("You said the primary goal is not done", "completion_rejected"),
                  ("Repeating the same action", "action_repeat"), ("Skill replay stopped", "skill_failed"),
-                 ("Jev says the plan no longer fits", "jev_no_fit"))
+                 ("Jev says the plan no longer fits", "jev_no_fit"), ("Stuck:", "stuck"), ("Retired:", "retired"))
 
 
 def meaningful_signature(observation):
@@ -765,7 +765,8 @@ class StructuredPlayers:
         await self.report_capability_gap(run_id, player_id, plan, focus, kind=kind, tried=tried, missing=missing, observation=observation)
         run, _ = self.binding(run_id, player_id)
         plan = run["subgoal_plan"]
-        subgoals.give_up(plan, focus["id"], missing, run["plan"].get("decision_engine") == "jev_hybrid")
+        reason = f"Stuck: {missing}" if kind == "stuck" else missing
+        subgoals.give_up(plan, focus["id"], reason, run["plan"].get("decision_engine") == "jev_hybrid")
         self.store.put("runs", run)
         self.store.event(run_id, "subgoal_plan_updated", {"player_id": player_id, "plan": plan, "warnings": [], "outcome": "gave_up"})
         self._forget_turn((run_id, player_id))
@@ -1038,11 +1039,12 @@ class StructuredPlayers:
     def _replay_skill(self, run_id, player_id, run, plan, observation):
         """Give a just-activated leaf a saved skill's steps instead of calling the planner; True when replayed.
 
-        A leaf reached by a controller replan (a PLAN_TRIGGERS reason, including a failed replay) is planned instead."""
+        A leaf reached by a controller replan of itself (a PLAN_TRIGGERS reason, including a failed replay) is planned instead;
+        a stuck or retired reason names the previous stage, so the next leaf may still replay."""
         goal = subgoals.active_goal(plan)
         project_id = run.get("project_id")
         if (not project_id or goal["id"] == plan["root_id"] or any(g.get("parent_id") == goal["id"] for g in plan["goals"])
-                or any((plan.get("reason") or "").startswith(prefix) for prefix, _ in PLAN_TRIGGERS)):
+                or any((plan.get("reason") or "").startswith(prefix) for prefix, label in PLAN_TRIGGERS if label not in ("stuck", "retired"))):
             return False
         candidates = skills.find(self.store, project_id, goal["completion"])
         if not candidates:
@@ -1093,6 +1095,8 @@ class StructuredPlayers:
         skill_key = goal.pop("skill_key", None)
         goal.pop("steps", None)
         goal["actionable"] = False
+        replan_reason = f"Skill replay stopped ({reason}); plan this leaf."
+        run["subgoal_plan"]["reason"] = replan_reason  # The trigger label holds even when request_replan below declines.
         self.store.put("runs", run)
         self.step_index.pop((run_id, player_id), None)
         self.store.event(run_id, "skill_failed", {"player_id": player_id, "goal_id": goal_id, "skill": skill, "reason": reason})
@@ -1101,7 +1105,7 @@ class StructuredPlayers:
             saved = skills.save(self.store, run.get("project_id"), goal["completion"], None, False, build_id=run["build"].get("id"), run_id=run_id, key=skill_key)
             if saved["last_result"]["regression"]:
                 await self.report_skill_regression(run_id, player_id, saved, "subgoal", reason)
-        return self.request_replan(run_id, player_id, generation, f"Skill replay stopped ({reason}); plan this leaf.")
+        return self.request_replan(run_id, player_id, generation, replan_reason)
 
     def request_replan(self, run_id, player_id, generation, reason):
         run = self.store.require("runs", run_id)

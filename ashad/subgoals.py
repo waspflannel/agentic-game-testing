@@ -228,7 +228,7 @@ def reconcile(plan, observation, control_generation, jev_hybrid=False):
                 goal.pop("recent_actions", None)
                 goal.pop("repeating", None)
                 goal.pop("repeats", None)
-        plan["reason"] = "Game binding changed; the plan is kept and re-verified."
+        plan["reason"] = "Control or game binding changed; the plan is kept and re-verified."
         if any(g["id"] != plan["root_id"] for g in plan["goals"]):
             plan["fit_check"] = "rebound"
     # Unloading emits an empty world ID. Keep the last actual world so A -> menu -> B cannot reuse A's proof.
@@ -453,7 +453,7 @@ def apply_decision(plan, raw, context, warnings=None, jev_hybrid=False):
     if decision["mode"] == "retire":
         # Retirement is not success: the focus keeps its own completion; the decision's is ignored.
         focus.pop("steps", None)
-        result.update(reason=decision["reason"], revision=result["revision"] + 1)
+        result.update(reason="Retired: " + decision["reason"], revision=result["revision"] + 1)
         retire(result, focus, decision, context, jev_hybrid)
         return result
     if focus["id"] != result["root_id"]:

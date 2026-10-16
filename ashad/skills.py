@@ -241,6 +241,7 @@ def save_plan(store, project_id, goal, stages, won, build_id=None, run_id=None, 
                     return None
         count = count_of(goal["objective"])
         record = record or {"scope": "plan", "project_id": project_id, "wins": 0, "fails": 0}
+        record["objective"] = goal["objective"]  # The goal it won, as written, so Jev can match a goal like it.
         record["name"] = "plan: " + " → ".join(name(s["completion"]) if s["completion"]["fact"] in facts.FACTS else s["objective"][:40] for s in stages)
         record["params"] = sorted(args)
         record["goal"] = pattern_stage(goal, args, count)["completion"]

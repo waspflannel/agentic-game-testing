@@ -603,7 +603,9 @@ class OpenAI:
         if not records:
             return {**pick, "reason": "no_patterns"}
         model = self.store.require("runs", run_id)["plan"].get("jev_model") or JEV_MODEL
-        plans = {key: (record["name"] + ": " + "; ".join(s["objective"] for s in record["stages"]))[:OPTION_CHARS] for key, record in records.items()}
+        # The goal a plan won comes first: its stages read as templates ({count}, {plant_id}) that do not look like the goal.
+        plans = {key: ((f"Won the goal: {record['objective']}. " if record.get("objective") else "") + record["name"] + ": "
+                       + "; ".join(s["objective"] for s in record["stages"]))[:OPTION_CHARS] for key, record in records.items()}
         # The plan Choice's confidence is the fit check; a stage that does not fit breaks and is re-planned.
         questions = {"plan": jev.choice("Pick the saved plan in criteria that achieves `goal`, or none if no plan does.",
                                         {**plans, "none": "None of these plans achieves `goal`."})}

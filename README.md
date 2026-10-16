@@ -106,7 +106,15 @@ Stages complete in order: a later stage is measured only once every earlier sibl
 
 Each Jev plan pick logs one `plan_pick` event with the offered pattern keys, the picked key, confidences, the gate noul and the bound args; when no pattern is used it gives the reason: `no_patterns`, `too_large`, `jev_error`, `gate`, `low_confidence`, `missing_arg:<name>` or `stale`.
 
-Only an action that leaves the scene unchanged counts toward stuck; waits and a Jev stuck yes do not count while the game is loading or on a non-playable screen.
+Only an action that leaves the scene unchanged counts toward stuck; waits do not count while the game is loading or on a non-playable screen. A Jev stuck yes hands the goal's next turn to Sonnet and also counts on a non-playable screen that has not changed (a cutscene that never advances), so the stage is given up instead of waiting forever.
+
+After three waits on an unchanged frame no decider may wait there again: Jev presses an advertised accept/continue/click input, else clicks a dialog or text box, else hands the turn to Sonnet. A changing frame (a real loading screen) restarts the count.
+
+`exit_menu` and Back controls are offered only while the pause menu is open; a saved `exit_menu` step outside it ends as `not_offered`.
+
+After two failed moves from one spot, each further failure moves toward the nearest untried offered target; the run pauses with `movement_unavailable` only when every target was tried, or after those two failures while player input is disabled.
+
+The `world_ready` event waits for a loaded world with a player present who can act, so it does not fire during character creation; the `world_ready` fact is false whenever the player cannot act, including dialogue and cutscenes.
 
 Under Jev hybrid a failed step is retried by Jev or Sonnet; the stage is replanned only after three failures on the same stage or a Jev `plan_fits` no.
 

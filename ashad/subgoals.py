@@ -285,7 +285,11 @@ def give_up(plan, goal_id, reason):
             if goal["id"] in given and goal["status"] != "completed" and not goal.get("retired"):
                 goal.update(status="gave_up", actionable=False, blocked_reason=reason)
     selected = select_active(plan)
-    if selected["id"] == plan["root_id"]:
+    if selected["id"] == plan["root_id"] and not selected.get("replanned"):
+        # The last open subgoal was given up but the goal is unverified: ask the planner once for new subgoals from here.
+        selected.update(replanned=True, actionable=False)
+        plan["reason"] = reason
+    elif selected["id"] == plan["root_id"]:
         plan.update(status="handed_back", reason=reason)
     else:
         plan["reason"] = reason

@@ -623,17 +623,15 @@ class OpenAI:
         """One Jev request: which saved plan pattern [(key, record)] achieves objective, and the value of each of its args.
 
         Arg options are the run's legal values of the arg's kind, so a goal set at a menu can bind them before facts are readable.
-        Returns the plan_pick event: offered keys, picked key, confidences, gate noul, args, and reason, None only when the gate
-        says yes and the plan and every arg it needs are confident."""
+        Returns the plan_pick event: offered keys, picked key, confidences, args, and reason, None only when the plan and every arg it needs are confident."""
         records = dict(patterns[:MAX_OPTIONS])
-        pick = {"offered": list(records), "key": None, "confidences": {}, "gate": None, "args": {}, "reason": None}
+        pick = {"offered": list(records), "key": None, "confidences": {}, "args": {}, "reason": None}
         if not records:
             return {**pick, "reason": "no_patterns"}
         model = self.store.require("runs", run_id)["plan"].get("jev_model") or JEV_MODEL
         plans = {key: (record["name"] + ": " + "; ".join(s["objective"] for s in record["stages"]))[:OPTION_CHARS] for key, record in records.items()}
-        questions = {"plan": jev.choice("Pick the saved plan in criteria that achieves `goal`.", plans),
-                     "plan_gate": jev.noul({"plans": list(plans.values()),
-                                            "question": "Does one of `plans` achieve `goal` once its item and count are replaced?"})}
+        # The plan Choice's confidence is the fit check; each stage is checked for usability when it activates (jev_plan_fits).
+        questions = {"plan": jev.choice("Pick the saved plan in criteria that achieves `goal`.", plans)}
         options = facts.arg_values(catalog["values"], item_ids)
         for name in sorted({p for record in records.values() for p in record["params"]}):
             values = options.get(name)
@@ -646,10 +644,7 @@ class OpenAI:
             answers = (await jev.ask(state, questions, credentials=self.credentials, model=model))["answers"]
         except jev.JevError:
             return {**pick, "reason": "jev_error"}
-        pick.update(key=answers["plan"]["choice"], gate=answers["plan_gate"]["noul"],
-                    confidences={name: answer["confidence"] for name, answer in answers.items() if name != "plan_gate"})
-        if pick["gate"] < NOUL_YES:
-            return {**pick, "reason": "gate"}
+        pick.update(key=answers["plan"]["choice"], confidences={name: answer["confidence"] for name, answer in answers.items()})
         if answers["plan"]["confidence"] < ACT_CONFIDENCE:
             return {**pick, "reason": "low_confidence"}
         for name in records[pick["key"]]["params"]:

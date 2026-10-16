@@ -690,8 +690,7 @@ class StructuredPlayers:
         await self.report_capability_gap(run_id, player_id, plan, focus, kind=kind, tried=tried, missing=missing, observation=observation)
         run, _ = self.binding(run_id, player_id)
         plan = run["subgoal_plan"]
-        reason = f"Broken: {missing}" if kind == "broken" else missing
-        subgoals.give_up(plan, focus["id"], reason)
+        subgoals.give_up(plan, focus["id"], missing)
         self.store.put("runs", run)
         self.store.event(run_id, "subgoal_plan_updated", {"player_id": player_id, "plan": plan, "warnings": [], "outcome": "gave_up"})
         self._forget_turn((run_id, player_id))

@@ -137,7 +137,7 @@ def unusable(steps, context):
         return None
     observation = context["observation"]
     world_step = "kind=ui" not in (step.get("targets") or "").split() and not step["control"].startswith("ui_")
-    blocked = (observation.get("state", {}).get("player", {}).get("activity") == "ui"
+    blocked = (observation.get("state", {}).get("player", {}).get("activity") in ("ui", "input_disabled")
                or facts.read(facts.values(observation), "player_can_act", {}) is False)
     if world_step and blocked:
         return "blocking_ui"

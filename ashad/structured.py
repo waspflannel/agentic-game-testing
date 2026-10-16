@@ -25,6 +25,7 @@ LOOP_BACKSTOP_DECISIONS = 6
 MOVEMENT_STALL_LIMIT = 2  # Failed moves from one unchanged position: input is not reaching the character.
 BATCH_LIMIT = 5  # Actions per turn from one batch decide.
 REPEAT_LIMIT = 30  # Actions per turn from one repeat step.
+REPEAT_NO_PROGRESS = 2  # Repeat stops in a row with no measured progress before the decider takes the step until the stage's value moves.
 FAIL_REPLAN = 3  # Jev hybrid: failed actions on one kept stage with steps before it is re-planned; earlier failures retry.
 TIMER_FACTS = ("crops_harvestable", "crop_growth_stage_min")  # Growth facts the code waits on after the model chose to wait.
 # v6 wheat: 4-6 s per growth stage (wheat_seed.tres initial_growth_timer), 3 stages to max_growth_state 4,
@@ -165,6 +166,7 @@ class StructuredPlayers:
         self.turn_ended_at = {}
         self.code_waits = {}  # (run_id, player_id) -> (goal_id, seconds of code waits used)
         self.step_index = {}  # (run_id, player_id) -> (goal_id, index of the goal's next unfinished step, decider takes the next turn)
+        self.repeat_stalls = {}  # (run_id, player_id) -> (goal_id, step index, stage value, repeat stops in a row with no measured progress)
         self.goal_intents = {}  # (run_id, player_id) -> (goal_id, [repeat.step_for of each agent action]), saved as a skill when the goal completes
         self.held = {}  # (run_id, player_id) -> item_id of the hotbar slot the controller last pressed; the game does not report it
         self.decision_failed = {}  # (run_id, player_id) -> (goal_id, decision key) whose one replay failed while that goal is active
@@ -180,7 +182,7 @@ class StructuredPlayers:
         self.last_decisions.pop(key, None)
         # The code-wait budget, step index, intents and failed decision belong to one goal; a replan of the same goal keeps them.
         plan = self.store.require("runs", key[0]).get("subgoal_plan") or {}
-        for kept in (self.code_waits, self.step_index, self.goal_intents, self.decision_failed, self.jev_missed, self.deltas):
+        for kept in (self.code_waits, self.step_index, self.repeat_stalls, self.goal_intents, self.decision_failed, self.jev_missed, self.deltas):
             if key in kept and kept[key][0] != plan.get("active_goal_id"):
                 del kept[key]
 
@@ -677,7 +679,7 @@ class StructuredPlayers:
 
     def forget_run(self, run_id):
         for counters in (self.loop_counts, self.movement_stalls, self.bug_reports, self.turn_ended_at, self.code_waits, self.step_index,
-                         self.goal_intents, self.held, self.decision_failed, self.jev_missed, self.deltas, self.judged):
+                         self.repeat_stalls, self.goal_intents, self.held, self.decision_failed, self.jev_missed, self.deltas, self.judged):
             for key in [k for k in counters if k[0] == run_id]:
                 del counters[key]
         self.crashes_recorded -= {e for e in self.crashes_recorded if e[0] == run_id}
@@ -1456,6 +1458,7 @@ class StructuredPlayers:
             self.judged.pop(key, None)
             self.code_waits.pop(key, None)
             self.step_index.pop(key, None)
+            self.repeat_stalls.pop(key, None)
             self.generations[key] = generation
         def current():
             live = self.store.require("runs", run_id)
@@ -1574,8 +1577,9 @@ class StructuredPlayers:
             result, first, stop, ran, finished, replayed = None, {}, None, [], False, None
             route, route_model, route_ms = None, None, 0
             routing = {"route": None, "model": None, "pick": None, "confidence": None, "fallback": None, "jev_ms": 0, "menu": {}}
-            # The leaf's next unfinished step runs in code when it is a repeat step. A repeat stop that leaves the step
-            # unfinished after dispatching actions hands the next turn to the decider; then the repeat step is tried again.
+            # The leaf's next unfinished step runs in code when it is a repeat step that can start here. A repeat stop that
+            # leaves the step unfinished hands the next turn to the decider, and the same turn too when it dispatched nothing;
+            # then the repeat step is tried again, until REPEAT_NO_PROGRESS stops in a row leave the stage's value unchanged.
             steps = (goal or {}).get("steps") or []
             goal_id, index, decider_turn = self.step_index.get(key) or (None, 0, False)
             if not goal or goal_id != goal["id"]:
@@ -1588,7 +1592,18 @@ class StructuredPlayers:
             if steps and context.get("current_goal"):
                 # The decider and relevant_groups' tile filter see only the unfinished steps, so a finished repeat step's tiles are not the ones kept.
                 context["current_goal"]["steps"] = steps[index:]
-            if step and step.get("targets") and not decider_turn:
+            run_step = bool(step and step.get("targets") and not decider_turn)
+            if run_step:
+                stage_value = subgoals.measure(goal["completion"], observation)[1]
+                stall = self.repeat_stalls.get(key)
+                stalls = stall[3] if stall and stall[:3] == (goal["id"], index, stage_value) else 0
+                skipped = "no_progress" if stalls >= REPEAT_NO_PROGRESS else repeat.unusable([step], {**context, "observation": observation})
+                if skipped:
+                    # Wait, Jev or Sonnet decide this turn instead.
+                    self.store.event(run_id, "repeat_skipped", {"player_id": player_id, "goal_id": goal["id"], "control": step["control"],
+                                                                "targets": step["targets"], "reason": skipped, "stalls": stalls})
+                    run_step = False
+            if run_step:
                 # The verifying fact reads the goal's args that it also takes (e.g. plant_id); others read its default.
                 check = {"fact": step["verifies"], "args": [a for a in goal["completion"]["args"] if a["name"] in facts.FACTS.get(step["verifies"], ((),))[0]], "op": ">=", "value": 0}
                 before = subgoals.measure(check, observation)[1]
@@ -1597,7 +1612,14 @@ class StructuredPlayers:
                 route = "repeat"
                 after = subgoals.measure(check, self.store.get("observations", f"{run_id}:{player_id}") or {})[1]
                 finished = stop in ("goal_met", "done") or bool(step["count"] and before is not None and after is not None and abs(after - before) >= step["count"])
-                self.step_index[key] = (goal["id"], index + finished, not finished and bool(ran))
+                decider_turn = not finished
+                self.step_index[key] = (goal["id"], index + finished, decider_turn)
+                if finished or after not in (None, before):
+                    self.repeat_stalls.pop(key, None)
+                else:
+                    self.repeat_stalls[key] = (goal["id"], index, stage_value, stalls + 1)
+                if not ran:
+                    stop, route = None, None  # Nothing dispatched (e.g. item_not_held, not_offered): the decider takes this same turn.
             elif decider_turn:
                 self.step_index[key] = (goal["id"], index, False)
             if stop is None and goal:

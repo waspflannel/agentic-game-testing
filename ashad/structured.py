@@ -57,18 +57,31 @@ def json_bytes(value):
     return len(json.dumps(value, ensure_ascii=False, default=str).encode())
 
 
+def selected_slot(observation):
+    """The hotbar index the game shows as selected; the hotbar entries do not say, only the HotbarUI entities do."""
+    return next((e["state"].get("inventory_index") for e in observation.get("entities", [])
+                 if e.get("parent") == "HotbarUI" and e.get("state", {}).get("selected")), None)
+
+
 def wait_signature(observation):
     state = observation.get("state", {})
     player = state.get("player", {})
     # Timers, animation, camera motion and moving bystanders must not cause inference.
     facts = {"generation": observation.get("generation"), "ready": observation.get("ready"),
-             "inventory": player.get("inventory"), "hotbar": player.get("hotbar"),
+             "inventory": player.get("inventory"), "hotbar": player.get("hotbar"), "selected_slot": selected_slot(observation),
              "objectives": state.get("objectives"), "completed": state.get("completed_quests"),
              "tiles": state.get("tiles"), "facts": state.get("facts"),
              "targets": [{"id": e.get("id"), "actions": e.get("actions"),
                           "crafting": e.get("state", {}).get("is_crafting")}
                          for e in observation.get("entities", []) if e.get("kind") != "ground_item"]}
     return hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()
+
+
+def is_select_input(action):
+    """A hotbar select input: pressing an already-selected slot is harmless, so it is never banned from the menus."""
+    args = action.get("args", {})
+    name = str(args.get("parameters", {}).get("name", ""))
+    return args.get("verb") == "input" and (name.startswith("slot_") or name in ("hotbar_prev", "hotbar_next"))
 
 
 def shown_text(observation):
@@ -948,7 +961,7 @@ class StructuredPlayers:
         def won_leaves(parent_id):
             leaves = []
             for goal in plan["goals"]:
-                if goal.get("parent_id") != parent_id or goal.get("retired") or goal["status"] != "completed" or goal["id"] == subgoals.ENTER:
+                if goal.get("parent_id") != parent_id or goal.get("retired") or goal["status"] != "completed" or goal["id"] == subgoals.ENTER or goal.get("gave_up"):
                     continue
                 has_children = any(g.get("parent_id") == goal["id"] and not g.get("retired") for g in plan["goals"])
                 leaves += won_leaves(goal["id"]) if has_children else [goal]
@@ -1236,7 +1249,7 @@ class StructuredPlayers:
                 seen.append(after)
         if progressed:
             subgoals.credit_progress(goal, time.time())
-        elif stop in ("failed", "no_effect") and actions:
+        elif stop in ("failed", "no_effect") and actions and not is_select_input(actions[-1]):
             goal["failed"] = ((goal.get("failed") or []) + [option_key(actions[-1])])[-FAILED_KEPT:]
         attempts = None if progressed else subgoals.record_attempt(run["subgoal_plan"])
         self.store.put("runs", run)

@@ -586,10 +586,23 @@ class Coordinator:
                 if suspended > 30:
                     self.store.event(run["id"], "host_suspended", {"player_id": player["id"], "seconds": round(suspended)})
                     reason = f"{player['name']}: the host was suspended for {round(suspended)} s; the worker paused its inputs ({type(exc).__name__}: {exc})"
+                    # The next tick whose heartbeats succeed resumes once if this stays the only pause reason.
+                    run["suspend_auto_resume"] = reason
+                    self.save_run(run)
                 await self.investigate(run["id"], "infrastructure_failure", reason, players=[player["id"]])
                 # Report after investigate: its input hold bumps the generation once, so later ticks dedupe on the new one.
                 if suspended <= 30 and (crash := crash_of(exc, ps.get("worker_status") or {})):
                     await self.structured.report_crash(run["id"], player["id"], *crash, reason)
+                return
+        if suspend_reason := run.pop("suspend_auto_resume", None):
+            self.save_run(run)
+            pause = run.get("pause") or {}
+            if run["state"] == "Investigating" and pause.get("category") == "infrastructure_failure" and pause.get("reason") == suspend_reason:
+                try:
+                    await self.control(run["id"], "resume", command_id=f"auto_resume:{run['investigation_started_at']}")
+                    self.store.event(run["id"], "auto_resumed", {"reason": suspend_reason})
+                except ValueError as exc:
+                    self.store.event(run["id"], "auto_resume_failed", {"reason": suspend_reason, "error": str(exc)})
                 return
         host = next(p for p in run["plan"]["players"] if p["role"] == "host")
         host_state = run["players"][host["id"]]
@@ -948,6 +961,9 @@ class Coordinator:
             key = json.dumps([run.get("investigation_started_at", run.get("investigation_deadline")), category, reason, sorted(players or run["players"])])
             record_task(self.store, run_id, "investigation", reason, key=key, category=category)
             publish_pending(self.store)
+            if run.get("suspend_auto_resume") not in (None, reason):
+                run.pop("suspend_auto_resume")  # Another failure joined the suspend; leave Resume to the operator.
+                self.save_run(run)
             return run  # A repeated alert must never restart the 30-minute clock.
         run["resume_state"] = "Running" if run.get("world_ready_at") else "Starting"
         run.update(state="Investigating", investigation_deadline=time.time()+1800, investigation_started_at=time.time())

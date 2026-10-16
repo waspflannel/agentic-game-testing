@@ -20,6 +20,9 @@ FACTS = {
 ZERO_DEFAULT = {"item_count", "delivered_to", "crops_planted", "crops_harvestable"}
 PLANT_FACTS = ("crops_planted", "crops_harvestable", "crop_growth_stage_min")
 BRIDGE_SCHEMA = 2
+# Planners see delivered_to as container_contents (what a target container holds now, not items the player took back); stored checks and bridge values keep delivered_to.
+SHOWN = {"delivered_to": "container_contents"}
+STORED = {shown: name for name, shown in SHOWN.items()}
 
 
 def args_of(check):
@@ -59,9 +62,11 @@ def values(observation):
 
 def read(values, fact, args):
     """The fact's current value for args; None when not readable, 0 for absent keys of count facts."""
-    if fact not in values:
+    fact = STORED.get(fact, fact)
+    shown = SHOWN.get(fact, fact)
+    if fact not in values and shown not in values:
         return None
-    value = values[fact]
+    value = values[fact] if fact in values else values[shown]
     for name in FACTS[fact][0]:
         key = args.get(name)
         if isinstance(value, dict) and key in value:
@@ -75,7 +80,7 @@ def read(values, fact, args):
 
 def arg_values(current, item_ids):
     """The legal values of each arg kind, from the run's item ids and the current fact values (at a menu, before any fact is readable, from the item ids alone)."""
-    delivered = current.get("delivered_to", {})
+    delivered = current.get("delivered_to", current.get(SHOWN["delivered_to"], {}))
     return {
         "item_id": sorted(set(item_ids) | set(current.get("item_count", {})) | {i for items in delivered.values() for i in items}),
         "quest_id": sorted(set(current.get("quest_completed", {})) | set(current.get("quest_requirement_progress", {}))),
@@ -86,19 +91,21 @@ def arg_values(current, item_ids):
 
 
 def catalog(observation, item_ids):
-    """The planner-facing catalog: readable facts, the legal values of each arg, and current values."""
+    """The planner-facing catalog under shown names: readable facts, the legal values of each arg, and current values."""
     current = values(observation)
     ids = arg_values(current, item_ids)
-    facts = {name: {"args": list(args), "type": kind, "tag": tag} for name, (args, kind, tag) in FACTS.items() if name in current}
+    facts = {SHOWN.get(name, name): {"args": list(args), "type": kind, "tag": tag} for name, (args, kind, tag) in FACTS.items() if name in current}
     used = {a for f in facts.values() for a in f["args"]}
-    return {"facts": facts, "args": {k: v for k, v in ids.items() if k in used}, "values": current}
+    return {"facts": facts, "args": {k: v for k, v in ids.items() if k in used}, "values": {SHOWN.get(k, k): v for k, v in current.items()}}
 
 
 def validate(check, catalog, location):
     def fail(why):
         raise ValueError(f"{why} (at {location})")
 
-    fact, args = check["fact"], check.get("args", [])
+    # A shown name is stored as its fact name, so measuring and saved patterns read one key.
+    check["fact"] = STORED.get(check["fact"], check["fact"])
+    fact, args = SHOWN.get(check["fact"], check["fact"]), check.get("args", [])
     if fact == "unknown":
         if args:
             fail("unknown takes no args")

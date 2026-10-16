@@ -102,6 +102,10 @@ The planner picks each goal's completion check from a typed fact catalog the gam
 
 Planning expands the current branch as needed (up to 8 levels / 64 goals), replans after failed actions, and gives up on a goal after six actions or two plans without measured progress, a repeated-action loop, a second invalid check, or the planner reporting it blocked. A given-up goal is logged as an “MCP or game needs updating” issue and the agent moves on; with nothing left it hands back to the operator. Missing recipes or unsupported observations may require discovery or operator assistance; the planner cannot create unavailable controls. Historical runs without a generated plan retain their existing behavior.
 
+Stages complete in order: a later stage is measured only once every earlier sibling stage is completed.
+
+Each Jev plan pick logs one `plan_pick` event with the offered pattern keys, the picked key, confidences, the gate noul and the bound args; when no pattern is used it gives the reason: `no_patterns`, `too_large`, `jev_error`, `gate`, `low_confidence`, `missing_arg:<name>` or `stale`.
+
 Supplying a goal still does **not** create a reliable automatic whole-game success detector. The free-text primary objective retains manual acceptance; concrete observable outcomes live in its child goals. When no further grounded work is available, the planner requests operator review. Inspect results and Stop when appropriate. An exhausted checklist alone never proves tutorial completion. Citations and checks constrain proposals but do not prove arbitrary natural-language intent. Full autonomous DEMO completion remains unverified.
 
 ## Observe and recover

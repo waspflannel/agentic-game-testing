@@ -75,10 +75,10 @@ def next_action(step, context, state):
         slot = select_input(observation, step["item"])
         action = slot and menu.resolve(context, menu.option_key({"tool": "perform_action", "args": {"verb": "input", "parameters": {"name": slot, "duration_ms": 160}}}))
         state["select"] = "pressed" if action else "not_on_hotbar"
-        if action:
-            state["held"] = step["item"]
-            return action, "select"
-        # Use whatever is equipped instead; a wrong equipped item shows as two no-effect uses, which stop the run.
+        if not action:
+            return None, "item_not_held"
+        state["held"] = step["item"]
+        return action, "select"
     here = observation.get("state", {}).get("player", {}).get("position")
     candidates = []
     for group in menu.action_groups(context):

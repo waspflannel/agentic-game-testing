@@ -1,5 +1,5 @@
 """Provider-neutral prompts and output schemas for selection, planning and game controls."""
-from .facts import FACTS
+from .facts import FACTS, SHOWN
 
 TUNING_PROMPT_VERSION = 3
 TUNING_MANUAL_LIMIT = 32000
@@ -79,7 +79,7 @@ def planning_request(evidence, schema):
     return {"evidence": evidence}, schema, instructions
 
 
-CATALOG = "; ".join(f"{name}({', '.join(args)}): {kind}, {tag}" for name, (args, kind, tag) in FACTS.items())
+CATALOG = "; ".join(f"{SHOWN.get(name, name)}({', '.join(args)}): {kind}, {tag}" for name, (args, kind, tag) in FACTS.items())
 
 
 def controls_request(evidence, stage, repair):

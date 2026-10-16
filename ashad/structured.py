@@ -808,6 +808,23 @@ class StructuredPlayers:
         if plan["status"] == "goal_reached":
             await self.coordinator.goal_reached(run_id, player_id, subgoals.completion_claim(plan)["reason"])
             return None
+        # Every stage verified: claim the goal in code, through the planner's own complete path, instead of asking the planner.
+        stages = [g for g in plan["goals"] if g.get("parent_id") == plan["root_id"] and not g.get("retired")]
+        if plan["active_goal_id"] == plan["root_id"] and stages and all(g["status"] == "completed" for g in stages):
+            decision = {"goal_id": plan["root_id"], "mode": "complete", "completion": subgoals.unknown(), "subgoals": [], "steps": [],
+                        "reason": "Every stage of the plan is verified complete."}
+            try:
+                claimed = subgoals.apply_decision(plan, decision, {"observation": observation})
+            except ValueError:
+                claimed = None  # The operator rejected an earlier claim with as many stages verified: the planner expands what is missing.
+            if claimed:
+                run["subgoal_plan"] = claimed
+                self.store.put("runs", run)
+                self.store.event(run_id, "subgoal_plan_updated", {"player_id": player_id, "plan": claimed, "warnings": [], "source": "stages_verified"})
+                claim = subgoals.completion_claim(claimed)
+                self.store.event(run_id, "goal_reached", {"player_id": player_id, "revision": claimed["revision"], "claim": claim})
+                await self.coordinator.goal_reached(run_id, player_id, claim["reason"])
+                return None
         stuck = subgoals.stuck(plan, needs_plan)
         if stuck:
             tried = [label for _, label in subgoals.active_goal(plan).get("recent_actions") or []]

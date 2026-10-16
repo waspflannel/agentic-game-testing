@@ -1051,7 +1051,7 @@ class StructuredPlayers:
 
         `start` is the observation the batch was chosen on. `last` is the result of the batch action already run (its
         post-action observation is `fresh`), or None when the batch starts here on `fresh`. With a `tried` set (repeat steps),
-        one no_effect that is not a move is tolerated: the used target joins `tried` and the next pick skips it; a
+        one no_effect that is not a move is tolerated: the used target and every offered target of the same kind join `tried`; a
         second no_effect in a row stops. Returns the stop reason and the actions dispatched here."""
         key = (run_id, player_id)
         run = self.store.require("runs", run_id)
@@ -1081,6 +1081,7 @@ class StructuredPlayers:
                     target = repeat.action_key(ran[-1])
                     if target is not None:
                         tried.add(target)
+                    tried.update(repeat.same_kind(ran[-1], {**context, "observation": fresh}))
                     missed = True
             if goal and subgoals.measure(goal["completion"], fresh)[0]:
                 return "goal_met", ran

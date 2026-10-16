@@ -24,6 +24,9 @@ BATCH_LIMIT = 5  # Actions per turn from one batch decide.
 REPEAT_LIMIT = 30  # Actions per turn from one replay.
 REPLAY_MISSES = ("failed", "no_effect", "fact_moved_away", "not_offered")  # Replay stops that mark the source missed on the leaf.
 FAILED_KEPT = 8  # Failed actions a leaf keeps out of the decider menus.
+# ponytail: a fixed cap so a label that ticks on its own (a countdown) cannot reset a leaf's attempts forever; a flow with
+# more distinct screens than this spends attempts past it, so raise it if a real menu or cutscene flow ever needs more.
+MAX_SCREENS = 32  # New screens per leaf that count as progress while the player cannot act.
 TIMER_FACTS = ("crops_harvestable", "crop_growth_stage_min")  # Growth facts the code keeps waiting on after a wait.
 # v6 wheat: 4-6 s per growth stage (wheat_seed.tres initial_growth_timer), 3 stages to max_growth_state 4,
 # and the timer runs only on a Watered tile (tile.gd:106). Watered wheat is ripe in 12-18 s; unwatered never.
@@ -68,8 +71,18 @@ def wait_signature(observation):
     return hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()
 
 
+def shown_text(observation):
+    """The text every UI element shows, e.g. a cutscene's typewriter line, which has no actions."""
+    return sorted(str(e.get("label", "")) for e in observation.get("entities", []) if e.get("kind") == "ui")
+
+
 def effect_basis(observation):
-    return {"facts": wait_signature(observation), "position": observation.get("state", {}).get("player", {}).get("position")}
+    basis = {"facts": wait_signature(observation), "position": observation.get("state", {}).get("player", {}).get("position")}
+    if not subgoals.playable(observation):
+        # Off a playable world a press may only change text: the first next_text in a cutscene finishes its typewriter line.
+        # In a playable world HUD labels such as a clock change on their own, so text is left out there.
+        basis["text"] = hashlib.sha256(json.dumps(shown_text(observation)).encode()).hexdigest()[:12]
+    return basis
 
 
 def action_effect(before, observation):
@@ -141,9 +154,10 @@ def repeated_failures(events):
 
 
 def screen_id(observation):
-    """A short id of the screen: its actionable UI controls by node, as skills.signature names them."""
+    """A short id of the screen: its actionable UI controls by node, as skills.signature names them, and the text it shows,
+    so each cutscene slide is its own screen."""
     screen = skills.signature({"fact": "", "args": [], "op": ""}, observation, "")["screen"]
-    return hashlib.sha256(json.dumps(screen).encode()).hexdigest()[:12]
+    return hashlib.sha256(json.dumps([screen, shown_text(observation)]).encode()).hexdigest()[:12]
 
 
 def is_leaf(plan, goal):
@@ -1202,8 +1216,8 @@ class StructuredPlayers:
         """Count a turn that dispatched or waited: progress resets the leaf's attempts, else it is one more. True on progress.
 
         Progress is a goal-path fact moving toward its target or, while the player cannot act (menus, character creation,
-        cutscenes, where no fact moves), reaching a screen this leaf has not seen; a seen screen is no progress, so going
-        back and forth between screens still spends the budget. A failed or no_effect stop keeps the last action out of the
+        cutscenes, where no fact moves), reaching a screen this leaf has not seen, up to MAX_SCREENS; a seen screen is no
+        progress, so going back and forth between screens still spends the budget. A failed or no_effect stop keeps the last action out of the
         leaf's decider menus. goal["waited"] tells the next turn that this one waited, so a growth leaf keeps waiting in code."""
         run, goal = self._active(run_id, player_id)
         if not goal or goal["id"] != goal_id or not (actions or stop == "wait"):
@@ -1217,7 +1231,7 @@ class StructuredPlayers:
             before, after = screen_id(decided_on), screen_id(latest)
             if before not in seen:
                 seen.append(before)
-            progressed = after not in seen
+            progressed = after not in seen and len(seen) < MAX_SCREENS
             if progressed:
                 seen.append(after)
         if progressed:

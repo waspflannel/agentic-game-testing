@@ -106,7 +106,7 @@ Stages complete in order: a later stage is measured only once every earlier sibl
 
 Only a plan whose goal check passed is saved as a plan pattern, with that check; an operator's "not done" counts a failure against it. Jev's plan Choice can answer none. Each Jev plan pick logs one `plan_pick` event with the offered pattern keys, the picked key, confidences and the bound args; when no pattern is used it gives the reason: `no_patterns`, `too_large`, `jev_error`, `none`, `low_confidence`, `missing_arg:<name>` or `stale`. A pattern stage already met (for example, seeds already held) is left out.
 
-A turn that dispatches or waits without progress toward any goal on the active path counts one attempt on the active leaf; progress resets it to zero. While the player cannot act (menus, character creation, cutscenes), reaching a screen the leaf has not seen counts as progress; returning to a seen screen does not.
+A turn that dispatches or waits without progress toward any goal on the active path counts one attempt on the active leaf; progress resets it to zero. While the player cannot act (menus, character creation, cutscenes), reaching a screen the leaf has not seen counts as progress, up to 32 per leaf; returning to a seen screen does not. A screen includes the text it shows, so each cutscene slide is its own screen, and there a press whose only effect is new text, such as the first `next_text` that finishes a cutscene's typing, counts as having an effect instead of being left out of the menus.
 
 A leaf that spends six attempts is broken: the first break re-plans it once, a second break gives it up with one gap. A failed action is left out of that leaf's menus.
 

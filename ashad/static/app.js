@@ -11,7 +11,7 @@ import { newUsageUi, usageSkeleton, usageRegions } from './views/usage.js';
 import { boardModel, boardSkeleton, boardRegions, issueSkeleton, issueViewRegions } from './views/issues.js';
 import { skillsSkeleton, skillsRegions } from './views/skills.js';
 import { newOverview, readinessDue, overviewModel, overviewSkeleton, overviewRegions, validatedProjectBuilds, defaultRegatherBuildId, regatherDialogHTML } from './views/project.js';
-import { PAGE, MAX_EVENTS, createTimeline, beginPage, applyPage, failPage, seedFromRun, applyLive, timelineCards, timelineRegions, syncCards, cardBody, rawJSON, eventIndex } from './views/timeline.js';
+import { PAGE, OLDER, MAX_EVENTS, createTimeline, beginPage, applyPage, failPage, seedFromRun, applyLive, prependOlder, timelineCards, timelineRegions, syncCards, cardBody, rawJSON, eventIndex } from './views/timeline.js';
 
 const $ = selector => document.querySelector(selector);
 const enc = encodeURIComponent;
@@ -1109,6 +1109,20 @@ async function loadPage(mode, before) {
   return true;
 }
 
+// Prepends up to OLDER earlier events to the window; the live edge keeps following.
+async function loadOlder() {
+  const tl = state.thread.tl;
+  const runId = state.route.id;
+  const current = state.isCurrent;
+  const token = beginPage(tl);
+  renderView();
+  try {
+    const page = await api(`/api/runs/${enc(runId)}/events?before=${tl.events[0]?.seq}&limit=${OLDER}${searchQuery(tl)}`);
+    if (!current() || state.thread.tl !== tl || !prependOlder(tl, token, page)) return;
+  } catch (error) { failPage(tl, token, error); }
+  if (current()) renderView();
+}
+
 // Live edge: append newer events after the run poll. Auto-scroll only when already near the bottom.
 async function pollTimeline(runId) {
   const tl = state.thread.tl;
@@ -1501,7 +1515,7 @@ document.addEventListener('click', async event => {
     state.thread.tl.filter = target.dataset.filter;
     renderView();
   } else if (action === 'tl-older') {
-    if (target.getAttribute('aria-disabled') !== 'true') loadPage('history', state.thread.tl.events[0]?.seq);
+    if (target.getAttribute('aria-disabled') !== 'true') loadOlder();
   } else if (action === 'tl-latest') {
     if (await loadPage('latest')) scrollToLatest();
   } else if (action === 'tl-to-latest') {

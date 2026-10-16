@@ -2,8 +2,9 @@
 import { esc, icon, humanize } from '../core.js';
 import { rowTokens } from './usage.js';
 
-export const PAGE = 100;        // One page of history; "Load older" replaces the window with the previous page.
-export const MAX_EVENTS = 200;  // The live window grows to this and then drops its oldest events.
+export const PAGE = 100;        // One page of history around a jump, or the latest page after "Return to latest".
+export const OLDER = 1000;      // "Load older" prepends up to this many earlier events; the window keeps everything loaded.
+export const MAX_EVENTS = 200;  // Poll page size for live events.
 export const RAW_LIMIT = 4096;
 
 // ── Kinds ───────────────────────────────────────────────────────────────────
@@ -75,7 +76,7 @@ const args = value => clip(Object.entries(value || {}).filter(([k]) => k !== 're
 
 // ── Decision routing and Jev checks ─────────────────────────────────────────
 const ROUTES = { jev: 'Jev', cache: 'cache', repeat: 'repeat' };
-const FALLBACKS = { low_confidence: 'low confidence', not_offered: 'pick not offered here', too_large: 'request too large' };
+const FALLBACKS = { low_confidence: 'low confidence', not_offered: 'pick not offered here', no_action: 'pick was not a game action', too_large: 'request too large' };
 const round = n => String(Math.round(Number(n) * 100) / 100);
 const words = value => String(value ?? '').replaceAll('_', ' ');
 // Model IDs read as their family name ("claude-sonnet-4-5" → "Sonnet"); anything else stays as recorded.
@@ -168,7 +169,7 @@ function modelSummary(events) {
 }
 
 // ── Window state ────────────────────────────────────────────────────────────
-// mode 'latest' follows the live edge; 'history' shows one older page until "Return to latest".
+// mode 'latest' follows the live edge and keeps every loaded event; 'history' shows the page around a jump until "Return to latest".
 export const createTimeline = () => ({ events: [], mode: 'latest', loaded: false, filter: 'all', search: '', searchDraft: '',
   selected: null, older: 0, newer: 0, total: 0, cursor: 0, unseen: 0, token: 0, loading: false, error: '' });
 
@@ -177,7 +178,7 @@ export function beginPage(tl) { tl.loading = true; tl.error = ''; return ++tl.to
 
 export function applyPage(tl, token, page, mode, latestSeq = 0) {
   if (token !== tl.token) return false;
-  const events = (page.events || []).slice(-PAGE);
+  const events = page.events || [];
   Object.assign(tl, { events, mode, loaded: true, loading: false, older: page.older_count ?? 0, newer: page.newer_count ?? 0, total: page.total ?? 0, unseen: 0,
     cursor: events.length ? events.at(-1).seq : Math.max(latestSeq, page.next ?? 0) });
   return true;
@@ -188,9 +189,8 @@ export function failPage(tl, token, error) { if (token === tl.token) Object.assi
 // The run detail already carries the newest events, so an unfiltered thread opens without its own request.
 export function seedFromRun(tl, run) {
   if (tl.loaded || tl.search || !Array.isArray(run?.events) || !run.events_page) return false;  // Bootstrap rows carry no event page.
-  const events = run.events.slice(-PAGE);
-  const page = run.events_page || {};
-  return applyPage(tl, tl.token, { events, older_count: page.recent_100_older_count ?? Math.max(0, (page.older_count ?? 0) + run.events.length - events.length), newer_count: 0, total: page.total ?? events.length, next: page.next }, 'latest');
+  const page = run.events_page;
+  return applyPage(tl, tl.token, { events: run.events, older_count: page.older_count ?? 0, newer_count: 0, total: page.total ?? run.events.length, next: page.next }, 'latest');
 }
 
 // A live page appends only at the live edge and only after the cursor it was asked for. 'reload' means a gap.
@@ -200,11 +200,18 @@ export function applyLive(tl, token, page, after) {
   const fresh = (page.events || []).filter(e => e.seq > after);
   tl.total = page.total ?? tl.total;
   if (!fresh.length) return 0;
-  const merged = [...tl.events, ...fresh];
-  tl.older += Math.max(0, merged.length - MAX_EVENTS);
-  tl.events = merged.slice(-MAX_EVENTS);
+  tl.events = [...tl.events, ...fresh];
   tl.cursor = fresh.at(-1).seq;
   return fresh.length;
+}
+
+// "Load older": prepends a page of earlier events to the window without dropping any; the mode is unchanged.
+export function prependOlder(tl, token, page) {
+  if (token !== tl.token) return false;
+  const first = tl.events[0]?.seq ?? Infinity;
+  tl.events = [...(page.events || []).filter(e => e.seq < first), ...tl.events];
+  Object.assign(tl, { older: page.older_count ?? 0, loading: false });
+  return true;
 }
 
 // Ledger rows newer than a history page (counts every row, not just search matches).

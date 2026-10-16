@@ -313,7 +313,7 @@ def stuck(plan, needs_plan) -> str | None:
     if not goal or plan["status"] != "active":
         return None
     if goal.get("attempts", 0) >= STUCK_ACTIONS:
-        return f"{STUCK_ACTIONS} actions without measured progress"
+        return f"{STUCK_ACTIONS} actions without measured progress or a scene change"
     if goal.get("repeats", 0) >= STUCK_REPEATS:
         return "The same action kept repeating without progress after a replan"
     if needs_plan and goal.get("reviews", 0) >= STUCK_PLANS:
@@ -517,13 +517,29 @@ def _rounded(value):
     return value
 
 
-def record_action(plan, action=None):
+def playable(observation):
+    """The world is ready and the player is not known to be unable to act (not a loading, menu or cutscene screen)."""
+    return observation.get("ready") is True and facts.values(observation).get("player_can_act") is not False
+
+
+def record_action(plan, observation, action=None):
+    """Count one attempt toward STUCK_ACTIONS on the observation it was chosen on.
+
+    A wait or a Jev stuck yes (no action) counts only while playable(). An action counts only when the scene was unchanged
+    since the last recorded attempt, or the stage's measured value moved away from its target: a scene change is progress."""
     goal = active_goal(plan)
     if not goal:
         return
-    goal["attempts"] = goal.get("attempts", 0) + 1
+    world, generation, ready, controls = planning_scene(observation)
+    scene = [world, generation, ready, sorted(map(str, controls))]
+    last = goal.get("last_scene")
+    goal["last_scene"] = [scene, goal.get("measured")]
     if action is None:
+        if playable(observation):
+            goal["attempts"] = goal.get("attempts", 0) + 1
         return
+    if not last or last[0] == scene or toward(goal["completion"], goal.get("measured"), last[1]):
+        goal["attempts"] = goal.get("attempts", 0) + 1
     fingerprint = json.dumps([action.get("verb"), action.get("target_id", ""), _rounded(action.get("parameters") or {})], sort_keys=True)
     label = (action.get("parameters") or {}).get("name") or action.get("verb")
     window = ((goal.get("recent_actions") or []) + [[fingerprint, label]])[-4:]

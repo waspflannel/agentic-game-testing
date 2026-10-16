@@ -295,7 +295,7 @@ class StructuredPlayers:
             self.waits[key] = (time.time() + max(1, min(float(args["seconds"]), 60)), wait_signature(observation), generation)
             ps["activity"] = str(args.get("reason", "Waiting for game state"))[:1000]
             if owner == "agent" and run.get("subgoal_plan", {}).get("player_id") == player_id:
-                subgoals.record_action(run["subgoal_plan"])  # Repeated waits without progress must trigger review.
+                subgoals.record_action(run["subgoal_plan"], observation)  # Repeated waits without progress must trigger review.
             self.store.put("runs", run)
             self.status(run_id, player_id, "waiting", ps["activity"], generation, wait_until=self.waits[key][0])
             return {"status": "waiting", "until": self.waits[key][0]}
@@ -345,7 +345,7 @@ class StructuredPlayers:
         ps["pending_action"] = {"action_id": action_id, "expires_at": payload["expires_at"], "verb": payload["verb"],
                               "before": effect_basis(observation)}
         if owner == "agent" and run.get("subgoal_plan", {}).get("player_id") == player_id:
-            subgoals.record_action(run["subgoal_plan"], payload)
+            subgoals.record_action(run["subgoal_plan"], observation, payload)
             goal_id = run["subgoal_plan"].get("active_goal_id")
             if self.goal_intents.get(key, (None,))[0] != goal_id:
                 self.goal_intents[key] = (goal_id, [])
@@ -1360,7 +1360,7 @@ class StructuredPlayers:
         return res, None, []
 
     def _apply_checks(self, run_id, player_id, generation, goal, context, observation, checks):
-        """Logs each Jev quick check. A stuck yes acts as one more attempt, never against a fact that moved in the window.
+        """Logs each Jev quick check. A stuck yes acts as one more attempt on a playable screen, never against a fact that moved in the window.
         A plan_fits at or below FIT_NO re-plans the stage and a stage_done yes completes it; returns "replan" or "stage_done" when one applied, else None."""
         key = (run_id, player_id)
         applied = None
@@ -1372,7 +1372,7 @@ class StructuredPlayers:
                     payload["reason"] = "fact_progress"
                 else:
                     run = self.store.require("runs", run_id)
-                    subgoals.record_action(run["subgoal_plan"])
+                    subgoals.record_action(run["subgoal_plan"], observation)
                     self.store.put("runs", run)
                     payload["applied"] = True
             elif check == "effect":

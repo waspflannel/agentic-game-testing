@@ -156,6 +156,7 @@ class StructuredPlayers:
         self.coordinator = coordinator
         self.store = coordinator.store
         self.waits = {}
+        self.wait_streaks = {}  # (run_id, player_id) -> (wait_signature, waits dispatched in a row on it), as the context's unchanged_waits
         self.last_decisions = {}
         self.pending = {}
         self.generations = {}
@@ -295,7 +296,11 @@ class StructuredPlayers:
         if name in {"inspect_entity", "list_actions", "get_action_status", "cancel_action", "read_changes"}:
             return await self.call_game(run_id, player_id, name, args)
         if name == "wait_for_change":
-            self.waits[key] = (time.time() + max(1, min(float(args["seconds"]), 60)), wait_signature(observation), generation)
+            signature = wait_signature(observation)
+            streak = self.wait_streaks.get(key)
+            # A frame that changed (a real loading screen) starts the count again.
+            self.wait_streaks[key] = (signature, streak[1] + 1 if streak and streak[0] == signature else 1)
+            self.waits[key] = (time.time() + max(1, min(float(args["seconds"]), 60)), signature, generation)
             ps["activity"] = str(args.get("reason", "Waiting for game state"))[:1000]
             if owner == "agent" and run.get("subgoal_plan", {}).get("player_id") == player_id:
                 subgoals.record_action(run["subgoal_plan"], observation)  # Repeated waits without progress must trigger review.
@@ -679,7 +684,8 @@ class StructuredPlayers:
 
     def forget_run(self, run_id):
         for counters in (self.loop_counts, self.movement_stalls, self.bug_reports, self.turn_ended_at, self.code_waits, self.step_index,
-                         self.repeat_stalls, self.goal_intents, self.held, self.decision_failed, self.jev_missed, self.deltas, self.judged):
+                         self.repeat_stalls, self.goal_intents, self.held, self.decision_failed, self.jev_missed, self.deltas, self.judged,
+                         self.wait_streaks):
             for key in [k for k in counters if k[0] == run_id]:
                 del counters[key]
         self.crashes_recorded -= {e for e in self.crashes_recorded if e[0] == run_id}
@@ -1459,6 +1465,7 @@ class StructuredPlayers:
             self.code_waits.pop(key, None)
             self.step_index.pop(key, None)
             self.repeat_stalls.pop(key, None)
+            self.wait_streaks.pop(key, None)
             self.generations[key] = generation
         def current():
             live = self.store.require("runs", run_id)
@@ -1538,6 +1545,9 @@ class StructuredPlayers:
             with timed(timing, "decision_context"):
                 context = self.decision_context(run, player, observation)
                 context["bug_already_reported"] = self.bug_reports.get(key) == signature
+                # Waits in a row on this unchanged frame; at WAIT_CAP no decider may wait again here.
+                streak = self.wait_streaks.get(key)
+                context["unchanged_waits"] = streak[1] if streak and streak[0] == wait_signature(observation) else 0
                 # The manual is the same every turn; log its size and hash, not its text.
                 controls = context.get("game_controls") or ""
                 self.store.event(run_id, "structured_decision_context", {"player_id": player_id,

@@ -14,7 +14,7 @@ from .claude_backend import ClaudeBackend, ClaudeError
 from .grok_backend import GrokBackend, GrokError
 from .credentials import Credentials
 from . import facts, jev
-from .menu import GAME_VERBS, _observed_targets, action_groups, batch_options, listed, numeric_option_id, option_key, point, prompt_observation
+from .menu import GAME_VERBS, _observed_targets, action_groups, batch_options, listed, names, numeric_option_id, option_key, point, prompt_observation
 from .models import CLAUDE_CONTROLS_MODEL, CLAUDE_MODEL, GROK_MODEL, JEV_MODEL, MODEL, PROVIDERS, SUPPORTED_MODELS, provider_of
 from .prompts import SOURCE_NOTES_LIMIT, TUNING_MANUAL_LIMIT, TUNING_MINIMUM_BYTES
 from .store import uid
@@ -40,6 +40,9 @@ TRIAGE_CONFIDENCE = 0.5   # Choice confidence at or above which Jev labels a gap
 STUCK_DELTAS = 3          # Observation deltas the stuck Noul reads; it is asked only once this many exist for the goal.
 DELTA_CHARS = 1500        # Each delta is cut to this many JSON characters, so the state stays small (docs: filter in code).
 WAIT_SECONDS = 10         # Jev's own wait, the middle of the offered waits; it ends early when the observation changes.
+WAIT_CAP = 3              # Waits in a row on an unchanged frame (context unchanged_waits); after that no wait is offered and Jev advances instead.
+ADVANCE_INPUT = re.compile(r"accept|continue|confirm|advance|skip|next_text|click", re.I)  # ui_accept, next_text; not hotbar_next.
+DIALOG = re.compile(r"dialog|cutscene|message|speech|subtitle|text(?!ure)", re.I)  # A dialog or text box ("Text" under CutsceneManager).
 VERB_TEXT = {"move_to": "Walk toward or onto a target or ground tile", "interact": "Interact with the highlighted target",
              "input": "Press a normal keyboard input", "ui_click": "Click a UI control", "ui_text": "Type text into a UI field",
              "ui_scroll": "Scroll a UI list", "fish_follow": "Follow the fishing wheel with directional input"}
@@ -196,6 +199,33 @@ def dismiss_menu(groups, menu):
         if verb == "ui_click" or (verb == "input" and "world_position" not in parameters):
             ids.append(key)
     return ids
+
+
+def waits_capped(context):
+    return context.get("unchanged_waits", 0) >= WAIT_CAP
+
+
+def offered(groups, context):
+    """(groups, listings) without the wait group once WAIT_CAP waits left the frame unchanged, so no decider can wait again there."""
+    if waits_capped(context):
+        groups = [g for g in groups if not any(a["tool"] == "wait_for_change" for a in g["actions"])]
+    return groups, [listed(g, i) for i, g in enumerate(groups)]
+
+
+def advance_ids(groups, menu):
+    """The jev_menu ids that move a dialog or cutscene on: advertised accept/continue/click inputs, else a left click on a dialog or text box."""
+    inputs, clicks = [], []
+    for key in menu:
+        i, j = map(int, key.split("."))
+        args = groups[i]["actions"][j]["args"]
+        verb, parameters = args["verb"], args.get("parameters", {})
+        if verb == "input" and "world_position" not in parameters and ADVANCE_INPUT.search(str(parameters.get("name"))):
+            inputs.append(key)
+        elif verb == "ui_click" and parameters.get("button") == "left":
+            entity = groups[i].get("evidence") or {}
+            if DIALOG.search(f"{names(entity)} {entity.get('parent', '')}"):
+                clicks.append(key)
+    return inputs or clicks
 
 
 def jev_state(context):
@@ -540,7 +570,7 @@ class OpenAI:
             answers = await self._request(evidence, None, "player", run_id, model, size, batch=True, prefix=prefix)
             return evidence, answers, picked_options(answers, groups, shown)
 
-        groups, listings = batch_options(context)
+        groups, listings = offered(batch_options(context)[0], context)
         calls, failure = 1, None
         try:
             evidence, answers, picked = await ask(groups, listings)
@@ -551,9 +581,9 @@ class OpenAI:
         if not picked:  # One retry on the unfiltered target list, in case the filter hid the target the model needed.
             if not can_continue():
                 return
-            groups = action_groups(context)
+            groups, listings = offered(action_groups(context), context)
             try:
-                evidence, answers, picked = await ask(groups, [listed(g, i) for i, g in enumerate(groups)])
+                evidence, answers, picked = await ask(groups, listings)
                 failure = None
             except ProviderError as exc:
                 if exc.status != "invalid_decision":
@@ -564,8 +594,8 @@ class OpenAI:
             if not can_continue():
                 self.store.event(run_id, "decision_cancelled", {"player_id": player_id, "reason": "Session state or generation changed during target selection"})
                 return
-            groups = action_groups(context)  # Today's unfiltered target list.
-            evidence, answers, picked = await ask(groups, [listed(g, i) for i, g in enumerate(groups)])
+            groups, listings = offered(action_groups(context), context)  # Today's unfiltered target list.
+            evidence, answers, picked = await ask(groups, listings)
             calls = 2
         if not picked:
             reply = failure.message if failure else f"returned no offered option ID (actions: {json.dumps(answers.get('actions'), ensure_ascii=False)[:200]})"
@@ -614,7 +644,8 @@ class OpenAI:
         return {"status": "dispatched", **decision, "result": result, "queued": [option_key(a) for _, _, a in picked[1:]]}
 
     async def jev_turn(self, context, library, dispatch, can_continue, run_id):
-        """One Jev request per decision: a verb Choice that narrows the action Choice, the wait Noul (Jev dispatches the wait itself),
+        """One Jev request per decision: a verb Choice that narrows the action Choice, the wait Noul (Jev dispatches the wait itself,
+        or advances the screen once WAIT_CAP waits left it unchanged),
         plus a skill Choice and its Noul gate when library [(key, short, long)] is not empty.
 
         A second request goes out only for an ambiguous skill shortlist. Returns a skill pick (with request 1's action answer, groups and listings,
@@ -633,7 +664,7 @@ class OpenAI:
         if not can_continue():
             return None
         model = self.store.require("runs", run_id)["plan"].get("jev_model") or JEV_MODEL
-        groups, listings = batch_options(context)
+        groups, listings = offered(batch_options(context)[0], context)
         menu = jev_menu(groups, context["observation"].get("state", {}).get("player", {}).get("position"))
         if not menu:
             return fallback("no_options")  # Only drag sources, waits or Sonnet-only tools are offered.
@@ -688,6 +719,15 @@ class OpenAI:
                                             model=response["model"], started=started, calls=calls, queue=1, pick="dismiss")
                 return result and {**result, "checks": checks, "menu": log}
             return fallback("low_confidence", checks=checks)
+        if band(checks["wait"]) == "yes" and waits_capped(context):
+            # WAIT_CAP waits left the frame unchanged: advance the dialog or cutscene instead, or let Sonnet decide when nothing advances it.
+            advance = advance_ids(groups, menu)
+            if not advance:
+                return fallback("wait_cap", checks=checks)
+            pick = max(advance, key=lambda key: answers["action"]["probabilities"].get(key, 0))
+            result = await self.jev_act(context, groups, listings, {"confidence": 1.0, "probabilities": {pick: 1.0}}, dispatch,
+                                        can_continue, run_id, model=response["model"], started=started, calls=calls, queue=1, pick="advance")
+            return result and {**result, "checks": checks, "menu": log}
         if band(checks["wait"]) == "yes":  # Jev waits itself; the skill and action picks wait a turn.
             wait_id = next(f"{i}.{j}" for i, g in enumerate(groups) for j, a in enumerate(g["actions"])
                            if a["tool"] == "wait_for_change" and a["args"]["seconds"] == WAIT_SECONDS)

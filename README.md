@@ -106,13 +106,13 @@ Stages complete in order: a later stage is measured only once every earlier sibl
 
 Each Jev plan pick logs one `plan_pick` event with the offered pattern keys, the picked key, confidences, the gate noul and the bound args; when no pattern is used it gives the reason: `no_patterns`, `too_large`, `jev_error`, `gate`, `low_confidence`, `missing_arg:<name>` or `stale`.
 
-Only an action that leaves the scene unchanged counts toward stuck; waits and a Jev stuck yes do not count while the game is loading or on a non-playable screen.
+A turn that dispatches or waits without progress toward any goal on the active path counts one attempt on the active leaf; progress resets it to zero.
 
-Under Jev hybrid a failed step is retried by Jev or Sonnet; the stage is replanned only after three failures on the same stage or a Jev `plan_fits` no.
+A leaf that spends six attempts is broken: the first break re-plans it once, a second break gives it up with one gap. A failed action is left out of that leaf's menus.
 
-Jev offers its dismiss pick only for a popup over a playable world, never for back-navigation or pause.
+Each turn tries the cache while the leaf has no attempts, then Jev (under Jev hybrid, below three attempts), then Sonnet.
 
-Every Jev action turn logs `menu_size`, the verbs and the top three options in `decision_routed`; the speed report shows mean and max menu size and the top three options for each low-confidence fallback.
+Jev asks one action Choice over plain actions and the one 10 s wait; each Jev action turn logs `menu_size` and the top three options in `decision_routed`, and the speed report shows mean and max menu size and the top three options for each low-confidence fallback.
 
 Supplying a goal still does **not** create a reliable automatic whole-game success detector. The free-text primary objective retains manual acceptance; concrete observable outcomes live in its child goals. When no further grounded work is available, the planner requests operator review. Inspect results and Stop when appropriate. An exhausted checklist alone never proves tutorial completion. Citations and checks constrain proposals but do not prove arbitrary natural-language intent. Full autonomous DEMO completion remains unverified.
 

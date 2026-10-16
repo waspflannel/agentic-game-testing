@@ -127,17 +127,6 @@ def _max_concurrent(payloads):
     return peak
 
 
-def _code_wait(events):
-    """Code waits: seconds_used is cumulative per goal, so a goal's largest value is its wait."""
-    per_goal = {}
-    for event in events:
-        if event["kind"] == "code_wait":
-            payload = event["payload"]
-            per_goal[payload.get("goal_id")] = max(per_goal.get(payload.get("goal_id"), 0), payload.get("seconds_used") or 0)
-    return {"count": sum(1 for event in events if event["kind"] == "code_wait"), "total_seconds": sum(per_goal.values()),
-            "max_seconds_per_goal": max(per_goal.values(), default=0)}
-
-
 def _repeat_breakdown(events):
     stops = [event["payload"] for event in events if event["kind"] == "repeat_stopped" and (event["payload"].get("actions") or 0) > 1]
     return {"stops": len(stops), "actions": sum(stop["actions"] for stop in stops),
@@ -168,24 +157,12 @@ def _jev_menus(events):
             "low_confidence_top": [payload.get("top") for payload in payloads if payload.get("fallback") == "low_confidence"]}
 
 
-def _jev_checks(events):
-    """Band counts and applied per Jev check; triage has no band, so it counts applied / not applied only."""
-    report = {"effect_disagreed": 0, "dismiss": 0}
-    for event in events:
-        payload = event["payload"]
-        if event["kind"] == "decision_routed" and payload.get("route") == "jev" and payload.get("pick") == "dismiss":
-            report["dismiss"] += 1
-        if event["kind"] != "jev_check":
-            continue
-        if payload["check"] == "triage":
-            entry = report.setdefault("triage", {"applied": 0, "not_applied": 0})
-            entry["applied" if payload["applied"] else "not_applied"] += 1
-            continue
-        entry = report.setdefault(payload["check"], {"yes": 0, "no": 0, "unsure": 0, "applied": 0})
-        entry[payload["band"]] += 1
-        entry["applied"] += payload["applied"]
-        report["effect_disagreed"] += bool(payload.get("disagree"))
-    return report
+def _attempts(events):
+    """Leaf attempts by route, and broken leaves with how many became gaps rather than re-plans."""
+    attempts = [event["payload"] for event in events if event["kind"] == "subgoal_attempt"]
+    broken = [event["payload"] for event in events if event["kind"] == "subgoal_broken"]
+    return ({"count": len(attempts), "by_route": dict(Counter(payload.get("route") for payload in attempts))},
+            {"count": len(broken), "gaps": sum(1 for payload in broken if payload.get("outcome") == "gap")})
 
 
 CACHE_TOKENS = ("cache_read_input_tokens", "cache_creation_input_tokens", "input_tokens")
@@ -351,7 +328,6 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
             "planner_attempts": sum((row.get("calls") or {}).get("plan_model", 0) for row in timings),
             "repeat_actions": sum((row.get("counts") or {}).get("repeat_actions", 0) + (row.get("counts") or {}).get("macro_actions", 0) for row in timings),
             "repeat_stops": dict(Counter(event["payload"].get("reason", "unknown") for event in events if event["kind"] in ("repeat_stopped", "macro_stopped"))),
-            "code_wait": _code_wait(events),
             "repeat_breakdown": _repeat_breakdown(events),
             "skill_replays": sum(1 for event in events if event["kind"] in ("skill_replayed", "recipe_replayed")),
             "skill_failures": sum(1 for event in events if event["kind"] in ("skill_failed", "recipe_failed")),
@@ -359,7 +335,7 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
             "decision_failures": sum(1 for event in events if event["kind"] == "decision_failed"),
             "decision_saves": sum(1 for event in events if event["kind"] == "decision_saved"),
             "batch_prefixes": len({(e["payload"].get("bytes") or {}).get("prefix_sha") for e in events if e["kind"] == "decision_selected"} - {None}),
-            "decision_skips": sum(1 for event in events if event["kind"] in ("decision_skipped", "skill_skipped")),
+            "decision_skips": sum(1 for event in events if event["kind"] == "replay_skipped"),
             "plan_triggers": dict(Counter(row["plan_trigger"] for row in timings if row.get("plan_trigger"))),
             "goals_by_fact": dict(Counter(g["completion"]["fact"] for g in next(
                 (e["payload"]["plan"]["goals"] for e in reversed(events) if e["kind"] == "subgoal_plan_updated"), []))),
@@ -411,6 +387,7 @@ def summarize(run, events, data):
     for row in timings:
         turns.setdefault(row["outcome"], []).append(row.get("total_seconds") or 0)
     routing = _routing(events)
+    attempts, broken = _attempts(events)
     return {
         "run": {
             "id": run["id"],
@@ -434,7 +411,8 @@ def summarize(run, events, data):
         "gaps": gaps,
         "model_calls": calls,
         "routing": routing,
-        "jev_checks": _jev_checks(events),
+        "attempts": attempts,
+        "broken": broken,
         "jev_menus": _jev_menus(events),
         "ledger": ledger,
         "hypotheses": _hypotheses(timings, events, steps, calls, gaps, turn_total, ledger["event_bytes"]),
@@ -463,19 +441,9 @@ def _ordered_steps(steps):
     return ordered
 
 
-def _checks_line(checks):
-    parts = []
-    for name in ("blocker", "stuck", "effect"):
-        entry = checks.get(name) or {"yes": 0, "no": 0, "unsure": 0, "applied": 0}
-        part = f"{name} {entry['yes']}/{entry['no']}/{entry['unsure']} applied {entry['applied']}"
-        parts.append(part + (f" disagreed {checks['effect_disagreed']}" if name == "effect" else ""))
-    triage = checks.get("triage") or {"applied": 0, "not_applied": 0}
-    parts.append(f"triage applied {triage['applied']}/{triage['applied'] + triage['not_applied']}")
-    return "jev checks: " + "; ".join(parts)
-
-
 def print_compare(a, b, path):
     routes = list(dict.fromkeys([*a["routing"], *b["routing"]]))
+    attempt_routes = list(dict.fromkeys([*a["attempts"]["by_route"], *b["attempts"]["by_route"]]))
     rows = [("engine", lambda s: s["run"]["decision_engine"]),
             *((f"route:{name} share", lambda s, name=name: (s["routing"].get(name) or {}).get("share")) for name in routes),
             ("s/action", lambda s: s["run"]["s_per_action"]),
@@ -484,12 +452,12 @@ def print_compare(a, b, path):
             ("goal_reached", lambda s: s["run"]["goal_reached"]),
             ("goals_verified", lambda s: s["run"]["goals_verified"]),
             ("turns", lambda s: sum(item["count"] for item in s["turns"].values())),
-            ("jev dismiss", lambda s: s["jev_checks"]["dismiss"]),
+            ("attempts", lambda s: s["attempts"]["count"]),
+            *((f"attempts:{name}", lambda s, name=name: s["attempts"]["by_route"].get(name, 0)) for name in attempt_routes),
+            ("broken", lambda s: s["broken"]["count"]),
+            ("broken gaps", lambda s: s["broken"]["gaps"]),
             ("jev menu mean", lambda s: s["jev_menus"]["menu_size"]["mean"]),
             ("jev menu max", lambda s: s["jev_menus"]["menu_size"]["max"]),
-            ("jev stuck applied", lambda s: (s["jev_checks"].get("stuck") or {}).get("applied", 0)),
-            ("jev effect disagreed", lambda s: s["jev_checks"]["effect_disagreed"]),
-            ("jev triage applied", lambda s: (s["jev_checks"].get("triage") or {}).get("applied", 0)),
             ("planner calls", lambda s: s["hypotheses"]["planner"]["opus_calls"]),
             ("planner seconds", lambda s: s["hypotheses"]["planner"]["opus_seconds"])]
     print(f"field {a['run']['id']} {b['run']['id']}")
@@ -527,7 +495,8 @@ def print_report(summary, path):
     fallbacks = [f"{route}:{reason}={count}" for route, entry in summary["routing"].items() for reason, count in entry["fallbacks"].items()]
     if fallbacks:
         print("fallbacks " + " ".join(fallbacks))
-    print(_checks_line(summary["jev_checks"]))
+    attempts, broken = summary["attempts"], summary["broken"]
+    print(f"attempts {attempts['count']} by_route {attempts['by_route']}  broken {broken['count']} gaps {broken['gaps']}")
     menus = summary["jev_menus"]
     print(f"jev menu size mean {_fmt(menus['menu_size']['mean'])} max {_fmt(menus['menu_size']['max'])}")
     for top in menus["low_confidence_top"]:

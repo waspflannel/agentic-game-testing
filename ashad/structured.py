@@ -823,6 +823,7 @@ class StructuredPlayers:
             if claimed:
                 run["subgoal_plan"] = claimed
                 self.store.put("runs", run)
+                self._save_skills(run_id, player_id, run, claimed, [])
                 self.store.event(run_id, "subgoal_plan_updated", {"player_id": player_id, "plan": claimed, "warnings": [], "source": "stages_verified"})
                 claim = subgoals.completion_claim(claimed)
                 self.store.event(run_id, "goal_reached", {"player_id": player_id, "revision": claimed["revision"], "claim": claim})
@@ -1015,12 +1016,25 @@ class StructuredPlayers:
             if steps:
                 saved = skills.save(self.store, project_id, goal["completion"], steps, True, build_id=run["build"].get("id"), run_id=run_id)
                 self.store.event(run_id, "skill_saved", {"player_id": player_id, "goal_id": goal["id"], "skill": saved["name"], "steps": saved["steps"]})
-        # A fully verified plan, every stage completed by its own check, becomes the project's plan pattern for goals like this one.
+        # A fully verified plan becomes the project's plan pattern for goals like this one: its stages are the tree's completed
+        # leaves in depth-first order, so a plan the planner re-planned or expanded on the way saves as the flat path that won.
         root = next(g for g in plan["goals"] if g["id"] == plan["root_id"])
-        stages = [g for g in plan["goals"] if g.get("parent_id") == root["id"] and not g.get("retired")]
-        if (stages and all(g["status"] == "completed" for g in stages)
-                and not any(g.get("parent_id") == stage["id"] for stage in stages for g in plan["goals"])):
-            key = skills.plan_key(project_id, stages)
+
+        def won_leaves(parent_id):
+            leaves = []
+            for goal in plan["goals"]:
+                if goal.get("parent_id") != parent_id or goal.get("retired") or goal["status"] != "completed":
+                    continue
+                has_children = any(g.get("parent_id") == goal["id"] and not g.get("retired") for g in plan["goals"])
+                leaves += won_leaves(goal["id"]) if has_children else [goal]
+            return leaves
+
+        top = [g for g in plan["goals"] if g.get("parent_id") == root["id"] and not g.get("retired")]
+        stages = won_leaves(root["id"]) if top and all(g["status"] == "completed" for g in top) else []
+        key = skills.plan_key(project_id, stages)
+        # Both the last stage's verification and the in-code goal claim try the save; the root remembers the key it saved
+        # so one win counts once.
+        if stages and root.get("plan_saved") != key:
             shapes = [skills.shape(stage["completion"]) for stage in stages]
             # A saved pattern whose stages this plan extends (same shapes first, then more) is replaced, keeping its tally,
             # instead of adding a second pattern; this also moves a pattern saved under an older key for the same stages.
@@ -1034,7 +1048,12 @@ class StructuredPlayers:
                     replaced.append(old_key)
             saved = skills.save_plan(self.store, project_id, root["objective"], stages, True, build_id=run["build"].get("id"), run_id=run_id, key=key)
             if saved:
+                root["plan_saved"] = key
+                self.store.put("runs", run)
                 self.store.event(run_id, "plan_saved", {"player_id": player_id, "key": key, "name": saved["name"], "replaced": replaced})
+            else:
+                self.store.event(run_id, "plan_save_skipped", {"player_id": player_id, "key": key,
+                                 "reason": "Two stages name different values for one arg; a plan pattern binds one value per arg."})
 
     def _replay_skill(self, run_id, player_id, run, plan, observation):
         """Give a just-activated leaf a saved skill's steps instead of calling the planner; True when replayed.

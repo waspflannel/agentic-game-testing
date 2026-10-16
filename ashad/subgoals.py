@@ -42,14 +42,6 @@ class Check(Contract):
     description: str = Field(min_length=1, max_length=600)
 
 
-class ProposedGoal(Contract):
-    key: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,50}$")
-    parent_key: str = Field(max_length=50, description="Empty attaches to focus; otherwise an earlier proposed key.")
-    objective: str = Field(min_length=1, max_length=600)
-    completion: Check
-    actionable: bool = Field(description="True only for a bounded achievable goal with currently available ordinary controls; false means decompose later.")
-
-
 class Step(Contract):
     control: str = Field(min_length=1, max_length=40, description="An advertised input name or a game verb")
     item: str = Field(max_length=60, description="The hotbar item_id the step needs; empty if none")
@@ -59,13 +51,21 @@ class Step(Contract):
     targets: str = Field(max_length=160, description="Space-separated field=value conditions every target of a repeated step matches (observed tile or entity fields; empty value means empty or missing), nearest first; empty for a single action")
 
 
+class ProposedGoal(Contract):
+    key: str = Field(pattern=r"^[a-zA-Z0-9_-]{1,50}$")
+    parent_key: str = Field(max_length=50, description="Empty attaches to focus; otherwise an earlier proposed key.")
+    objective: str = Field(min_length=1, max_length=600)
+    completion: Check
+    actionable: bool = Field(description="True only for a bounded achievable goal with currently available ordinary controls; false means decompose later.")
+    steps: list[Step] = Field(max_length=8, description="The stage's ordered steps; [] for a goal that will be expanded later.")
+
+
 class PlanningDecision(Contract):
     goal_id: str = Field(min_length=1, max_length=100)
     mode: Literal["expand", "act", "blocked", "retire", "complete"]
     completion: Check
     reason: str = Field(min_length=1, max_length=1000)
     subgoals: list[ProposedGoal] = Field(max_length=12)
-    first_actions: list[str] = Field(max_length=5, description="Option IDs as the numbers before ')' in the action_options listing, e.g. 3.0 (never names, entity ids or verbs), from action_options for the new active leaf, in order; [] when none fit or no action_options were given.")
     steps: list[Step] = Field(max_length=8, description="The act leaf's ordered steps; [] when not act.")
 
     @model_validator(mode="after")
@@ -219,13 +219,15 @@ def reconcile(plan, observation, control_generation):
     if rebound or resumed:
         for goal in plan["goals"]:
             if goal["status"] not in {"completed", "gave_up"} and not goal.get("retired"):
-                goal.update(actionable=False, status="pending", attempts=0, reviews=0)
+                goal.update(status="pending", attempts=0, reviews=0)
                 goal.pop("blocked_reason", None)
                 goal.pop("measured", None)
                 goal.pop("recent_actions", None)
                 goal.pop("repeating", None)
                 goal.pop("repeats", None)
-        plan["reason"] = "Control or game binding changed; reassess from fresh observations."
+        plan["reason"] = "Game binding changed; the plan is kept and re-verified."
+        if any(g["id"] != plan["root_id"] for g in plan["goals"]):
+            plan["fit_check"] = "rebound"
     # Unloading emits an empty world ID. Keep the last actual world so A -> menu -> B cannot reuse A's proof.
     plan.update(world_id=world or previous_world, observation_generation=binding, control_generation=control_generation)
     completed = []
@@ -266,8 +268,8 @@ def reconcile(plan, observation, control_generation):
     selected = active_goal(plan) if waiting else select_active(plan)
     if selected and selected["id"] != previous_active:
         selected["activated_at"] = now
-        # A sibling may have lost its prerequisites while another goal was being pursued.
-        selected["actionable"] = False
+        if selected["id"] != plan["root_id"]:
+            plan["fit_check"] = "new_stage"
     # Loading screens are not new knowledge; new knowledge replans without resetting the no-progress cap.
     if observation.get("ready") is True:
         signature = knowledge_signature(observation)
@@ -350,25 +352,32 @@ def retire(plan, focus, decision, context):
         selected["actionable"] = False
 
 
+def kept_steps(steps, context, warnings, location):
+    """Steps are optional guidance: a malformed step or one verified by a fact outside the catalog is dropped, never rejected."""
+    kept = []
+    for index, step in enumerate(steps if isinstance(steps, list) else []):
+        try:
+            step = Step.model_validate(step).model_dump()
+        except ValidationError:
+            warnings.append(f"{location}.{index} dropped: not a valid step")
+            continue
+        if step["verifies"] != "unknown" and step["verifies"] not in context["fact_catalog"]["facts"]:
+            warnings.append(f"{location}.{index} dropped: verifies {step['verifies']!r} is not in fact_catalog")
+            continue
+        if len(kept) < 8:
+            kept.append(step)
+    return kept
+
+
 def apply_decision(plan, raw, context, warnings=None):
     """Validate fully before editing a copy; callers commit only while their run is current."""
     warnings = [] if warnings is None else warnings
     if isinstance(raw, dict):
         raw = copy.deepcopy(raw)
-        raw["first_actions"] = []  # The controller's optional first batch; never a reason to reject a plan.
-        # Steps are optional guidance too: a malformed step or one verified by a fact outside the catalog is dropped, never rejected.
-        steps, raw["steps"] = raw.get("steps"), []
-        for index, step in enumerate(steps if isinstance(steps, list) else []):
-            try:
-                step = Step.model_validate(step).model_dump()
-            except ValidationError:
-                warnings.append(f"steps.{index} dropped: not a valid step")
-                continue
-            if step["verifies"] != "unknown" and step["verifies"] not in context["fact_catalog"]["facts"]:
-                warnings.append(f"steps.{index} dropped: verifies {step['verifies']!r} is not in fact_catalog")
-                continue
-            if len(raw["steps"]) < 8:
-                raw["steps"].append(step)
+        raw["steps"] = kept_steps(raw.get("steps"), context, warnings, "steps")
+        for index, proposed in enumerate(raw.get("subgoals") if isinstance(raw.get("subgoals"), list) else []):
+            if isinstance(proposed, dict):
+                proposed["steps"] = kept_steps(proposed.get("steps"), context, warnings, f"subgoals.{index}.steps")
         mode = raw.get("mode")
         if mode == "expand" and not raw.get("subgoals") and raw.get("goal_id") != plan["root_id"]:
             raw["mode"] = "act"
@@ -428,7 +437,10 @@ def apply_decision(plan, raw, context, warnings=None):
         goal = {"id": f"goal-{result['revision'] + 1}-{index}", "parent_id": parent["id"],
                 "objective": proposed["objective"], "completion": proposed["completion"],
                 "source_observation": observation_ref(context["observation"]),
-                "status": "pending", "actionable": proposed["actionable"], "attempts": 0, "reviews": 0}
+                "status": "pending", "actionable": proposed["actionable"], "attempts": 0, "reviews": 0,
+                "planned_value": facts.read(context["fact_catalog"]["values"], proposed["completion"]["fact"], facts.args_of(proposed["completion"]))}
+        if proposed["steps"]:
+            goal["steps"] = proposed["steps"]
         result["goals"].append(goal)
         generated[proposed["key"]] = goal
     focus.update(completion=decision["completion"],

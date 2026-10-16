@@ -11,10 +11,10 @@ import traceback
 from collections import Counter
 from datetime import datetime, timezone
 
-from .ai import (DELTA_CHARS, EXCERPT_CHARS, OPTION_CHARS, PROMPT_OBSERVATION_CHARS, STUCK_DELTAS, ProviderError, band, jev_triage, picked_options,
+from .ai import (DELTA_CHARS, EXCERPT_CHARS, OPTION_CHARS, PROMPT_OBSERVATION_CHARS, STUCK_DELTAS, ProviderError, band, jev_triage,
                  planning_evidence, static_prefix)
 from .game_controls import run_configuration
-from .menu import GAME_VERBS, SNAPSHOT_CHARS, batch_options, capability_summary, observation_delta, option_key, prompt_observation, resolve
+from .menu import GAME_VERBS, SNAPSHOT_CHARS, capability_summary, observation_delta, option_key, prompt_observation, resolve
 from .models import JEV_MODEL, MODEL, PROVIDERS, provider_of
 from .repository import Repository
 from .store import uid
@@ -37,7 +37,8 @@ PLAN_TRIGGERS = (("The last action failed", "action_failed"),
                  ("Observed objectives changed", "knowledge_changed"), ("Control or game binding changed", "rebound"),
                  ("No supported direct action fits", "needs_instructions"), ("The game state did not change across", "loop_backstop"),
                  ("You said the primary goal is not done", "completion_rejected"),
-                 ("Repeating the same action", "action_repeat"), ("Skill replay stopped", "skill_failed"))
+                 ("Repeating the same action", "action_repeat"), ("Skill replay stopped", "skill_failed"),
+                 ("Jev says the plan no longer fits", "jev_no_fit"))
 
 
 def meaningful_signature(observation):
@@ -778,14 +779,16 @@ class StructuredPlayers:
     async def advance_plan(self, run_id, player_id, observation, generation, current, timing):
         """Verify on observations; infer only on expansion, changed knowledge, or failed progress.
 
-        Returns None when the turn ends, else the observation to act on and the planner's first batch as option keys."""
+        Returns None when the turn ends, else the observation to act on."""
         run, _ = self.binding(run_id, player_id)
         plan = run.get("subgoal_plan")
         if not plan or plan["player_id"] != player_id:
-            return {"observation": observation, "first_actions": []}  # Historical multi-player/scenario runs retain their existing contract.
+            return {"observation": observation}  # Historical multi-player/scenario runs retain their existing contract.
         previous_active = plan.get("active_goal_id")
         with timed(timing, "plan_reconcile"):
             completed = subgoals.reconcile(plan, observation, generation)
+            if run["plan"].get("decision_engine") != "jev_hybrid":
+                plan.pop("fit_check", None)  # Only Jev answers whether a kept stage still fits.
             needs_plan = subgoals.needs_planning(plan)
         self.store.put("runs", run)
         if completed:
@@ -809,9 +812,9 @@ class StructuredPlayers:
             tried = [label for _, label in subgoals.active_goal(plan).get("recent_actions") or []]
             return await self._give_up(run_id, player_id, generation, observation, kind="stuck", tried=tried, missing=stuck)
         if not needs_plan:
-            return {"observation": observation, "first_actions": []}
+            return {"observation": observation}
         if self._replay_skill(run_id, player_id, run, plan, observation):
-            return {"observation": observation, "first_actions": []}
+            return {"observation": observation}
         # The replan reason is input too: a failed action or first repeat on unchanged state still replans once.
         planning_key = hashlib.sha256(json.dumps([plan["active_goal_id"], generation, wait_signature(observation), plan.get("reason")]).encode()).hexdigest()
         if planning_key == plan.get("last_planning_key"):
@@ -823,19 +826,17 @@ class StructuredPlayers:
             (label for prefix, label in PLAN_TRIGGERS if reason.startswith(prefix)), "other")
         context = self.decision_context(run, player, observation)
         context["fact_catalog"] = facts.catalog(observation, self.item_ids(run))
-        groups, context["action_options"] = batch_options(context)
         revision = plan["revision"]
         self.status(run_id, player_id, "planning", "Finding the next achievable prerequisite for: " + context["current_goal"]["objective"], generation)
         warnings = []
         # What plan_subgoals sends after its prefix; validation keeps the full context.
-        prefix = static_prefix(context)
         sent = planning_evidence(context)
         self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": revision, "context": sent,
-                         "prefix_sha": hashlib.sha256(prefix.encode()).hexdigest()[:12]})
+                         "prefix_sha": hashlib.sha256(static_prefix(context).encode()).hexdigest()[:12]})
         for attempt in range(2):
             warnings = []
             with timed(timing, "plan_model"):
-                proposal = await self._plan_subgoals(run_id, player_id, sent)
+                proposal = await self._plan_subgoals(run_id, player_id, sent, observation)
             if not current():
                 self.store.event(run_id, "subgoal_planning_cancelled", {"player_id": player_id, "reason": "Run control changed during planning"})
                 return None
@@ -845,9 +846,10 @@ class StructuredPlayers:
                 return None
             live, _ = self.binding(run_id, player_id)
             latest_plan = live.get("subgoal_plan")
-            if (not latest_plan or latest_plan["revision"] != revision or
-                    subgoals.planning_scene(fresh) != subgoals.planning_scene(observation)):
-                self.store.event(run_id, "subgoal_planning_cancelled", {"player_id": player_id, "reason": "Plan, game binding, or visible controls changed during planning"})
+            # A UI control appearing mid-call does not void a plan of whole stages; only a new revision or world does.
+            if (not latest_plan or latest_plan["revision"] != revision
+                    or fresh.get("world_id") not in ("", observation.get("world_id"))):
+                self.store.event(run_id, "subgoal_planning_cancelled", {"player_id": player_id, "reason": "Plan or world changed during planning"})
                 return None
             try:
                 with timed(timing, "plan_validate"):
@@ -885,13 +887,11 @@ class StructuredPlayers:
             self.store.event(run_id, "goal_reached", {"player_id": player_id, "revision": revised["revision"], "claim": claim})
             await self.coordinator.goal_reached(run_id, player_id, claim["reason"])
             return None
-        # The scene check above makes the post-planning observation safe to act on; the planner's IDs name pre-planning options.
-        picked = picked_options({"actions": proposal.get("first_actions")}, groups, context["action_options"])
         self.status(run_id, player_id, "ready", "Plan updated; acting on fresh state.", generation)
-        return {"observation": fresh, "first_actions": [option_key(a) for _, _, a in picked if a and a["tool"] == "perform_action"]}
+        return {"observation": fresh}
 
-    async def _plan_subgoals(self, run_id, player_id, sent):
-        """plan_subgoals, retried once on context_limit with a trimmed context."""
+    async def _plan_subgoals(self, run_id, player_id, sent, observation):
+        """plan_subgoals, retried once on context_limit with a trimmed context built from the raw observation."""
         try:
             return await self.coordinator.ai.plan_subgoals(sent, run_id)
         except ProviderError as exc:
@@ -899,7 +899,7 @@ class StructuredPlayers:
                 raise
         trimmed = {k: v for k, v in sent.items() if k != "known_locations"} | {
             "recent_own_actions": sent["recent_own_actions"][-3:], "guidance": json.dumps(sent["guidance"], ensure_ascii=False)[:1000],
-            "observation": prompt_observation(sent["observation"], max_chars=PROMPT_OBSERVATION_CHARS // 2)}
+            "observation": prompt_observation(observation, max_chars=PROMPT_OBSERVATION_CHARS // 2)}
         size = json_bytes(trimmed)
         self.store.event(run_id, "planner_context_trimmed", {"player_id": player_id, "before_bytes": json_bytes(sent), "after_bytes": size})
         try:
@@ -1319,8 +1319,8 @@ class StructuredPlayers:
             if planned is None:
                 timing["outcome"] = "planning"
                 return timing["outcome"]
-            # After a planner call this is the post-planning observation, and the planner may have named the first batch.
-            observation, planned_keys = planned["observation"], planned["first_actions"]
+            # After a planner call this is the post-planning observation.
+            observation = planned["observation"]
             signature = meaningful_signature(observation)
             wait = self.waits.get(key)
             if wait and wait[2] == generation and time.time() < wait[0] and wait_signature(observation) == wait[1]:
@@ -1338,7 +1338,7 @@ class StructuredPlayers:
             plan = run.get("subgoal_plan")
             goal = subgoals.active_goal(plan) if plan and plan["player_id"] == player_id else None
             code_wait = self.code_waits.get(key)
-            if (not planned_keys and goal and code_wait and code_wait[0] == goal["id"] and code_wait[1] < CODE_WAIT_LIMIT
+            if (goal and code_wait and code_wait[0] == goal["id"] and code_wait[1] < CODE_WAIT_LIMIT
                     and goal["completion"].get("fact") in TIMER_FACTS and not subgoals.measure(goal["completion"], observation)[0]):
                 until = time.time() + CODE_WAIT_STEP
                 self.waits[key] = (until, wait_signature(observation), generation)
@@ -1392,13 +1392,7 @@ class StructuredPlayers:
             if steps and context.get("current_goal"):
                 # The decider and relevant_groups' tile filter see only the unfinished steps, so a finished repeat step's tiles are not the ones kept.
                 context["current_goal"]["steps"] = steps[index:]
-            if planned_keys:
-                # The planner named the first batch: run it on the post-planning observation, with no decide call.
-                route = route_model = run.get("model") or run["plan"].get("model", MODEL)
-                route_ms = int(timing["seconds"].get("plan_model", 0) * 1000)
-                with timed(timing, "act"):
-                    stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None, queued_actions(context, planned_keys), timing)
-            elif step and step.get("targets") and not decider_turn:
+            if step and step.get("targets") and not decider_turn:
                 # The verifying fact reads the goal's args that it also takes (e.g. plant_id); others read its default.
                 check = {"fact": step["verifies"], "args": [a for a in goal["completion"]["args"] if a["name"] in facts.FACTS.get(step["verifies"], ((),))[0]], "op": ">=", "value": 0}
                 before = subgoals.measure(check, observation)[1]
@@ -1410,7 +1404,7 @@ class StructuredPlayers:
                 self.step_index[key] = (goal["id"], index + finished, not finished and bool(ran))
             elif decider_turn:
                 self.step_index[key] = (goal["id"], index, False)
-            if stop is None and not planned_keys and goal:
+            if stop is None and goal:
                 # Cache first: a decision this project's model already made in this situation replays without a decide call.
                 with timed(timing, "act"):
                     stop, ran, replayed = await self._run_decision(run_id, player_id, generation, current, context, observation, goal, timing)

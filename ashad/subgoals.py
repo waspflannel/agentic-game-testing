@@ -232,8 +232,14 @@ def reconcile(plan, observation, control_generation):
     plan.update(world_id=world or previous_world, observation_generation=binding, control_generation=control_generation)
     completed = []
     progressed = set()
+    on_path = {g["id"] for g in goal_path(plan)}
     for goal in plan["goals"]:
         if goal["status"] == "completed" or goal.get("retired"):
+            continue
+        # Stages complete in order: a later stage is measured only once every earlier sibling is completed (this pass
+        # included, since siblings are stored in order), so an already-true later check cannot complete it early.
+        earlier = [g for g in plan["goals"][:plan["goals"].index(goal)] if g.get("parent_id") == goal.get("parent_id") and not g.get("retired")]
+        if goal["id"] not in on_path and any(g["status"] != "completed" for g in earlier):
             continue
         done, value = measure(goal["completion"], observation)
         if toward(goal["completion"], goal.get("measured"), value):
@@ -444,12 +450,21 @@ def apply_decision(plan, raw, context, warnings=None):
             raise ValueError(f"Goal decomposition is too deep; choose an executable goal or report the blocker (at subgoals.{index})")
         if proposed["objective"].strip().casefold() in {g["objective"].strip().casefold() for g in ancestors}:
             raise ValueError(f"Recursive goal repeats an ancestor instead of making progress (at subgoals.{index})")
-        facts.validate(proposed["completion"], context["fact_catalog"], f"subgoals.{index}.completion")
+        check = proposed["completion"]
+        facts.validate(check, context["fact_catalog"], f"subgoals.{index}.completion")
+        planned_value = facts.read(context["fact_catalog"]["values"], check["fact"], facts.args_of(check))
+        # A check true before any work would complete its stage at once; an unread stock count is likely 0, which meets a <= check.
+        if planned_value is not None and facts.met(check, planned_value):
+            raise ValueError(f"This completion check is already met now (value {planned_value}); use a check that rises with the work, "
+                             f"e.g. crops_planted >= N (at subgoals.{index}.completion)")
+        if planned_value is None and check["op"] == "<=" and facts.FACTS.get(check["fact"], ((), "", ""))[2] == "stock":
+            raise ValueError("A <= check on a stock fact that cannot be read now is likely met before any work; use a check that rises "
+                             f"with the work, e.g. crops_planted >= N (at subgoals.{index}.completion)")
         goal = {"id": f"goal-{result['revision'] + 1}-{index}", "parent_id": parent["id"],
-                "objective": proposed["objective"], "completion": proposed["completion"],
+                "objective": proposed["objective"], "completion": check,
                 "source_observation": observation_ref(context["observation"]),
                 "status": "pending", "actionable": proposed["actionable"], "attempts": 0, "reviews": 0,
-                "planned_value": facts.read(context["fact_catalog"]["values"], proposed["completion"]["fact"], facts.args_of(proposed["completion"]))}
+                "planned_value": planned_value}
         if proposed["steps"]:
             goal["steps"] = proposed["steps"]
         result["goals"].append(goal)

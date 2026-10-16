@@ -7,7 +7,7 @@ import json
 import re
 import time
 
-from . import facts, repeat, subgoals
+from . import facts, repeat
 
 MAX_WON_BUILDS = 20
 
@@ -193,9 +193,9 @@ def find_decision(store, project_id, sig):
     return record if record and record["steps"] and record["fails"] <= record["wins"] else None
 
 
-def plan_key(project_id, stages):
-    """The store key of a plan pattern: the project plus a hash of its stages' check shapes, stable however the planner words the steps."""
-    return f"{project_id}:plan:" + hashlib.sha256(json.dumps([shape(s["completion"]) for s in stages]).encode()).hexdigest()[:16]
+def plan_key(project_id, goal, stages):
+    """The store key of a plan pattern: the project plus a hash of the goal's and its stages' check shapes, stable however the planner words the steps."""
+    return f"{project_id}:plan:" + hashlib.sha256(json.dumps([shape(g["completion"]) for g in [goal] + stages]).encode()).hexdigest()[:16]
 
 
 def count_of(text):
@@ -225,23 +225,26 @@ def pattern_stage(stage, args, count):
             "steps": bind(stage.get("steps") or [], check), "actionable": stage["actionable"]}
 
 
-def save_plan(store, project_id, objective, stages, won, build_id=None, run_id=None, key=None):
-    """Count a win (replacing the stages) or a failure for the plan pattern at key, by default the stages' key.
+def save_plan(store, project_id, goal, stages, won, build_id=None, run_id=None, key=None):
+    """Count a win (replacing the goal check and stages) or a failure for the plan pattern at key, by default the plan's key.
+    goal is the root, whose check passed for a win.
 
-    Returns the record, or None when there is nothing to count: a failure of a deleted pattern, or a win whose stages
+    Returns the record, or None when there is nothing to count: a failure of a deleted pattern, or a win whose checks
     name two values for one arg (a pattern binds one value per arg). That None is the only skip; the caller logs nothing."""
-    key = key or plan_key(project_id, stages)
+    key = key or plan_key(project_id, goal, stages)
     record = store.get("skills", key)
     if won:
         args = {}
-        for stage in stages:
+        for stage in [goal] + stages:
             for arg in stage["completion"]["args"]:
                 if isinstance(arg["value"], str) and arg["value"] and args.setdefault(arg["name"], arg["value"]) != arg["value"]:
                     return None
-        count = count_of(objective)
+        count = count_of(goal["objective"])
         record = record or {"scope": "plan", "project_id": project_id, "wins": 0, "fails": 0}
+        record["objective"] = goal["objective"]  # The goal it won, as written, so Jev can match a goal like it.
         record["name"] = "plan: " + " → ".join(name(s["completion"]) if s["completion"]["fact"] in facts.FACTS else s["objective"][:40] for s in stages)
         record["params"] = sorted(args)
+        record["goal"] = pattern_stage(goal, args, count)["completion"]
         record["stages"] = [pattern_stage(stage, args, count) for stage in stages]
         record["uses_count"] = "{count}" in json.dumps(record["stages"], ensure_ascii=False)
     elif record is None:
@@ -252,16 +255,16 @@ def save_plan(store, project_id, objective, stages, won, build_id=None, run_id=N
 
 def instantiate(record, args, count, values):
     """The pattern as a root expand decision for this goal: placeholders filled from args and count, +{count} read on values.
+    A stage whose check is already met here (e.g. the seeds are already held) is left out.
 
-    Shaped like PlanningDecision; apply_decision validates it. A +{count} stage whose fact is not readable raises ValueError."""
+    Shaped like PlanningDecision; apply_decision validates it. A +{count} check whose fact is not readable raises ValueError."""
     def fill(text):
         for arg, value in args.items():
             text = text.replace("{" + arg + "}", value)
         return text.replace("{count}", str(count))
 
-    proposed = []
-    for index, stage in enumerate(record["stages"]):
-        completion = copy.deepcopy(stage["completion"])
+    def check(pattern, where):
+        completion = copy.deepcopy(pattern)
         completion["description"] = fill(completion["description"])
         for arg in completion["args"]:
             if isinstance(arg["value"], str):
@@ -271,15 +274,25 @@ def instantiate(record, args, count, values):
         elif completion["value"] == "+{count}":
             current = facts.read(values, completion["fact"], facts.args_of(completion))
             if type(current) is not int or count is None:
-                raise ValueError(f"Stage {index} needs {completion['fact']} now plus the count, and it is not readable")
+                raise ValueError(f"{where} needs {completion['fact']} now plus the count, and it is not readable")
             completion["value"] = current + count
+        return completion
+
+    proposed = []
+    for index, stage in enumerate(record["stages"]):
+        completion = check(stage["completion"], f"Stage {index}")
+        current = facts.read(values, completion["fact"], facts.args_of(completion))
+        if current is not None and facts.met(completion, current):
+            continue
         proposed.append({"key": f"s{index}", "parent_key": "", "objective": fill(stage["objective"]), "completion": completion,
                          "actionable": stage["actionable"], "steps": bind(stage["steps"], completion, replay=True)})
-    return {"goal_id": "root", "mode": "expand", "completion": subgoals.unknown(), "reason": "Cached plan " + record["name"],
+    return {"goal_id": "root", "mode": "expand", "completion": check(record["goal"], "The goal"), "reason": "Cached plan " + record["name"],
             "subgoals": proposed, "steps": []}
 
 
 def plan_patterns(store, project_id):
-    """The project's usable plan patterns as [(key, record)], most wins first: each has stages and has not failed more often than it won."""
-    usable = [(key, record) for key, record in keyed(store, f"{project_id}:plan:") if record["stages"] and record["fails"] <= record["wins"]]
+    """The project's usable plan patterns as [(key, record)], most wins first: each has its goal's check and stages and has not
+    failed more often than it won. A pattern saved before goals had checks never proved its goal, so it is not offered."""
+    usable = [(key, record) for key, record in keyed(store, f"{project_id}:plan:")
+              if record.get("goal") and record["stages"] and record["fails"] <= record["wins"]]
     return sorted(usable, key=lambda item: -item[1]["wins"])

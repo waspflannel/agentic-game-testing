@@ -14,6 +14,7 @@ from . import facts
 MAX_GOALS = 64
 MAX_DEPTH = 8
 BUDGET = 6  # Turns without progress on one leaf before it is broken.
+ENTER = "enter"  # The built-in first stage's id.
 MAX_OBSERVATION_AGE = 5
 
 
@@ -59,7 +60,7 @@ class ProposedGoal(Contract):
 
 class PlanningDecision(Contract):
     goal_id: str = Field(min_length=1, max_length=100)
-    mode: Literal["expand", "act", "blocked", "retire", "complete"]
+    mode: Literal["expand", "act", "blocked", "retire"]
     completion: Check
     reason: str = Field(min_length=1, max_length=1000)
     subgoals: list[ProposedGoal] = Field(max_length=12)
@@ -85,12 +86,23 @@ def unknown(description="Success is not yet grounded in an observable game condi
 
 
 def new_plan(primary_goal, player_id, run_id=None):
+    """The root, whose check the planner sets, and the built-in first stage: get into a playable world. The root is planned
+    once that stage is done, so the planner sees every fact the world reports instead of a menu's few."""
     return {"version": 1, "primary_goal": primary_goal, "player_id": player_id, "run_id": run_id, "root_id": "root", "revision": 0,
             "active_goal_id": "root", "status": "pending", "reason": "Waiting for a fresh game observation.",
             "world_id": None, "observation_generation": None, "goals": [{
                 "id": "root", "parent_id": None, "objective": primary_goal,
-                "completion": unknown("Primary-objective acceptance is manual; verify concrete outcomes in its child goals."),
-                "status": "pending", "actionable": False, "attempts": 0}]}
+                "completion": unknown("Set when the goal is planned in a playable world."),
+                "status": "pending", "actionable": False, "attempts": 0}, {
+                "id": ENTER, "parent_id": "root", "objective": "Get into the game world so the player can act.",
+                "completion": Check(fact="world_ready", args=[], op="==", value=True,
+                                    description="world_ready is true: the world is loaded and the player can act.").model_dump(),
+                "status": "pending", "actionable": True, "attempts": 0}]}
+
+
+def stages(plan):
+    """The root's planned stages: its children that are not retired, without the built-in enter stage."""
+    return [g for g in plan["goals"] if g.get("parent_id") == plan["root_id"] and not g.get("retired") and g["id"] != ENTER]
 
 
 def goal_path(plan, goal_id=None):
@@ -176,7 +188,7 @@ def select_active(plan):
             if candidate:
                 return candidate
         return goal
-    selected = descend(nodes[plan["root_id"]])  # The manual-acceptance root never completes.
+    selected = descend(nodes[plan["root_id"]])  # The root never completes: its check passing is a claim for the operator.
     plan["active_goal_id"] = selected["id"]
     if selected["status"] == "blocked":
         plan.update(status="blocked", reason=selected.get("blocked_reason", "This goal needs help."))
@@ -228,7 +240,7 @@ def reconcile(plan, observation, control_generation):
             progressed = True
         if value is not None:  # A loading screen reads nothing; keep the last value so progress is not erased.
             goal["measured"] = value
-        if done:
+        if done and goal["id"] != plan["root_id"]:  # The root's check passing is a claim for the operator (reached), not a completion.
             goal.update(status="completed", completion_evidence={**observation_ref(observation), "value": value})
             goal.pop("blocked_reason", None)
             completed.append(goal["id"])
@@ -296,22 +308,36 @@ def give_up(plan, goal_id, reason):
     plan["revision"] += 1
 
 
-def judge_complete(plan, goal_id, evidence):
-    """Complete a non-root leaf whose check is unknown on a judge's word (Jev's stage_done), with evidence naming the judge; True when completed."""
-    goal = next((g for g in plan["goals"] if g["id"] == goal_id), None)
-    if (not goal or goal_id == plan["root_id"] or goal["status"] == "completed" or goal["completion"]["fact"] != "unknown"
-            or any(g.get("parent_id") == goal_id for g in plan["goals"])):
-        return False
-    goal.update(status="completed", completion_evidence=evidence)
-    plan["revision"] += 1
-    return True
+def reached(plan, observation):
+    """Why the goal is reached, or None. A goal with a check is reached only when that check passes. A goal the planner
+    could give no check is reached when every stage is verified, and after a rejection only with more stages verified."""
+    root = next(g for g in plan["goals"] if g["id"] == plan["root_id"])
+    if root["completion"]["fact"] != "unknown":
+        done, value = measure(root["completion"], observation)
+        return f"The goal's check passed: {root['completion']['description']} (value {value})." if done else None
+    planned = stages(plan)
+    verified = [g for g in planned if g["status"] == "completed"]
+    if planned and len(verified) == len(planned) and len(verified) > (plan.get("completion_rejected") or {}).get("verified_count", 0):
+        return "Every stage of the plan is verified, but the goal has no check of its own; please confirm it is done."
+    return None
+
+
+def claim(plan, observation, reason):
+    """Hand the reached goal to the operator. checked says the goal's own check passed, so the plan may be saved for reuse."""
+    root = next(g for g in plan["goals"] if g["id"] == plan["root_id"])
+    root["completion_claim"] = {"reason": reason, "observation": observation_ref(observation), "checked": root["completion"]["fact"] != "unknown",
+                                "verified_goal_ids": [g["id"] for g in stages(plan) if g["status"] == "completed"]}
+    plan.update(status="goal_reached", reason=reason, revision=plan["revision"] + 1)
 
 
 def reopen_after_rejected_claim(plan, note):
-    """The operator said not done: the root plans again and must verify more before claiming again."""
+    """The operator said not done: the root plans again and must verify more before claiming again. A check that passed
+    was not enough, so the root loses it and the planner gives it a new one."""
     root = next(g for g in plan["goals"] if g["id"] == plan["root_id"])
     claim = root.pop("completion_claim")
     plan["completion_rejected"] = {"note": note, "claim_reason": claim["reason"], "verified_count": len(claim["verified_goal_ids"])}
+    if claim.get("checked"):
+        root["completion"] = unknown("The operator said the goal is not done although its check passed: " + claim["reason"])
     root["actionable"] = False
     plan.update(status="active", reason="You said the primary goal is not done" + (f": {note}" if note else "."),
                 revision=plan["revision"] + 1)
@@ -365,7 +391,7 @@ def apply_decision(plan, raw, context, warnings=None):
         if mode == "act" and raw.get("subgoals"):
             raw["mode"] = "expand"
             warnings.append("act with subgoals applied as expand")
-        if mode in {"blocked", "retire", "complete"} and raw.get("subgoals"):
+        if mode in {"blocked", "retire"} and raw.get("subgoals"):
             raw["subgoals"] = []
             warnings.append(f"{mode} subgoals dropped")
     decision = PlanningDecision.model_validate(raw).model_dump()
@@ -373,33 +399,15 @@ def apply_decision(plan, raw, context, warnings=None):
     focus = active_goal(result)
     if not focus or decision["goal_id"] != focus["id"]:
         raise ValueError("Planner response targets a stale or inactive goal")
-    if focus["id"] == result["root_id"]:
-        if decision["completion"]["fact"] != "unknown":
-            raise ValueError("The free-text primary objective requires manual acceptance; give its observable outcomes child goals")
-        if decision["mode"] in {"act", "retire"}:
-            raise ValueError("Decompose the primary objective into a concrete child goal or explain why planning is blocked")
-    if decision["mode"] == "complete":
-        if focus["id"] != result["root_id"]:
-            raise ValueError("Only the primary objective can be claimed complete; use act or retire for other goals")
-        verified = [g["id"] for g in result["goals"] if g.get("parent_id") == focus["id"]
-                    and not g.get("retired") and g["status"] == "completed"]
-        if not verified:
-            raise ValueError("Claim the primary objective complete only after a child goal is verified")
-        rejected = result.get("completion_rejected")
-        if rejected and len(verified) <= rejected["verified_count"]:
-            raise ValueError("The operator said the primary objective is not done; verify another child goal before claiming it again")
-        focus["completion_claim"] = {"reason": decision["reason"],
-                                     "observation": observation_ref(context["observation"]), "verified_goal_ids": verified}
-        result.update(status="goal_reached", reason=decision["reason"], revision=result["revision"] + 1)
-        return result
+    if focus["id"] == result["root_id"] and decision["mode"] in {"act", "retire"}:
+        raise ValueError("Decompose the primary objective into a concrete child goal or explain why planning is blocked")
     if decision["mode"] == "retire":
         # Retirement is not success: the focus keeps its own completion; the decision's is ignored.
         focus.pop("steps", None)
         result.update(reason="Retired: " + decision["reason"], revision=result["revision"] + 1)
         retire(result, focus, decision, context)
         return result
-    if focus["id"] != result["root_id"]:
-        facts.validate(decision["completion"], context["fact_catalog"], "completion")
+    facts.validate(decision["completion"], context["fact_catalog"], "completion")
     # Discovery and expansion are atomic: child quantities depend on this newly validated condition.
     focus["completion"] = decision["completion"]
     if len(result["goals"]) + len(decision["subgoals"]) > MAX_GOALS:
@@ -434,7 +442,7 @@ def apply_decision(plan, raw, context, warnings=None):
         generated[proposed["key"]] = goal
     focus.update(completion=decision["completion"],
                  source_observation=observation_ref(context["observation"]), actionable=decision["mode"] == "act",
-                 attempts=0)
+                 attempts=0, planned_value=facts.read(context["fact_catalog"]["values"], decision["completion"]["fact"], facts.args_of(decision["completion"])))
     if decision["mode"] == "act":
         focus["steps"] = decision["steps"]
     else:

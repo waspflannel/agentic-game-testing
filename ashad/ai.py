@@ -163,12 +163,12 @@ def narrowed(verb_answer, action_answer, verbs):
     kept = {key: p for key, p in action_answer["probabilities"].items() if verbs.get(key) == verb}
     total = sum(kept.values())
     if not total:  # No weight on any option of the picked verb: nothing to act on.
-        return {"choice": None, "probabilities": {}, "confidence": 0.0, "verb": verb}
+        return {"choice": None, "probabilities": {}, "confidence": 0.0}
     probabilities = {key: p / total for key, p in kept.items()}
     picked = max(probabilities, key=probabilities.get)
     n = len(probabilities)
     spread = 1.0 if n == 1 else (probabilities[picked] - 1 / n) / (1 - 1 / n)
-    return {"choice": picked, "probabilities": probabilities, "confidence": min(verb_answer["confidence"], spread), "verb": verb}
+    return {"choice": picked, "probabilities": probabilities, "confidence": min(verb_answer["confidence"], spread)}
 
 
 def band(p):

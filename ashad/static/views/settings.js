@@ -211,7 +211,6 @@ export function limitsSkeleton(data) {
   const minutes = s.duration_seconds ? String(Math.round(s.duration_seconds / 60)) : '';
   const decide = s.claude_decide_model || 'sonnet';
   const option = (value, label, current) => `<option value="${esc(value)}"${value === current ? ' selected' : ''}>${esc(label)}</option>`;
-  const engine = s.decision_engine || 'today';
   const jevModel = s.jev_model || 'jev-1.13.0';
   const decideOptions = (data?.model_options || []).filter(m => m.provider === 'claude')
     .map(m => `<option value="${esc(m.id)}"${m.id === decide ? ' selected' : ''}>${esc(m.label)}${m.id === 'sonnet' ? ' (Default)' : ''}</option>`).join('');
@@ -221,8 +220,6 @@ export function limitsSkeleton(data) {
     + field('l-spend', 'Spend cap (USD, API-equivalent estimate)', `<input id="l-spend" class="input" name="spend" inputmode="decimal" value="${esc(s.spend_usd ?? '')}" placeholder="No limit" aria-describedby="l-spend-error">`, 'Estimates only apply to metered rows; subscription turns have no price.', 'l-spend-error')
     + field('l-reserve', 'Storage reserve (GB)', `<input id="l-reserve" class="input" name="reserve" inputmode="decimal" value="${esc(Number.isFinite(s.storage_reserve_bytes) ? +(s.storage_reserve_bytes / GB).toFixed(2) : '')}" aria-describedby="l-reserve-error">`, 'Free disk space kept back for evidence.', 'l-reserve-error')
     + field('l-decide', 'Claude action model', `<select id="l-decide" class="select" name="decide">${decideOptions}</select>`, "Chooses each action batch on Claude instances. The instance's model still plans.")
-    + field('l-engine', 'Decision engine', `<select id="l-engine" class="select" name="engine">${option('today', 'Today (Default)', engine)}${option('jev_hybrid', 'Jev hybrid', engine)}</select>`,
-      'Jev hybrid needs a TypeSafe key (below); without one, runs use Today.')
     + field('l-jev-model', 'Jev model', `<select id="l-jev-model" class="select" name="jev_model">${option('jev-1.13.0', 'jev-1.13.0 (Default)', jevModel)}${option('jev-preview', 'jev-preview', jevModel)}</select>`,
       'Pinned so confidence thresholds stay tuned. Preview tracks the newest Jev.')
     + `<p class="hint">Concurrent instances: 1 (fixed in this release).</p>`
@@ -248,7 +245,7 @@ export function limitsPayload(values) {
   const spend = num('spend', 'Spend cap');
   const reserve = num('reserve', 'Storage reserve', GB, true);
   if (reserve === null) errors.reserve = 'Enter a reserve, or 0 for none.';
-  return { errors, body: { duration_seconds: duration, spend_usd: spend, storage_reserve_bytes: Number.isFinite(reserve) ? Math.round(reserve) : reserve, claude_decide_model: values.decide, decision_engine: values.engine, jev_model: values.jev_model } };
+  return { errors, body: { duration_seconds: duration, spend_usd: spend, storage_reserve_bytes: Number.isFinite(reserve) ? Math.round(reserve) : reserve, claude_decide_model: values.decide, jev_model: values.jev_model } };
 }
 
 export function limitsRegions(data, ui) {
@@ -264,7 +261,8 @@ export function limitsRegions(data, ui) {
 
 // Status is booleans only; the key itself never reaches the browser.
 const jevKeyWords = jev => [jev.key_set ? 'A key is saved.' : 'No key saved.',
-  jev.env_set ? 'TYPESAFE_API_KEY is set and takes precedence.' : '', jev.fake ? 'Fake Jev is on (ASHAD_JEV_FAKE=1).' : ''].filter(Boolean).join(' ');
+  jev.env_set ? 'TYPESAFE_API_KEY is set and takes precedence.' : '', jev.fake ? 'Fake Jev is on (ASHAD_JEV_FAKE=1).' : '',
+  jev.available === false ? 'Jev is unavailable, so every Jev step goes to Sonnet.' : ''].filter(Boolean).join(' ');
 const jevKeyBadShape = jev => Boolean(jev && !jev.fake && (jev.key_set || jev.env_set) && jev.key_shape_ok === false);
 
 function field(id, label, control, hint = '', errorId = '') {

@@ -734,7 +734,9 @@ class StructuredPlayers:
         return tried if count >= MOVEMENT_STALL_LIMIT else None
 
     async def _reroute_or_pause(self, run_id, player_id, generation, verb, observation, result):
-        """After stalled moves, move toward the untried offered target nearest the blocked one; pause only when none is left. True when the turn ends."""
+        """After stalled moves, move toward the untried offered target nearest the blocked one; pause only when none is left. True when the turn ends.
+
+        While player input is disabled no target can be reached, so the stall pauses at once."""
         key = (run_id, player_id)
         if verb != "move_to":
             return False
@@ -751,7 +753,9 @@ class StructuredPlayers:
         def at(args):
             return observed_entity(observation, args["target_id"]).get("position") if args.get("target_id") else (args.get("parameters") or {}).get("position")
         blocked = at(result)
-        moves = sorted((a for g in action_groups(context) for a in g["actions"]
+        input_disabled = (observation["state"]["player"].get("activity") == "input_disabled"
+                          or facts.read(facts.values(observation), "player_can_act", {}) is False)
+        moves = [] if input_disabled else sorted((a for g in action_groups(context) for a in g["actions"]
                         if a["args"].get("verb") == "move_to" and move_target(a["args"]) not in tried),
                        key=lambda a: math.dist(blocked, at(a["args"])) if point(blocked) and point(at(a["args"])) else math.inf)
         if moves:
@@ -764,8 +768,9 @@ class StructuredPlayers:
             return True
         self.movement_stalls.pop(key, None)
         position = observation["state"]["player"]["position"]
-        reason = (f"The character has not moved from {position} after failed moves to {len(tried)} targets, "
-                  f"and no other offered move target is left; game input may not be reaching it. "
+        why = ("player input is disabled" if input_disabled else
+               f"failed moves to {len(tried)} targets left no other offered move target; game input may not be reaching it")
+        reason = (f"The character has not moved from {position}: {why}. "
                   f"Last result: {result.get('reason') or result.get('status')}")
         self.status(run_id, player_id, "error", reason, generation, last_error=reason, error_at=time.time())
         await self.coordinator.investigate(run_id, "movement_unavailable", reason, [player_id])

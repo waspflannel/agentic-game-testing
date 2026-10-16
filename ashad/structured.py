@@ -167,7 +167,9 @@ class StructuredPlayers:
         self.goal_intents = {}  # (run_id, player_id) -> (goal_id, [repeat.step_for of each agent action]), saved as a skill when the goal completes
         self.held = {}  # (run_id, player_id) -> item_id of the hotbar slot the controller last pressed; the game does not report it
         self.decision_failed = {}  # (run_id, player_id) -> (goal_id, decision key) whose one replay failed while that goal is active
-        self.jev_missed = {}  # (run_id, player_id) -> (goal_id,): a Jev batch or skill on this goal missed, so Sonnet takes the next turn
+        # (run_id, player_id) -> (goal_id,): a Jev batch or skill on this goal missed, so Sonnet takes the next turn;
+        # (goal_id, scene) after a no_effect stop until the next observation shows whether the scene changed after all.
+        self.jev_missed = {}
         self.deltas = {}  # (run_id, player_id) -> (goal_id, last prompt view, [(time, delta_json), ...]): Jev hybrid only, the last STUCK_DELTAS changes on this goal
         self.judged = {}  # (run_id, player_id) -> the own-action line whose effect Jev already judged
         self.crashes_recorded = set()
@@ -1430,6 +1432,13 @@ class StructuredPlayers:
                 return timing["outcome"]
             # After a planner call this is the post-planning observation.
             observation = planned["observation"]
+            missed = self.jev_missed.get(key)
+            if missed and len(missed) == 2:
+                # A Jev no_effect followed by a scene change took effect late (a window opening after the click): not a miss.
+                if subgoals.planning_scene(observation) != missed[1]:
+                    self.jev_missed.pop(key)
+                else:
+                    self.jev_missed[key] = missed[:1]
             signature = meaningful_signature(observation)
             wait = self.waits.get(key)
             if wait and wait[2] == generation and time.time() < wait[0] and wait_signature(observation) == wait[1]:
@@ -1604,12 +1613,15 @@ class StructuredPlayers:
                                                           build_id=run["build"].get("id"), run_id=run_id)
                             self.store.event(run_id, "decision_saved", {"player_id": player_id, "goal_id": goal["id"],
                                                                         "key": skills.decision_key(run["project_id"], sig), "name": saved["name"]})
-                # A scene change that moved the goal's measured value no closer to its target (e.g. a menu toggled open and shut) is a miss too;
-                # an unmeasurable check (an unknown-fact stage) has no value to move, so its scene changes are not misses.
+                # A scene change is a miss only when the goal's measured value moved away from its target; an unchanged
+                # or unmeasurable value is not. A no_effect waits for the next observation (resolved at the top of the turn).
+                latest = self.store.get("observations", f"{run_id}:{player_id}") or {}
                 decided_value = subgoals.measure(goal["completion"], decided_on)[1] if route == "jev" and stop == "scene_changed" else None
-                no_progress = decided_value is not None and not subgoals.toward(
-                    goal["completion"], decided_value, subgoals.measure(goal["completion"], self.store.get("observations", f"{run_id}:{player_id}") or {})[1])
-                if route == "jev" and (stop in ("failed", "no_effect", "not_offered", "fact_moved_away") or no_progress):
+                after_value = subgoals.measure(goal["completion"], latest)[1] if decided_value is not None else None
+                moved_away = after_value not in (None, decided_value) and not subgoals.toward(goal["completion"], decided_value, after_value)
+                if route == "jev" and stop == "no_effect":
+                    self.jev_missed[key] = (goal["id"], subgoals.planning_scene(latest))
+                elif route == "jev" and (stop in ("failed", "not_offered", "fact_moved_away") or moved_away):
                     self.jev_missed[key] = (goal["id"],)  # Sonnet takes this goal's next turn.
             timing["outcome"] = "decided"
             timing["counts"]["batch_actions"] = len(ran) + (first.get("tool") == "perform_action")

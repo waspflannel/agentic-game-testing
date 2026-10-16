@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import copy
-import json
 import math
 import time
 from typing import Literal
@@ -14,9 +13,7 @@ from . import facts
 # ponytail: retain at most 64 goals; archive verified branches if live objectives outgrow this ceiling.
 MAX_GOALS = 64
 MAX_DEPTH = 8
-STUCK_ACTIONS = 6
-STUCK_PLANS = 2
-STUCK_REPEATS = 2
+BUDGET = 6  # Turns without progress on one leaf before it is broken.
 MAX_OBSERVATION_AGE = 5
 
 
@@ -93,7 +90,7 @@ def new_plan(primary_goal, player_id, run_id=None):
             "world_id": None, "observation_generation": None, "goals": [{
                 "id": "root", "parent_id": None, "objective": primary_goal,
                 "completion": unknown("Primary-objective acceptance is manual; verify concrete outcomes in its child goals."),
-                "status": "pending", "actionable": False, "attempts": 0, "reviews": 0}]}
+                "status": "pending", "actionable": False, "attempts": 0}]}
 
 
 def goal_path(plan, goal_id=None):
@@ -137,10 +134,8 @@ def toward(check, old, new):
 
 
 def credit_progress(goal, now):
-    """Progress clears the goal's no-progress counters, failure count and repeat tracking."""
-    goal.update(attempts=0, reviews=0, progress_at=now)
-    for key in ("recent_actions", "repeating", "repeats", "failures"):
-        goal.pop(key, None)
+    """Progress resets the leaf's attempts."""
+    goal.update(attempts=0, progress_at=now)
 
 
 def measure(check, observation):
@@ -163,12 +158,6 @@ def planning_scene(observation):
     """A plan inferred for a transient screen must not land after that screen changes."""
     controls = frozenset(e.get("id") for e in observation.get("entities", []) if e.get("kind") == "ui" and e.get("actions"))
     return observation.get("world_id"), observation.get("generation"), observation.get("ready"), controls
-
-
-def knowledge_signature(observation):
-    """New quests matter; leaving a station's view must not repeatedly replan."""
-    state = observation.get("state", {})
-    return sorted({q.get("id") for q in state.get("objectives", [])} | set(state.get("completed_quests", [])))
 
 
 def select_active(plan):
@@ -197,10 +186,8 @@ def select_active(plan):
     return selected
 
 
-def reconcile(plan, observation, control_generation, jev_hybrid=False):
-    """Refresh verified progress without inference, retaining history across pause/restart.
-
-    jev_hybrid: changed knowledge asks Jev whether the kept stage still fits (fit_check) instead of replanning it."""
+def reconcile(plan, observation, control_generation):
+    """Refresh verified progress without inference, retaining history across pause/restart."""
     now = time.time()
     if stale(observation.get("received_at", observation.get("timestamp")), now):
         raise ValueError("Planner requires a fresh observation")
@@ -216,26 +203,18 @@ def reconcile(plan, observation, control_generation, jev_hybrid=False):
         fresh["revision"] = plan["revision"] + 1
         plan.clear()
         plan.update(fresh)
-    # Loading a world from a menu changes the generation too; only a change while a world was observed rebinds the kept plan.
-    rebound = plan.get("observation_generation") not in (None, binding) and bool((plan.get("last_observation") or {}).get("world_id"))
+    # The operator paused and resumed: they may have fixed the situation, so every open goal starts its budget again.
     resumed = plan.get("control_generation") not in (None, control_generation)
-    if rebound or resumed:
+    if resumed:
         for goal in plan["goals"]:
-            if goal["status"] not in {"completed", "gave_up"} and not goal.get("retired"):
-                goal.update(status="pending", attempts=0, reviews=0)
-                goal.pop("blocked_reason", None)
-                goal.pop("measured", None)
-                goal.pop("recent_actions", None)
-                goal.pop("repeating", None)
-                goal.pop("repeats", None)
-        plan["reason"] = "Control or game binding changed; the plan is kept and re-verified."
-        if any(g["id"] != plan["root_id"] for g in plan["goals"]):
-            plan["fit_check"] = "rebound"
+            if goal["status"] != "completed":
+                goal["attempts"] = 0
     # Unloading emits an empty world ID. Keep the last actual world so A -> menu -> B cannot reuse A's proof.
     plan.update(world_id=world or previous_world, observation_generation=binding, control_generation=control_generation)
     completed = []
-    progressed = set()
-    on_path = {g["id"] for g in goal_path(plan)}
+    progressed = False
+    path = goal_path(plan)
+    on_path = {g["id"] for g in path}
     for goal in plan["goals"]:
         if goal["status"] == "completed" or goal.get("retired"):
             continue
@@ -245,53 +224,26 @@ def reconcile(plan, observation, control_generation, jev_hybrid=False):
         if goal["id"] not in on_path and any(g["status"] != "completed" for g in earlier):
             continue
         done, value = measure(goal["completion"], observation)
-        if toward(goal["completion"], goal.get("measured"), value):
-            progressed.add(goal["id"])
-            credit_progress(goal, now)
+        if goal["id"] in on_path and toward(goal["completion"], goal.get("measured"), value):
+            progressed = True
         if value is not None:  # A loading screen reads nothing; keep the last value so progress is not erased.
             goal["measured"] = value
         if done:
             goal.update(status="completed", completion_evidence={**observation_ref(observation), "value": value})
             goal.pop("blocked_reason", None)
             completed.append(goal["id"])
-    # Progress on a parent's fact (e.g. harvesting toward "10 wheat") is progress for the leaf pursuing it.
-    current = active_goal(plan)
-    if current and any(g["id"] in progressed for g in goal_path(plan, current["id"])[:-1]):
-        credit_progress(current, now)
-    # A till/plant/water leaf's check often moves only at its last step; each new tilled, planted or watered tile is progress.
-    farm = observation.get("state", {}).get("farm")
-    if isinstance(farm, dict):
-        counts = [farm.get(k) if type(farm.get(k)) is int else 0 for k in ("tilled", "planted", "watered")]
-        if current and plan.get("farm_counts") and any(new > old for new, old in zip(counts, plan["farm_counts"])):
-            credit_progress(current, now)
-        plan["farm_counts"] = counts
-    for goal_id in completed:
-        for ancestor in goal_path(plan, goal_id)[:-1]:
-            credit_progress(ancestor, now)
+    # Progress on any goal of the active path (e.g. harvesting toward "10 wheat") is progress for the leaf pursuing it.
+    if progressed and path:
+        credit_progress(path[-1], now)
     for goal in plan["goals"]:
         if goal["status"] not in {"completed", "gave_up"} and any(g["status"] == "completed" for g in goal_path(plan, goal["id"])[:-1]):
             goal.update(retired=True, status="blocked", blocked_reason="No longer needed: the parent goal was verified directly.")
     previous_active = plan.get("active_goal_id")
     # A claim or hand-back waits for the operator; re-selecting would move the active goal away from the root.
-    waiting = plan["status"] == "goal_reached" or (plan["status"] == "handed_back" and not (rebound or resumed))
+    waiting = plan["status"] == "goal_reached" or (plan["status"] == "handed_back" and not resumed)
     selected = active_goal(plan) if waiting else select_active(plan)
     if selected and selected["id"] != previous_active:
         selected["activated_at"] = now
-        if selected["id"] != plan["root_id"]:
-            plan["fit_check"] = "new_stage"
-    # Loading screens are not new knowledge; new knowledge replans without resetting the no-progress cap.
-    # Without a world (menus) nothing is known, so the first signature once a world is ready is a baseline, not a change.
-    if observation.get("ready") is True and world:
-        signature = knowledge_signature(observation)
-        if selected and plan.get("knowledge_signature") not in (None, signature):
-            if not jev_hybrid:
-                selected["actionable"] = False
-                plan["reason"] = "Observed objectives changed; reassess the active goal."
-            elif selected["id"] != plan["root_id"]:
-                plan["fit_check"] = "knowledge"
-        plan["knowledge_signature"] = signature
-    elif not world:
-        plan.pop("knowledge_signature", None)
     plan["last_observation"] = observation_ref(observation)
     if completed:
         plan["revision"] += 1
@@ -300,25 +252,21 @@ def reconcile(plan, observation, control_generation, jev_hybrid=False):
 
 def needs_planning(plan):
     goal = active_goal(plan)
-    if not goal or plan["status"] == "blocked":
-        return False
-    if goal.get("repeating"):
-        goal["actionable"] = False
-        plan["reason"] = f"Repeating the same action without progress ({goal['repeating']}); choose a different target or approach, or report the blocker."
-    return not goal.get("actionable")
+    return bool(goal) and plan["status"] != "blocked" and not goal.get("actionable")
 
 
-def stuck(plan, needs_plan) -> str | None:
+def broken(plan) -> bool:
+    """The active leaf spent its budget of turns without progress."""
     goal = active_goal(plan)
-    if not goal or plan["status"] != "active":
-        return None
-    if goal.get("attempts", 0) >= STUCK_ACTIONS:
-        return f"{STUCK_ACTIONS} actions without measured progress or a scene change"
-    if goal.get("repeats", 0) >= STUCK_REPEATS:
-        return "The same action kept repeating without progress after a replan"
-    if needs_plan and goal.get("reviews", 0) >= STUCK_PLANS:
-        return f"{STUCK_PLANS} plans without measured progress"
-    return None
+    return (bool(goal) and goal["id"] != plan["root_id"] and not any(g.get("parent_id") == goal["id"] for g in plan["goals"])
+            and goal.get("attempts", 0) >= BUDGET)
+
+
+def record_attempt(plan):
+    """One turn without progress on the active goal; returns the new count."""
+    goal = active_goal(plan)
+    goal["attempts"] = goal.get("attempts", 0) + 1
+    return goal["attempts"]
 
 
 def block(plan, reason):
@@ -328,16 +276,7 @@ def block(plan, reason):
     plan.update(status="blocked", reason=reason, revision=plan["revision"] + 1)
 
 
-def keep_planned_stage(plan, selected, jev_hybrid):
-    """Plan-once (Jev hybrid): a newly selected stage that already has planned steps stays actionable and Jev confirms it
-    still fits (fit_check) instead of the planner re-planning it; True when kept."""
-    if jev_hybrid and selected["id"] != plan["root_id"] and selected.get("steps"):
-        plan["fit_check"] = "new_stage"
-        return True
-    return False
-
-
-def give_up(plan, goal_id, reason, jev_hybrid=False):
+def give_up(plan, goal_id, reason):
     if goal_id != plan["root_id"]:
         given = {goal_id}
         for goal in plan["goals"]:
@@ -350,7 +289,6 @@ def give_up(plan, goal_id, reason, jev_hybrid=False):
         plan.update(status="handed_back", reason=reason)
     else:
         plan["reason"] = reason
-        keep_planned_stage(plan, selected, jev_hybrid)
     plan["revision"] += 1
 
 
@@ -375,7 +313,7 @@ def reopen_after_rejected_claim(plan, note):
                 revision=plan["revision"] + 1)
 
 
-def retire(plan, focus, decision, context, jev_hybrid=False):
+def retire(plan, focus, decision, context):
     """Retirement is not success: the goal and its descendants keep their predicates and leave the active path."""
     retired = {focus["id"]}
     for goal in plan["goals"]:
@@ -384,7 +322,7 @@ def retire(plan, focus, decision, context, jev_hybrid=False):
         if goal["id"] in retired and goal["status"] != "completed":
             goal.update(retired=True, status="blocked", actionable=False, blocked_reason=decision["reason"])
     selected = select_active(plan)
-    if selected and not keep_planned_stage(plan, selected, jev_hybrid):
+    if selected and not selected.get("steps"):
         selected["actionable"] = False
 
 
@@ -407,8 +345,8 @@ def kept_steps(steps, context, warnings, location):
     return kept
 
 
-def apply_decision(plan, raw, context, warnings=None, jev_hybrid=False):
-    """Validate fully before editing a copy; callers commit only while their run is current. jev_hybrid: see keep_planned_stage."""
+def apply_decision(plan, raw, context, warnings=None):
+    """Validate fully before editing a copy; callers commit only while their run is current."""
     warnings = [] if warnings is None else warnings
     if isinstance(raw, dict):
         raw = copy.deepcopy(raw)
@@ -454,7 +392,7 @@ def apply_decision(plan, raw, context, warnings=None, jev_hybrid=False):
         # Retirement is not success: the focus keeps its own completion; the decision's is ignored.
         focus.pop("steps", None)
         result.update(reason="Retired: " + decision["reason"], revision=result["revision"] + 1)
-        retire(result, focus, decision, context, jev_hybrid)
+        retire(result, focus, decision, context)
         return result
     if focus["id"] != result["root_id"]:
         facts.validate(decision["completion"], context["fact_catalog"], "completion")
@@ -484,7 +422,7 @@ def apply_decision(plan, raw, context, warnings=None, jev_hybrid=False):
         goal = {"id": f"goal-{result['revision'] + 1}-{index}", "parent_id": parent["id"],
                 "objective": proposed["objective"], "completion": check,
                 "source_observation": observation_ref(context["observation"]),
-                "status": "pending", "actionable": proposed["actionable"], "attempts": 0, "reviews": 0,
+                "status": "pending", "actionable": proposed["actionable"], "attempts": 0,
                 "planned_value": planned_value}
         if proposed["steps"]:
             goal["steps"] = proposed["steps"]
@@ -492,17 +430,14 @@ def apply_decision(plan, raw, context, warnings=None, jev_hybrid=False):
         generated[proposed["key"]] = goal
     focus.update(completion=decision["completion"],
                  source_observation=observation_ref(context["observation"]), actionable=decision["mode"] == "act",
-                 attempts=0, reviews=focus.get("reviews", 0) + 1)
-    focus.pop("recent_actions", None)
-    focus.pop("repeating", None)
-    focus.pop("failures", None)  # A new plan for the stage gets its own failure count.
+                 attempts=0)
     if decision["mode"] == "act":
         focus["steps"] = decision["steps"]
     else:
         focus.pop("steps", None)  # Expand and blocked leave no leaf steps to run.
     result.update(reason=decision["reason"], revision=result["revision"] + 1)
     if decision["mode"] == "blocked":
-        give_up(result, focus["id"], decision["reason"], jev_hybrid)
+        give_up(result, focus["id"], decision["reason"])
     else:
         select_active(result)
     return result
@@ -518,52 +453,10 @@ def rejection_message(exc):
     return str(exc)
 
 
-def _rounded(value):
-    if isinstance(value, float):
-        return round(value)
-    if isinstance(value, list):
-        return [_rounded(item) for item in value]
-    if isinstance(value, dict):
-        return {key: _rounded(item) for key, item in value.items()}
-    return value
-
-
 def playable(observation):
     """The world is ready, a player is present and is not known to be unable to act (not a loading, menu, character
     creation or cutscene screen): the world_ready fact."""
     return facts.values(observation)["world_ready"]
-
-
-def record_action(plan, observation, action=None):
-    """Count one attempt toward STUCK_ACTIONS on the observation it was chosen on.
-
-    A wait or a Jev stuck yes (no action) counts only while playable(). An action counts only when the scene was unchanged
-    since the last recorded attempt, or the stage's measured value moved away from its target: a scene change is progress."""
-    goal = active_goal(plan)
-    if not goal:
-        return
-    world, generation, ready, controls = planning_scene(observation)
-    scene = [world, generation, ready, sorted(map(str, controls))]
-    last = goal.get("last_scene")
-    goal["last_scene"] = [scene, goal.get("measured")]
-    if action is None:
-        if playable(observation):
-            goal["attempts"] = goal.get("attempts", 0) + 1
-        return
-    if not last or last[0] == scene or toward(goal["completion"], goal.get("measured"), last[1]):
-        goal["attempts"] = goal.get("attempts", 0) + 1
-    fingerprint = json.dumps([action.get("verb"), action.get("target_id", ""), _rounded(action.get("parameters") or {})], sort_keys=True)
-    label = (action.get("parameters") or {}).get("name") or action.get("verb")
-    window = ((goal.get("recent_actions") or []) + [[fingerprint, label]])[-4:]
-    goal["recent_actions"] = window
-    fingerprints = [item[0] for item in window]
-    same = any(fingerprints.count(item) >= 3 for item in fingerprints)
-    alternating = (len(fingerprints) == 4 and fingerprints[0] == fingerprints[2]
-                   and fingerprints[1] == fingerprints[3] and fingerprints[0] != fingerprints[1])
-    if same or alternating:
-        if not goal.get("repeating"):
-            goal["repeats"] = goal.get("repeats", 0) + 1
-        goal["repeating"] = label
 
 
 def prompt_plan(plan):

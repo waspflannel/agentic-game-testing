@@ -838,7 +838,7 @@ class StructuredPlayers:
         revision = plan["revision"]
         self.status(run_id, player_id, "planning", "Finding the next achievable prerequisite for: " + context["current_goal"]["objective"], generation)
         warnings = []
-        # What plan_subgoals sends after its prefix; validation keeps the full context.
+        # What plan_subgoals sends after its prefix (logged); plan_subgoals gets the full context to build that prefix.
         sent = planning_evidence(context)
         self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": revision, "context": sent,
                          "prefix_sha": hashlib.sha256(static_prefix(context).encode()).hexdigest()[:12]})
@@ -846,7 +846,7 @@ class StructuredPlayers:
             warnings = []
             self.store.event(run_id, "plan_routed", {"player_id": player_id, "route": "opus", "trigger": timing["plan_trigger"]})
             with timed(timing, "plan_model"):
-                proposal = await self._plan_subgoals(run_id, player_id, sent, observation)
+                proposal = await self._plan_subgoals(run_id, player_id, context, observation)
             if not current():
                 self.store.event(run_id, "subgoal_planning_cancelled", {"player_id": player_id, "reason": "Run control changed during planning"})
                 return None
@@ -940,18 +940,20 @@ class StructuredPlayers:
         self._forget_turn((run_id, player_id))
         return {"observation": observation}
 
-    async def _plan_subgoals(self, run_id, player_id, sent, observation):
-        """plan_subgoals, retried once on context_limit with a trimmed context built from the raw observation."""
+    async def _plan_subgoals(self, run_id, player_id, context, observation):
+        """plan_subgoals, retried once on context_limit with a trimmed context built from the raw observation.
+
+        context keeps game_controls and item_ids: plan_subgoals builds the cached prefix from them and sends the rest."""
         try:
-            return await self.coordinator.ai.plan_subgoals(sent, run_id)
+            return await self.coordinator.ai.plan_subgoals(context, run_id)
         except ProviderError as exc:
             if exc.status != "context_limit":
                 raise
-        trimmed = {k: v for k, v in sent.items() if k != "known_locations"} | {
-            "recent_own_actions": sent["recent_own_actions"][-3:], "guidance": json.dumps(sent["guidance"], ensure_ascii=False)[:1000],
+        trimmed = {k: v for k, v in context.items() if k != "known_locations"} | {
+            "recent_own_actions": context["recent_own_actions"][-3:], "guidance": json.dumps(context["guidance"], ensure_ascii=False)[:1000],
             "observation": prompt_observation(observation, max_chars=PROMPT_OBSERVATION_CHARS // 2)}
-        size = json_bytes(trimmed)
-        self.store.event(run_id, "planner_context_trimmed", {"player_id": player_id, "before_bytes": json_bytes(sent), "after_bytes": size})
+        size = json_bytes(planning_evidence(trimmed))
+        self.store.event(run_id, "planner_context_trimmed", {"player_id": player_id, "before_bytes": json_bytes(planning_evidence(context)), "after_bytes": size})
         try:
             return await self.coordinator.ai.plan_subgoals(trimmed, run_id)
         except ProviderError as exc:

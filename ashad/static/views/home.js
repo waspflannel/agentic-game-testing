@@ -101,6 +101,7 @@ export function composerModel(data, projectId, draft, readiness) {
     agentOptions: agents.map(a => ({ id: a.id, label: a.name || a.id, title: `${a.name || a.id} · build ${(data?.builds || []).find(b => b.id === a.build_id)?.name || a.build_id}` })),
     summary: agent ? `build ${build?.name || agent.build_id} · Fresh world` : '',
     defaultModel: data?.default_model,
+    jevMessage: data?.jev?.available === false ? data.jev.message : '',
     canStart: !blockers.length && !draft.busy,
   };
 }
@@ -145,6 +146,7 @@ export function composerRegions(m, draft) {
   if (draft.busy) notes.push(`<p class="note">${icon('loader', 'icon spin')}Starting… This can take a minute while the desktop is checked.</p>`);
   else if (res) notes.push(resultHTML(res));
   if (!m.steam.enabled) notes.push(draft.transport === 'steam' ? `<p class="note" id="composer-steam-note">${esc(m.steam.reason)}.</p>` : `<span class="sr-only" id="composer-steam-note">${esc(m.steam.reason)}.</span>`);
+  if (m.jevMessage) notes.push(`<p class="note">Jev unavailable: ${esc(m.jevMessage)} <a href="#/settings">Add a TypeSafe key</a></p>`);
   if (!draft.busy && m.blockers.length) notes.push(`<div class="note note-blocked"><p>Start is unavailable:</p><ul>${m.blockers.map(b => `<li>${esc(b)}</li>`).join('')}</ul></div>`);
   notes.push(`<p class="note note-hint"><span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> to start</span></p>`);
 

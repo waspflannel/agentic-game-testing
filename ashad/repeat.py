@@ -33,6 +33,12 @@ def action_key(action):
     return tuple(position) if position is not None else None
 
 
+def same_kind(action, context):
+    """Keys of every offered target matching the conditions describe() gives the action's target (e.g. state=Default plant=)."""
+    targets = step_for(action["args"], context["observation"])["targets"]
+    return {key(group) for group in menu.action_groups(context) if targets and (target := view(group)) and matches(target, targets)}
+
+
 def _text(value):
     if isinstance(value, bool):
         return "true" if value else "false"

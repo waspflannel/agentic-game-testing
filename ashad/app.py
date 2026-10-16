@@ -21,12 +21,12 @@ from .codex_backend import CodexError
 from .grok_backend import GrokError
 from .coordinator import Coordinator, InstanceConflict
 from .credentials import Credentials
-from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, CLAUDE_MODELS, DECISION_ENGINES, GROK_MODEL, JEV_MODELS, PROVIDERS, provider_of, ACTIVE_STATES, RecalculateGoalsRequest, IssueStatusRequest
+from .models import Plan, MODEL, MODEL_OPTIONS, CLAUDE_MODEL, CLAUDE_MODELS, GROK_MODEL, JEV_MODELS, PROVIDERS, provider_of, ACTIVE_STATES, RecalculateGoalsRequest, IssueStatusRequest
 from . import jev, repair_tasks, skills
 from .repository import Repository, sha256_file
 from .reports import generate_report
 from .game_controls import BUSY, MODEL_NOT_ALLOWED, SIGN_IN_WAIT, GameControls, migrate_configuration_names, migrate_tuned_configurations
-from .migrations import retire_fixer, migrate_issue_projects, retire_saves, drop_run_observations, drop_recipes, drop_macro_skills, rekey_skills
+from .migrations import retire_fixer, migrate_issue_projects, retire_saves, drop_run_observations, drop_recipes, drop_macro_skills, rekey_skills, drop_decision_engine
 from .projects import Projects
 from .workspace_environment import inspect_fresh_environment, prepare_environment, validate_build
 from .instances import Instances, InstanceRequest, default_model
@@ -102,6 +102,7 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
     drop_recipes(store)
     drop_macro_skills(store)
     rekey_skills(store)
+    drop_decision_engine(store)
     controls = GameControls(store, ai)
     coordinator = Coordinator(store, credentials, ai)
     instances = Instances(coordinator)
@@ -647,11 +648,9 @@ def create_app(data_root, credentials=None, start_services=True, ai_backend=None
             raise ValueError("Gameplay selections use the configured Codex effort. Refresh the dashboard.")
         if "claude_decide_model" in body and body["claude_decide_model"] not in CLAUDE_MODELS:
             raise ValueError("Select a Claude action model: " + ", ".join(CLAUDE_MODELS))
-        if "decision_engine" in body and body["decision_engine"] not in DECISION_ENGINES:
-            raise ValueError("Select a decision engine: Today or Jev hybrid.")
         if "jev_model" in body and body["jev_model"] not in JEV_MODELS:
             raise ValueError("Select a Jev model: " + ", ".join(JEV_MODELS))
-        allowed = {"concurrent_sessions", "storage_reserve_bytes", "duration_seconds", "spend_usd", "claude_decide_model", "decision_engine", "jev_model"}
+        allowed = {"concurrent_sessions", "storage_reserve_bytes", "duration_seconds", "spend_usd", "claude_decide_model", "jev_model"}
         current.update({k: v for k, v in body.items() if k in allowed})
         return store.put("settings", current)
 

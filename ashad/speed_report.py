@@ -392,7 +392,7 @@ def summarize(run, events, data):
         "run": {
             "id": run["id"],
             "model": run.get("model") or run["plan"].get("model"),
-            "decision_engine": run["plan"].get("decision_engine", "today"),
+            "decision_engine": run["plan"].get("decision_engine", "jev_hybrid"),
             "state": run["state"],
             "players": len(run["players"]),
             "first_event_at": first,

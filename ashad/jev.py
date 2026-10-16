@@ -124,7 +124,7 @@ def status(credentials) -> dict:
         return {**result, "message": "TYPESAFE_API_KEY is set and takes precedence over a saved key."}
     if result["key_set"]:
         return {**result, "message": "Using the TypeSafe key saved in Settings."}
-    return {**result, "available": False, "message": "No TypeSafe key is saved and TYPESAFE_API_KEY is not set, so Jev hybrid runs use Today's flow."}
+    return {**result, "available": False, "message": "No TypeSafe key is saved and TYPESAFE_API_KEY is not set, so every Jev step goes to Sonnet."}
 
 
 async def ask(state: str, questions: dict[str, dict], *, credentials, model: str = JEV_MODEL) -> dict:

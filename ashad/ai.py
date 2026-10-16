@@ -499,7 +499,7 @@ class OpenAI:
         if not picked:  # One retry on the unfiltered target list, in case the filter hid the target the model needed.
             if not can_continue():
                 return
-            groups = action_groups(context)
+            groups = action_groups(context, context.get("failed", ()))
             try:
                 evidence, answers, picked = await ask(groups, [listed(g, i) for i, g in enumerate(groups)])
                 failure = None
@@ -512,7 +512,7 @@ class OpenAI:
             if not can_continue():
                 self.store.event(run_id, "decision_cancelled", {"player_id": player_id, "reason": "Session state or generation changed during target selection"})
                 return
-            groups = action_groups(context)  # Today's unfiltered target list.
+            groups = action_groups(context, context.get("failed", ()))  # Today's unfiltered target list, minus the leaf's failed actions.
             evidence, answers, picked = await ask(groups, [listed(g, i) for i, g in enumerate(groups)])
             calls = 2
         if not picked:

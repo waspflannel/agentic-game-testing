@@ -3,7 +3,7 @@ import { esc, icon, href, since } from '../core.js';
 
 export const skillsSkeleton = () => `<div class="page skills-page"><div class="page-head row-between" data-region="head"></div><div data-region="list"></div></div>`;
 
-const KIND_WORDS = { subgoal: 'Subgoal', decision: 'Decision' };
+const KIND_WORDS = { subgoal: 'Subgoal', decision: 'Decision', plan: 'Plan' };
 
 function lastResultHTML(last) {
   if (!last) return 'Not used yet';

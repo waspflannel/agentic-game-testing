@@ -597,6 +597,11 @@ class OpenAI:
         if context.get("judge_effect"):
             questions["effect"] = jev.noul("Did the last entry of `recent_own_actions` have its intended effect? "
                                            "Judge only from the last entry of `recent_changes`.")
+        if context.get("plan_fit"):
+            questions["plan_fits"] = jev.noul("Can `goal` still be done from here with its `steps`, and is it still needed for `goal_path`? "
+                                              "False if it is blocked, already done another way, or its steps cannot work now.")
+        if context.get("judge_done"):
+            questions["stage_done"] = jev.noul("Is `goal` already achieved in the current state? Judge only from `ui`, `player` and `recent_changes`.")
         if library:
             shorts = [short for _, short, _ in library[:MAX_OPTIONS]]
             questions["skill"] = jev.choice("Which saved skill in criteria would achieve `goal` from the current `player` situation?",
@@ -610,7 +615,9 @@ class OpenAI:
         except jev.JevError as exc:
             return fallback(f"jev_error:{exc.status}")
         answers, calls = response["answers"], 1
-        checks = {k: answers[k]["noul"] for k in ("blocker", "stuck", "effect") if k in answers}
+        checks = {k: answers[k]["noul"] for k in ("blocker", "stuck", "effect", "plan_fits", "stage_done") if k in answers}
+        if band(checks.get("plan_fits", 0.5)) == "no" or checks.get("stage_done", 0) >= NOUL_YES:
+            return fallback("plan_check", checks=checks)  # The stage is re-planned or completed; no action on it this turn.
 
         if band(checks.get("blocker", 0.5)) == "yes":  # A blocking window comes first; the skill and action picks wait a turn.
             if "dismiss" in answers and answers["dismiss"]["confidence"] >= ACT_CONFIDENCE:
@@ -644,6 +651,38 @@ class OpenAI:
         result = await self.jev_act(context, groups, listings, answers["action"], dispatch, can_continue, run_id,
                                     model=response["model"], started=started, calls=calls)
         return result and {**result, "checks": checks}
+
+    async def jev_plan_pick(self, objective, patterns, catalog, run_id):
+        """One Jev request: which saved plan pattern [(key, record)] achieves objective, and the fact_catalog value of each of its args.
+
+        Returns (key, {arg: value}) only when the gate says yes and the plan and every arg it needs are confident; else None."""
+        model = self.store.require("runs", run_id)["plan"].get("jev_model") or JEV_MODEL
+        records = dict(patterns[:MAX_OPTIONS])
+        plans = {key: (record["name"] + ": " + "; ".join(s["objective"] for s in record["stages"]))[:OPTION_CHARS] for key, record in records.items()}
+        questions = {"plan": jev.choice("Pick the saved plan in criteria that achieves `goal`.", plans),
+                     "plan_gate": jev.noul({"plans": list(plans.values()),
+                                            "question": "Does one of `plans` achieve `goal` once its item and count are replaced?"})}
+        for name in sorted({p for record in records.values() for p in record["params"]}):
+            values = catalog["args"].get(name)
+            if isinstance(values, list) and 0 < len(values) <= MAX_OPTIONS:
+                questions["arg_" + name] = jev.choice(f"Pick the {name} that `goal` is about.", {v: v for v in values})
+        state = json.dumps({"goal": objective, "facts": catalog["values"]}, ensure_ascii=False)
+        if len(state.encode("utf-8")) + len(json.dumps(questions).encode("utf-8")) > QUESTION_BYTES:
+            return None
+        try:
+            answers = (await jev.ask(state, questions, credentials=self.credentials, model=model))["answers"]
+        except jev.JevError:
+            return None
+        key = answers["plan"]["choice"]
+        if answers["plan_gate"]["noul"] < NOUL_YES or answers["plan"]["confidence"] < ACT_CONFIDENCE:
+            return None
+        args = {}
+        for name in records[key]["params"]:
+            answer = answers.get("arg_" + name)
+            if not answer or answer["confidence"] < ACT_CONFIDENCE:
+                return None
+            args[name] = answer["choice"]
+        return key, args
 
     async def jev_act(self, context, groups, listings, answer, dispatch, can_continue, run_id, *, model, started, calls=1, queue=QUEUE, pick="action"):
         """Acts on Jev's action Choice answer: dispatches the pick and queues the next by probability, or falls back to Sonnet when not confident.

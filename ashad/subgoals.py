@@ -329,6 +329,17 @@ def give_up(plan, goal_id, reason):
     plan["revision"] += 1
 
 
+def judge_complete(plan, goal_id, evidence):
+    """Complete a non-root leaf whose check is unknown on a judge's word (Jev's stage_done), with evidence naming the judge; True when completed."""
+    goal = next((g for g in plan["goals"] if g["id"] == goal_id), None)
+    if (not goal or goal_id == plan["root_id"] or goal["status"] == "completed" or goal["completion"]["fact"] != "unknown"
+            or any(g.get("parent_id") == goal_id for g in plan["goals"])):
+        return False
+    goal.update(status="completed", completion_evidence=evidence)
+    plan["revision"] += 1
+    return True
+
+
 def reopen_after_rejected_claim(plan, note):
     """The operator said not done: the root plans again and must verify more before claiming again."""
     root = next(g for g in plan["goals"] if g["id"] == plan["root_id"])

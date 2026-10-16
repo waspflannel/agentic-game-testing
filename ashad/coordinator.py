@@ -248,7 +248,6 @@ class Coordinator:
             "unknown_execution": "Inspect the last action and current game state before Resume; do not blindly repeat an action with an unknown outcome.",
             "controller_failure": "Inspect the last rejected action and visible controls. Correct the input problem, then Resume.",
             "suspected_game_freeze": "Inspect the live view and game logs. Resume if the game is responsive; otherwise terminate and rerun.",
-            "movement_unavailable": "The character stayed in place through repeated moves. Check the live view: it may be sitting, in a menu or dialogue, or not receiving bot input. Take control and move once, or close the window, then Resume.",
             "client_disagreement": "Check that all players are connected to the host world, then Resume after synchronization recovers.",
             "coordinator_restarted": "Review the current game state, then Resume to continue with fresh observations.",
             "manual_pause": "Choose Resume when ready. Recovery instructions are optional.",
@@ -1158,7 +1157,6 @@ class Coordinator:
                     self.save_run(live)
                     self.store.command(scope, command_id, {"acknowledged": True, "revision": revised["revision"]})
                 self.structured.waits.pop(key, None)
-                self.structured.last_decisions.pop(key, None)
                 return live
         except Exception as exc:
             if started:

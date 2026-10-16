@@ -193,23 +193,6 @@ def find_decision(store, project_id, sig):
     return record if record and record["steps"] and record["fails"] <= record["wins"] else None
 
 
-def library(store, project_id):
-    """The project's usable skills, subgoal and decision, as (key, record), most wins first; Jev picks among them. Plan patterns are not skills to replay."""
-    with store.lock:
-        rows = store.db.execute("SELECT id, data FROM records WHERE kind='skills' AND json_extract(data,'$.project_id')=?", (project_id,)).fetchall()
-    usable = [(key, record) for key, record in ((k, json.loads(d)) for k, d in rows)
-              if record.get("scope") != "plan" and record["steps"] and record["fails"] <= record["wins"]]
-    return sorted(usable, key=lambda kr: -kr[1]["wins"])
-
-
-def describe(record, chars):
-    """The skill as text for Jev, cut to chars: a decision skill (it has a signature) by its screen, a subgoal skill by effect, needs and steps."""
-    if "signature" in record:
-        return f"{record['name']}. Screen: {', '.join(record['signature']['screen'])}"[:chars]
-    steps = "; ".join(f"{s['control']} {s.get('item', '')} {s.get('targets', '')}".strip() for s in record["steps"])
-    return f"{record['name']}: {record['effect']}. Needs: {', '.join(record['preconditions']) or 'nothing'}. Steps: {steps}"[:chars]
-
-
 def plan_key(project_id, stages):
     """The store key of a plan pattern: the project plus a hash of its stages' check shapes, stable however the planner words the steps."""
     return f"{project_id}:plan:" + hashlib.sha256(json.dumps([shape(s["completion"]) for s in stages]).encode()).hexdigest()[:16]
@@ -246,7 +229,7 @@ def save_plan(store, project_id, objective, stages, won, build_id=None, run_id=N
     """Count a win (replacing the stages) or a failure for the plan pattern at key, by default the stages' key.
 
     Returns the record, or None when there is nothing to count: a failure of a deleted pattern, or a win whose stages
-    name two values for one arg (a pattern binds one value per arg)."""
+    name two values for one arg (a pattern binds one value per arg). That None is the only skip; the caller logs nothing."""
     key = key or plan_key(project_id, stages)
     record = store.get("skills", key)
     if won:

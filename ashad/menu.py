@@ -12,19 +12,34 @@ STRUCTURED_TOOLS = ("observe", "explain_objective", "list_entities", "inspect_en
                     "get_action_status", "cancel_action", "read_changes", "wait_for_change", "perform_action")
 SNAPSHOT_CHARS = 28000  # The per-subgoal snapshot and the view its delta is compared in.
 FARM_FACTS = ("tiles_tilled", "tiles_watered", "crops_planted", "crops_harvestable", "crop_growth_stage_min")
+BACK = re.compile(r"(?<![a-z])back(button)?(?![a-z])", re.I)  # "BACK", "BackButton", "go_back"; not "Backpack" or "feedback".
+RESUME = re.compile(r"(?<![a-z])resume(?![a-z])", re.I)
 
 
 def point(value):
     return isinstance(value, list) and len(value) == 2 and all(type(n) in (int, float) and math.isfinite(n) for n in value)
 
 
+def names(entity):
+    return f"{entity.get('label', '')} {(entity.get('state') or {}).get('node_name', '')}"
+
+
+def pause_menu_open(observation):
+    """The game's pause menu shows: a clickable Resume control is observed (Agronauts' RESUME GAME)."""
+    return any("ui_click" in e.get("actions", []) and RESUME.search(names(e)) for e in observation.get("entities", []))
+
+
 def action_groups(context):
-    """Bind every option to one complete, observed action before inference."""
+    """Bind every option to one complete, observed action before inference.
+
+    Outside a pause menu, exit_menu and Back controls are not offered: there exit_menu opens the pause menu and Back leaves the flow."""
     observation = context["observation"]
     state = observation.get("state", {})
     player_position = state.get("player", {}).get("position")
-    entities = [e for e in observation.get("entities", []) if isinstance(e.get("id"), str) and type(e.get("version")) is int]
-    inputs = set(observation.get("inputs", []))
+    paused = pause_menu_open(observation)
+    entities = [e for e in observation.get("entities", []) if isinstance(e.get("id"), str) and type(e.get("version")) is int
+                and (paused or not BACK.search(names(e)))]
+    inputs = {n for n in observation.get("inputs", []) if paused or not (n == "exit_menu" or BACK.search(n))}
     groups = []
 
     def action(verb, parameters, target=None, label=""):

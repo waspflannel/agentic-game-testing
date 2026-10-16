@@ -160,6 +160,14 @@ def _routing(events):
     return report
 
 
+def _jev_menus(events):
+    """Jev action-menu sizes on decision_routed, and the narrowed top 3 options of each low-confidence fallback."""
+    payloads = [event["payload"] for event in events if event["kind"] == "decision_routed" and "menu_size" in event["payload"]]
+    sizes = [payload["menu_size"] for payload in payloads]
+    return {"menu_size": {"mean": _ratio(sum(sizes), len(sizes)), "max": max(sizes, default=None)},
+            "low_confidence_top": [payload.get("top") for payload in payloads if payload.get("fallback") == "low_confidence"]}
+
+
 def _jev_checks(events):
     """Band counts and applied per Jev check; triage has no band, so it counts applied / not applied only."""
     report = {"effect_disagreed": 0, "dismiss": 0}
@@ -427,6 +435,7 @@ def summarize(run, events, data):
         "model_calls": calls,
         "routing": routing,
         "jev_checks": _jev_checks(events),
+        "jev_menus": _jev_menus(events),
         "ledger": ledger,
         "hypotheses": _hypotheses(timings, events, steps, calls, gaps, turn_total, ledger["event_bytes"]),
         "environment": _environment(),
@@ -476,6 +485,8 @@ def print_compare(a, b, path):
             ("goals_verified", lambda s: s["run"]["goals_verified"]),
             ("turns", lambda s: sum(item["count"] for item in s["turns"].values())),
             ("jev dismiss", lambda s: s["jev_checks"]["dismiss"]),
+            ("jev menu mean", lambda s: s["jev_menus"]["menu_size"]["mean"]),
+            ("jev menu max", lambda s: s["jev_menus"]["menu_size"]["max"]),
             ("jev stuck applied", lambda s: (s["jev_checks"].get("stuck") or {}).get("applied", 0)),
             ("jev effect disagreed", lambda s: s["jev_checks"]["effect_disagreed"]),
             ("jev triage applied", lambda s: (s["jev_checks"].get("triage") or {}).get("applied", 0)),
@@ -517,6 +528,10 @@ def print_report(summary, path):
     if fallbacks:
         print("fallbacks " + " ".join(fallbacks))
     print(_checks_line(summary["jev_checks"]))
+    menus = summary["jev_menus"]
+    print(f"jev menu size mean {_fmt(menus['menu_size']['mean'])} max {_fmt(menus['menu_size']['max'])}")
+    for top in menus["low_confidence_top"]:
+        print("  low_confidence top: " + "; ".join(f"{option['option']} p={option['p']}" for option in top or []))
     planner = summary["hypotheses"]["planner"]
     print(f"planner opus_calls {planner['opus_calls']}  seconds {_fmt(planner['opus_seconds'])}  per_goal {_fmt(planner['calls_per_goal'])}"
           f"  routes {planner['routes']}  pattern_rejected {planner['pattern_rejected']}")

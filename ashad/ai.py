@@ -623,9 +623,11 @@ class OpenAI:
         if not can_continue():
             return None
 
+        log = {}  # The action menu's size, its verbs and, once Jev answered, the narrowed top 3, for decision_routed.
+
         def fallback(reason, confidence=None, checks=None):
             return {"status": "fallback", "reason": reason, "confidence": confidence, "latency_ms": int((time.monotonic() - started) * 1000),
-                    "checks": checks or {}}
+                    "checks": checks or {}, "menu": log}
 
         context = await untruncated(context, dispatch, can_continue)
         if not can_continue():
@@ -636,6 +638,7 @@ class OpenAI:
         if not menu:
             return fallback("no_options")  # Only drag sources, waits or Sonnet-only tools are offered.
         verbs = {f"{i}.{j}": option_verb(a) for i, g in enumerate(groups) for j, a in enumerate(g["actions"]) if f"{i}.{j}" in menu}
+        log.update(menu_size=len(menu), verbs=list(dict.fromkeys(verbs.values())))
         state = json.dumps(jev_state(context), ensure_ascii=False)
         # Two levels in one request: the verb answer filters the action answer's probabilities (narrowed).
         questions = {"verb": jev.choice("Pick the kind of action in criteria that best advances `goal` right now. Use only `state`.",
@@ -673,6 +676,8 @@ class OpenAI:
             return fallback(f"jev_error:{exc.status}")
         answers, calls = response["answers"], 1
         action = narrowed(answers["verb"], answers["action"], verbs)
+        log["top"] = [{"id": key, "option": menu[key][:80], "p": round(p, 3)}
+                      for key, p in sorted(action["probabilities"].items(), key=lambda item: item[1], reverse=True)[:3]]
         checks = {k: answers[k]["noul"] for k in ("blocker", "wait", "stuck", "effect", "stage_done") if k in answers}
         if checks.get("stage_done", 0) >= NOUL_YES:
             return fallback("plan_check", checks=checks)  # The stage is completed; no action on it this turn.
@@ -681,14 +686,14 @@ class OpenAI:
             if answers["dismiss"]["confidence"] >= ACT_CONFIDENCE:
                 result = await self.jev_act(context, groups, listings, answers["dismiss"], dispatch, can_continue, run_id,
                                             model=response["model"], started=started, calls=calls, queue=1, pick="dismiss")
-                return result and {**result, "checks": checks}
+                return result and {**result, "checks": checks, "menu": log}
             return fallback("low_confidence", checks=checks)
         if band(checks["wait"]) == "yes":  # Jev waits itself; the skill and action picks wait a turn.
             wait_id = next(f"{i}.{j}" for i, g in enumerate(groups) for j, a in enumerate(g["actions"])
                            if a["tool"] == "wait_for_change" and a["args"]["seconds"] == WAIT_SECONDS)
             result = await self.jev_act(context, groups, listings, {"confidence": checks["wait"], "probabilities": {wait_id: 1.0}}, dispatch,
                                         can_continue, run_id, model=response["model"], started=started, calls=calls, queue=1, pick="wait")
-            return result and {**result, "checks": checks}
+            return result and {**result, "checks": checks, "menu": log}
 
         if library and answers["skill_gate"]["noul"] >= SKILL_GATE:
             skill, skill_model = answers["skill"], response["model"]
@@ -711,10 +716,10 @@ class OpenAI:
             if picked_key is not None:
                 return {"status": "skill", "key": picked_key, "confidence": skill["confidence"], "model": skill_model,
                         "latency_ms": int((time.monotonic() - started) * 1000), "calls": calls,
-                        "action": action, "groups": groups, "listings": listings, "checks": checks}
+                        "action": action, "groups": groups, "listings": listings, "checks": checks, "menu": log}
         result = await self.jev_act(context, groups, listings, action, dispatch, can_continue, run_id,
                                     model=response["model"], started=started, calls=calls)
-        return result and {**result, "checks": checks}
+        return result and {**result, "checks": checks, "menu": log}
 
     async def jev_plan_fits(self, context, run_id):
         """One Jev Noul, asked before a kept stage acts: can it still be done with its steps? Returns the noul, or None when Jev is not asked or errs."""

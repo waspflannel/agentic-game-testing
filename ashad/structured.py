@@ -1356,6 +1356,7 @@ class StructuredPlayers:
         with timed(timing, "decide"):
             res = await self.coordinator.ai.jev_turn(context, library, dispatch, current, run_id)
         if res:
+            routing["menu"] = res["menu"]
             applied = self._apply_checks(run_id, player_id, generation, goal, context, observation, res["checks"])
             if applied:
                 return None, applied, []  # Completed: nothing runs on this stage now.
@@ -1553,7 +1554,7 @@ class StructuredPlayers:
             decision_started_at = time.time()
             result, first, stop, ran, finished, replayed = None, {}, None, [], False, None
             route, route_model, route_ms = None, None, 0
-            routing = {"route": None, "model": None, "pick": None, "confidence": None, "fallback": None, "jev_ms": 0}
+            routing = {"route": None, "model": None, "pick": None, "confidence": None, "fallback": None, "jev_ms": 0, "menu": {}}
             # The leaf's next unfinished step runs in code when it is a repeat step. A repeat stop that leaves the step
             # unfinished after dispatching actions hands the next turn to the decider; then the repeat step is tried again.
             steps = (goal or {}).get("steps") or []
@@ -1675,8 +1676,8 @@ class StructuredPlayers:
             if result:
                 timing["bytes"].update(result["bytes"])
             if route:
-                # Today's routes carry exactly part 1's keys; Jev hybrid adds pick (Jev) or fallback (Sonnet).
-                extra = {k: routing[k] for k in ("pick", "fallback") if routing[k]}
+                # Today's routes carry exactly part 1's keys; Jev hybrid adds pick (Jev) or fallback (Sonnet), and the menu Jev was asked.
+                extra = {**{k: routing[k] for k in ("pick", "fallback") if routing[k]}, **routing["menu"]}
                 self.store.event(run_id, "decision_routed", {"player_id": player_id, "route": route, "latency_ms": route_ms, "confidence": routing["confidence"],
                                                              "model": route_model, "actions": timing["counts"]["batch_actions"] or len(ran), **extra})
             self.store.event(run_id, "batch_stopped", {"player_id": player_id, "reason": stop, "actions": timing["counts"]["batch_actions"]})

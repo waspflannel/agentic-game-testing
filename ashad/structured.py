@@ -1345,6 +1345,8 @@ class StructuredPlayers:
                 if subgoals.judge_complete(run["subgoal_plan"], goal["id"], evidence):
                     self.store.put("runs", run)
                     self.store.event(run_id, "subgoals_verified", {"player_id": player_id, "goal_ids": [goal["id"]], "evidence": evidence, "judge": "jev"})
+                    # An unknown check saves no leaf skill (it can never be replayed), but the last stage may complete the plan pattern.
+                    self._save_skills(run_id, player_id, run, run["subgoal_plan"], [])
                     self._forget_turn(key)
                     payload["applied"], applied = True, "stage_done"
             self.store.event(run_id, "jev_check", payload)
@@ -1577,10 +1579,11 @@ class StructuredPlayers:
                                                           build_id=run["build"].get("id"), run_id=run_id)
                             self.store.event(run_id, "decision_saved", {"player_id": player_id, "goal_id": goal["id"],
                                                                         "key": skills.decision_key(run["project_id"], sig), "name": saved["name"]})
-                # A scene change that moved the goal's value no closer to its target (e.g. a menu toggled open and shut) is a miss too.
-                no_progress = route == "jev" and stop == "scene_changed" and not subgoals.toward(
-                    goal["completion"], subgoals.measure(goal["completion"], decided_on)[1],
-                    subgoals.measure(goal["completion"], self.store.get("observations", f"{run_id}:{player_id}") or {})[1])
+                # A scene change that moved the goal's measured value no closer to its target (e.g. a menu toggled open and shut) is a miss too;
+                # an unmeasurable check (an unknown-fact stage) has no value to move, so its scene changes are not misses.
+                decided_value = subgoals.measure(goal["completion"], decided_on)[1] if route == "jev" and stop == "scene_changed" else None
+                no_progress = decided_value is not None and not subgoals.toward(
+                    goal["completion"], decided_value, subgoals.measure(goal["completion"], self.store.get("observations", f"{run_id}:{player_id}") or {})[1])
                 if route == "jev" and (stop in ("failed", "no_effect", "not_offered", "fact_moved_away") or no_progress):
                     self.jev_missed[key] = (goal["id"],)  # Sonnet takes this goal's next turn.
             timing["outcome"] = "decided"

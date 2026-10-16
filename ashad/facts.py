@@ -73,17 +73,22 @@ def read(values, fact, args):
     return value
 
 
-def catalog(observation, item_ids):
-    """The planner-facing catalog: readable facts, the legal values of each arg, and current values."""
-    current = values(observation)
+def arg_values(current, item_ids):
+    """The legal values of each arg kind, from the run's item ids and the current fact values (at a menu, before any fact is readable, from the item ids alone)."""
     delivered = current.get("delivered_to", {})
-    ids = {
+    return {
         "item_id": sorted(set(item_ids) | set(current.get("item_count", {})) | {i for items in delivered.values() for i in items}),
         "quest_id": sorted(set(current.get("quest_completed", {})) | set(current.get("quest_requirement_progress", {}))),
         "plant_id": sorted({p for fact in PLANT_FACTS for p in current.get(fact, {})} | {i for i in item_ids if i.endswith("_seed")}),
         "target": list(delivered),
         "index": "integer index into the quest's requirements",
     }
+
+
+def catalog(observation, item_ids):
+    """The planner-facing catalog: readable facts, the legal values of each arg, and current values."""
+    current = values(observation)
+    ids = arg_values(current, item_ids)
     facts = {name: {"args": list(args), "type": kind, "tag": tag} for name, (args, kind, tag) in FACTS.items() if name in current}
     used = {a for f in facts.values() for a in f["args"]}
     return {"facts": facts, "args": {k: v for k, v in ids.items() if k in used}, "values": current}

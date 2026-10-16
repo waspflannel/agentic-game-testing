@@ -211,9 +211,8 @@ def describe(record, chars):
 
 
 def plan_key(project_id, stages):
-    """The store key of a plan pattern: the project plus a hash of each stage's check shape and main step (a shape key always contains '(', so they never collide)."""
-    stage_shapes = [[shape(s["completion"]), key_suffix(s["steps"]) if s.get("steps") else ""] for s in stages]
-    return f"{project_id}:plan:" + hashlib.sha256(json.dumps(stage_shapes).encode()).hexdigest()[:16]
+    """The store key of a plan pattern: the project plus a hash of its stages' check shapes, stable however the planner words the steps."""
+    return f"{project_id}:plan:" + hashlib.sha256(json.dumps([shape(s["completion"]) for s in stages]).encode()).hexdigest()[:16]
 
 
 def count_of(text):

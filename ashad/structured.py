@@ -831,6 +831,16 @@ class StructuredPlayers:
         if stuck:
             tried = [label for _, label in subgoals.active_goal(plan).get("recent_actions") or []]
             return await self._give_up(run_id, player_id, generation, observation, kind="stuck", tried=tried, missing=stuck)
+        # A goal set at a menu is asked of the plan cache before its args are readable; the first ready world asks once more
+        # while the root is unexpanded (_cached_plan skips it once Opus expanded the root). Planning below asks the cache anyway.
+        if jev_hybrid and observation.get("ready") is True and observation.get("world_id") and not plan.get("plan_cache_retried"):
+            plan["plan_cache_retried"] = True
+            self.store.put("runs", run)
+            if not needs_plan:
+                context = self._planning_context(run, player_id, observation)
+                cached = await self._cached_plan(run_id, player_id, generation, run, plan, context, observation)
+                if cached:
+                    return cached
         if not needs_plan:
             return {"observation": observation}
         if self._replay_skill(run_id, player_id, run, plan, observation):
@@ -840,7 +850,6 @@ class StructuredPlayers:
         if planning_key == plan.get("last_planning_key"):
             return await self._give_up(run_id, player_id, generation, observation, kind="stuck", tried=[],
                                        missing="Planning was needed again on unchanged game state")
-        player = next(p for p in run["plan"]["players"] if p["id"] == player_id)
         reason = plan.get("reason") or ""
         timing["plan_trigger"] = "new_active_goal" if plan.get("active_goal_id") != previous_active else next(
             (label for prefix, label in PLAN_TRIGGERS if reason.startswith(prefix)), "other")
@@ -850,8 +859,7 @@ class StructuredPlayers:
             skills.save_plan(self.store, run.get("project_id"), root["objective"], [], False, build_id=run["build"].get("id"), run_id=run_id,
                              key=root.pop("plan_pattern"))
             self.store.put("runs", run)
-        context = self.decision_context(run, player, observation)
-        context["fact_catalog"] = facts.catalog(observation, self.item_ids(run))
+        context = self._planning_context(run, player_id, observation)
         cached = await self._cached_plan(run_id, player_id, generation, run, plan, context, observation)
         if cached:
             return cached
@@ -920,6 +928,13 @@ class StructuredPlayers:
         self.status(run_id, player_id, "ready", "Plan updated; acting on fresh state.", generation)
         return {"observation": fresh}
 
+    def _planning_context(self, run, player_id, observation):
+        """The planner's decision context with the fact_catalog for this observation."""
+        player = next(p for p in run["plan"]["players"] if p["id"] == player_id)
+        context = self.decision_context(run, player, observation)
+        context["fact_catalog"] = facts.catalog(observation, self.item_ids(run))
+        return context
+
     async def _cached_plan(self, run_id, player_id, generation, run, plan, context, observation):
         """Jev hybrid: expand an unplanned root from a saved plan pattern Jev picks, with its args and the goal's count, instead of calling Opus.
 
@@ -930,13 +945,14 @@ class StructuredPlayers:
                 or any(g.get("parent_id") == root["id"] and not g.get("retired") for g in plan["goals"]) or plan.get("completion_rejected")):
             return None
         patterns = skills.plan_patterns(self.store, project_id)
-        if not patterns:
-            return None
-        picked = await self.coordinator.ai.jev_plan_pick(root["objective"], patterns, context["fact_catalog"], run_id)
+        pick = await self.coordinator.ai.jev_plan_pick(root["objective"], patterns, context["fact_catalog"], context["item_ids"], run_id)
         live, _ = self.binding(run_id, player_id)
-        if picked is None or (live.get("subgoal_plan") or {}).get("revision") != plan["revision"]:
-            return None  # Not confident, or the plan moved during the request: the planner decides.
-        key, args = picked
+        if not pick["reason"] and (live.get("subgoal_plan") or {}).get("revision") != plan["revision"]:
+            pick["reason"] = "stale"  # The plan moved during the request.
+        self.store.event(run_id, "plan_pick", {"player_id": player_id, **pick})
+        if pick["reason"]:
+            return None  # The planner decides.
+        key, args = pick["key"], pick["args"]
         record = dict(patterns)[key]
         count = skills.count_of(root["objective"])
         warnings = []
@@ -1004,9 +1020,20 @@ class StructuredPlayers:
         if (stages and all(g["status"] == "completed" for g in stages)
                 and not any(g.get("parent_id") == stage["id"] for stage in stages for g in plan["goals"])):
             key = skills.plan_key(project_id, stages)
+            shapes = [skills.shape(stage["completion"]) for stage in stages]
+            # A saved pattern whose stages this plan extends (same shapes first, then more) is replaced, keeping its tally,
+            # instead of adding a second pattern; this also moves a pattern saved under an older key for the same stages.
+            replaced = []
+            for old_key, old in skills.keyed(self.store, f"{project_id}:plan:"):
+                old_shapes = [skills.shape(stage["completion"]) for stage in old["stages"]]
+                if old_key != key and old_shapes == shapes[:len(old_shapes)]:
+                    self.store.delete("skills", old_key)
+                    if self.store.get("skills", key) is None:
+                        self.store.put("skills", old, key)
+                    replaced.append(old_key)
             saved = skills.save_plan(self.store, project_id, root["objective"], stages, True, build_id=run["build"].get("id"), run_id=run_id, key=key)
             if saved:
-                self.store.event(run_id, "plan_saved", {"player_id": player_id, "key": key, "name": saved["name"]})
+                self.store.event(run_id, "plan_saved", {"player_id": player_id, "key": key, "name": saved["name"], "replaced": replaced})
 
     def _replay_skill(self, run_id, player_id, run, plan, observation):
         """Give a just-activated leaf a saved skill's steps instead of calling the planner; True when replayed.

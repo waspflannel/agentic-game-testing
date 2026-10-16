@@ -664,37 +664,45 @@ class OpenAI:
             return None
         return response["answers"]["plan_fits"]["noul"]
 
-    async def jev_plan_pick(self, objective, patterns, catalog, run_id):
-        """One Jev request: which saved plan pattern [(key, record)] achieves objective, and the fact_catalog value of each of its args.
+    async def jev_plan_pick(self, objective, patterns, catalog, item_ids, run_id):
+        """One Jev request: which saved plan pattern [(key, record)] achieves objective, and the value of each of its args.
 
-        Returns (key, {arg: value}) only when the gate says yes and the plan and every arg it needs are confident; else None."""
-        model = self.store.require("runs", run_id)["plan"].get("jev_model") or JEV_MODEL
+        Arg options are the run's legal values of the arg's kind, so a goal set at a menu can bind them before facts are readable.
+        Returns the plan_pick event: offered keys, picked key, confidences, gate noul, args, and reason, None only when the gate
+        says yes and the plan and every arg it needs are confident."""
         records = dict(patterns[:MAX_OPTIONS])
+        pick = {"offered": list(records), "key": None, "confidences": {}, "gate": None, "args": {}, "reason": None}
+        if not records:
+            return {**pick, "reason": "no_patterns"}
+        model = self.store.require("runs", run_id)["plan"].get("jev_model") or JEV_MODEL
         plans = {key: (record["name"] + ": " + "; ".join(s["objective"] for s in record["stages"]))[:OPTION_CHARS] for key, record in records.items()}
         questions = {"plan": jev.choice("Pick the saved plan in criteria that achieves `goal`.", plans),
                      "plan_gate": jev.noul({"plans": list(plans.values()),
                                             "question": "Does one of `plans` achieve `goal` once its item and count are replaced?"})}
+        options = facts.arg_values(catalog["values"], item_ids)
         for name in sorted({p for record in records.values() for p in record["params"]}):
-            values = catalog["args"].get(name)
+            values = options.get(name)
             if isinstance(values, list) and 0 < len(values) <= MAX_OPTIONS:
                 questions["arg_" + name] = jev.choice(f"Pick the {name} that `goal` is about.", {v: v for v in values})
         state = json.dumps({"goal": objective, "facts": catalog["values"]}, ensure_ascii=False)
         if len(state.encode("utf-8")) + len(json.dumps(questions).encode("utf-8")) > QUESTION_BYTES:
-            return None
+            return {**pick, "reason": "too_large"}
         try:
             answers = (await jev.ask(state, questions, credentials=self.credentials, model=model))["answers"]
         except jev.JevError:
-            return None
-        key = answers["plan"]["choice"]
-        if answers["plan_gate"]["noul"] < NOUL_YES or answers["plan"]["confidence"] < ACT_CONFIDENCE:
-            return None
-        args = {}
-        for name in records[key]["params"]:
+            return {**pick, "reason": "jev_error"}
+        pick.update(key=answers["plan"]["choice"], gate=answers["plan_gate"]["noul"],
+                    confidences={name: answer["confidence"] for name, answer in answers.items() if name != "plan_gate"})
+        if pick["gate"] < NOUL_YES:
+            return {**pick, "reason": "gate"}
+        if answers["plan"]["confidence"] < ACT_CONFIDENCE:
+            return {**pick, "reason": "low_confidence"}
+        for name in records[pick["key"]]["params"]:
             answer = answers.get("arg_" + name)
             if not answer or answer["confidence"] < ACT_CONFIDENCE:
-                return None
-            args[name] = answer["choice"]
-        return key, args
+                return {**pick, "reason": f"missing_arg:{name}"}
+            pick["args"][name] = answer["choice"]
+        return pick
 
     async def jev_act(self, context, groups, listings, answer, dispatch, can_continue, run_id, *, model, started, calls=1, queue=QUEUE, pick="action"):
         """Acts on Jev's action Choice answer: dispatches the pick and queues the next by probability, or falls back to Sonnet when not confident.

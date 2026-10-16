@@ -11,7 +11,8 @@ import traceback
 from collections import Counter
 from datetime import datetime, timezone
 
-from .ai import DELTA_CHARS, EXCERPT_CHARS, OPTION_CHARS, STUCK_DELTAS, ProviderError, band, jev_triage, picked_options, static_prefix
+from .ai import (DELTA_CHARS, EXCERPT_CHARS, OPTION_CHARS, PROMPT_OBSERVATION_CHARS, STUCK_DELTAS, ProviderError, band, jev_triage, picked_options,
+                 planning_evidence, static_prefix)
 from .game_controls import run_configuration
 from .menu import GAME_VERBS, SNAPSHOT_CHARS, batch_options, capability_summary, observation_delta, option_key, prompt_observation, resolve
 from .models import JEV_MODEL, MODEL, PROVIDERS, provider_of
@@ -24,7 +25,6 @@ LOOP_BACKSTOP_DECISIONS = 6
 MOVEMENT_STALL_LIMIT = 2  # Failed moves from one unchanged position: input is not reaching the character.
 BATCH_LIMIT = 5  # Actions per turn from one batch decide.
 REPEAT_LIMIT = 30  # Actions per turn from one repeat step.
-SNAPSHOT_RESET_CHARS = 12000  # A delta this large costs more than a fresh snapshot (one cache write).
 TIMER_FACTS = ("crops_harvestable", "crop_growth_stage_min")  # Growth facts the code waits on after the model chose to wait.
 # v6 wheat: 4-6 s per growth stage (wheat_seed.tres initial_growth_timer), 3 stages to max_growth_state 4,
 # and the timer runs only on a Watered tile (tile.gd:106). Watered wheat is ripe in 12-18 s; unwatered never.
@@ -60,28 +60,6 @@ def timed(timing, step):
 
 def json_bytes(value):
     return len(json.dumps(value, ensure_ascii=False, default=str).encode())
-
-
-def capped_delta(snapshot, view, cap=SNAPSHOT_RESET_CHARS):
-    """observation_delta with its JSON at most cap chars: in delta order, tiles and entities that do not fit are dropped and truncated is set."""
-    delta = observation_delta(snapshot, view)
-    if len(json.dumps(delta)) <= cap:
-        return delta
-    kept = {k: type(v)() for k, v in delta.items()} | {"state": delta["state"], "truncated": True}
-    room = cap - len(json.dumps(kept))
-    for name, items in delta.items():
-        if name == "state":
-            continue
-        for item in items.items() if isinstance(items, dict) else items:
-            cost = len(json.dumps(dict([item]) if isinstance(items, dict) else item)) + 2  # The item plus its separator.
-            if cost > room:
-                continue  # A smaller later item may still fit.
-            room -= cost
-            if isinstance(items, dict):
-                kept[name][item[0]] = item[1]
-            else:
-                kept[name].append(item)
-    return kept
 
 
 def wait_signature(observation):
@@ -183,7 +161,6 @@ class StructuredPlayers:
         self.movement_stalls = {}
         self.bug_reports = {}
         self.turn_ended_at = {}
-        self.snapshots = {}  # (run_id, player_id) -> (generation, prompt observation the cached prefix holds)
         self.code_waits = {}  # (run_id, player_id) -> (goal_id, seconds of code waits used)
         self.step_index = {}  # (run_id, player_id) -> (goal_id, index of the goal's next unfinished step, decider takes the next turn)
         self.goal_intents = {}  # (run_id, player_id) -> (goal_id, [repeat.step_for of each agent action]), saved as a skill when the goal completes
@@ -193,14 +170,6 @@ class StructuredPlayers:
         self.deltas = {}  # (run_id, player_id) -> (goal_id, last prompt view, [(time, delta_json), ...]): Jev hybrid only, the last STUCK_DELTAS changes on this goal
         self.judged = {}  # (run_id, player_id) -> the own-action line whose effect Jev already judged
         self.crashes_recorded = set()
-
-    def snapshot(self, key, generation, context):
-        """(the prompt observation the cached prefix holds for this player generation, this turn's view); replaced only when the delta outgrows it."""
-        view = prompt_observation(context["observation"], max_chars=SNAPSHOT_CHARS)
-        kept = self.snapshots.get(key)
-        if not kept or kept[0] != generation or len(json.dumps(observation_delta(kept[1], view))) > SNAPSHOT_RESET_CHARS:
-            kept = self.snapshots[key] = (generation, view)
-        return kept[1], view
 
     def _forget_turn(self, key):
         self.waits.pop(key, None)
@@ -704,7 +673,7 @@ class StructuredPlayers:
             LOG.exception("Could not record false completion for %s/%s", run_id, player_id)
 
     def forget_run(self, run_id):
-        for counters in (self.loop_counts, self.movement_stalls, self.bug_reports, self.turn_ended_at, self.snapshots, self.code_waits, self.step_index,
+        for counters in (self.loop_counts, self.movement_stalls, self.bug_reports, self.turn_ended_at, self.code_waits, self.step_index,
                          self.goal_intents, self.held, self.decision_failed, self.jev_missed, self.deltas, self.judged):
             for key in [k for k in counters if k[0] == run_id]:
                 del counters[key]
@@ -858,17 +827,15 @@ class StructuredPlayers:
         revision = plan["revision"]
         self.status(run_id, player_id, "planning", "Finding the next achievable prerequisite for: " + context["current_goal"]["objective"], generation)
         warnings = []
-        # The same snapshot as the batch, so planning and batch share one cached prefix.
-        snapshot, view = self.snapshot((run_id, player_id), generation, context)
-        prefix = static_prefix(context, snapshot)
-        # The prefix holds the snapshot, so the planner gets only what changed since; validation keeps the full context.
-        sent = {k: v for k, v in context.items() if k != "observation"} | {"observation_delta": capped_delta(snapshot, view)}
+        # What plan_subgoals sends after its prefix; validation keeps the full context.
+        prefix = static_prefix(context)
+        sent = planning_evidence(context)
         self.store.event(run_id, "subgoal_planning_context", {"player_id": player_id, "revision": revision, "context": sent,
                          "prefix_sha": hashlib.sha256(prefix.encode()).hexdigest()[:12]})
         for attempt in range(2):
             warnings = []
             with timed(timing, "plan_model"):
-                proposal = await self._plan_subgoals(run_id, player_id, sent, prefix, snapshot, view)
+                proposal = await self._plan_subgoals(run_id, player_id, sent)
             if not current():
                 self.store.event(run_id, "subgoal_planning_cancelled", {"player_id": player_id, "reason": "Run control changed during planning"})
                 return None
@@ -923,21 +890,20 @@ class StructuredPlayers:
         self.status(run_id, player_id, "ready", "Plan updated; acting on fresh state.", generation)
         return {"observation": fresh, "first_actions": [option_key(a) for _, _, a in picked if a and a["tool"] == "perform_action"]}
 
-    async def _plan_subgoals(self, run_id, player_id, sent, prefix, snapshot, view):
+    async def _plan_subgoals(self, run_id, player_id, sent):
         """plan_subgoals, retried once on context_limit with a trimmed context."""
         try:
-            return await self.coordinator.ai.plan_subgoals(sent, run_id, prefix=prefix)
+            return await self.coordinator.ai.plan_subgoals(sent, run_id)
         except ProviderError as exc:
             if exc.status != "context_limit":
                 raise
         trimmed = {k: v for k, v in sent.items() if k != "known_locations"} | {
-            "action_options": sent["action_options"][:40], "recent_own_actions": sent["recent_own_actions"][-3:],
-            "guidance": json.dumps(sent["guidance"], ensure_ascii=False)[:1000],
-            "observation_delta": capped_delta(snapshot, view, SNAPSHOT_RESET_CHARS // 2)}
+            "recent_own_actions": sent["recent_own_actions"][-3:], "guidance": json.dumps(sent["guidance"], ensure_ascii=False)[:1000],
+            "observation": prompt_observation(sent["observation"], max_chars=PROMPT_OBSERVATION_CHARS // 2)}
         size = json_bytes(trimmed)
         self.store.event(run_id, "planner_context_trimmed", {"player_id": player_id, "before_bytes": json_bytes(sent), "after_bytes": size})
         try:
-            return await self.coordinator.ai.plan_subgoals(trimmed, run_id, prefix=prefix)
+            return await self.coordinator.ai.plan_subgoals(trimmed, run_id)
         except ProviderError as exc:
             if exc.status != "context_limit":
                 raise
@@ -1309,7 +1275,6 @@ class StructuredPlayers:
             self.movement_stalls.pop(key, None)
             self.turn_ended_at.pop(key, None)
             self.bug_reports.pop(key, None)
-            self.snapshots.pop(key, None)
             self.deltas.pop(key, None)
             self.judged.pop(key, None)
             self.code_waits.pop(key, None)
@@ -1386,12 +1351,16 @@ class StructuredPlayers:
             with timed(timing, "decision_context"):
                 context = self.decision_context(run, player, observation)
                 context["bug_already_reported"] = self.bug_reports.get(key) == signature
-                self.store.event(run_id, "structured_decision_context", {"player_id": player_id, "context": context,
+                # The manual is the same every turn; log its size and hash, not its text.
+                controls = context.get("game_controls") or ""
+                self.store.event(run_id, "structured_decision_context", {"player_id": player_id,
+                    "context": {k: v for k, v in context.items() if k != "game_controls"},
+                    "game_controls_bytes": len(controls.encode()), "game_controls_sha": hashlib.sha256(controls.encode()).hexdigest()[:12],
                     "observation_ref": subgoals.observation_ref(observation), "source_revision": run["build"].get("source_revision")})
             timing["bytes"].update(prompt_observation=json_bytes(context["observation"]), decision_context=json_bytes(context))
             timing["context_truncated"] = bool(context["observation"].get("context_truncated"))
-            snapshot, view = self.snapshot(key, generation, context)
             if run["plan"].get("decision_engine") == "jev_hybrid" and goal:
+                view = prompt_observation(context["observation"], max_chars=SNAPSHOT_CHARS)
                 # Jev's stuck and effect checks read this goal's last few observation changes.
                 kept = self.deltas.get(key)
                 entries = []
@@ -1493,7 +1462,7 @@ class StructuredPlayers:
                     label = PROVIDERS[provider_of(run.get("model") or run["plan"].get("model", MODEL))]["label"]
                     self.status(run_id, player_id, "thinking", f"Waiting for {label} to choose the next action.", generation)
                     with timed(timing, "decide"):
-                        result = await self.coordinator.ai.batch_turn(context, snapshot, dispatch, current, run_id)
+                        result = await self.coordinator.ai.batch_turn(context, dispatch, current, run_id)
                     self.jev_missed.pop(key, None)  # After one Sonnet turn the goal goes back to Jev.
                     if result:
                         route = route_model = result["model"]

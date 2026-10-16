@@ -12,9 +12,8 @@ from .codex_backend import CodexBackend, CodexError
 from .claude_backend import ClaudeBackend, ClaudeError
 from .grok_backend import GrokBackend, GrokError
 from .credentials import Credentials
-from . import jev
-from .menu import (GAME_VERBS, SNAPSHOT_CHARS, _observed_targets, action_groups, batch_options, listed, numeric_option_id, observation_delta,
-                   option_key, prompt_observation)
+from . import facts, jev
+from .menu import GAME_VERBS, _observed_targets, action_groups, batch_options, listed, numeric_option_id, option_key, prompt_observation
 from .models import CLAUDE_CONTROLS_MODEL, CLAUDE_MODEL, GROK_MODEL, JEV_MODEL, MODEL, PROVIDERS, SUPPORTED_MODELS, provider_of
 from .prompts import SOURCE_NOTES_LIMIT, TUNING_MANUAL_LIMIT, TUNING_MINIMUM_BYTES
 from .store import uid
@@ -67,13 +66,24 @@ def bounded_listings(listings, evidence):
     return [head + (" Detail: " + detail if detail else "") for (head, _, _), (_, detail) in zip(parts, trimmed)]
 
 
-PREFIX_KEYS = ("game_controls", "player", "setup", "transport", "world_namespace", "seed", "configuration_id", "item_ids")
+PREFIX_KEYS = ("game_controls", "item_ids")
+PROMPT_OBSERVATION_CHARS = 16000
+DROPPED_KEYS = ("player", "setup", "transport", "world_namespace", "seed", "configuration_id", "action_options")
 
 
-def static_prefix(context, snapshot):
-    """Everything that stays the same for a player generation, so the provider can cache it ahead of the per-call evidence."""
-    static = {k: context.get(k) for k in PREFIX_KEYS}
-    return json.dumps({**static, "subgoal_snapshot": snapshot}, sort_keys=True, ensure_ascii=False)
+def static_prefix(context):
+    """Only bytes that never change within a build: no observation, ids, timestamps or world namespace."""
+    return json.dumps({"game_controls": context.get("game_controls") or "", "item_ids": sorted(context.get("item_ids") or []),
+                       "facts": {name: [list(args), kind, tag] for name, (args, kind, tag) in facts.FACTS.items()}},
+                      sort_keys=True, ensure_ascii=False)
+
+
+def planning_evidence(context):
+    """The planner's message: the context without the prefix's keys or volatile ids, with a trimmed observation. Idempotent."""
+    evidence = {k: v for k, v in context.items() if k not in PREFIX_KEYS + DROPPED_KEYS}
+    if "observation" in evidence:
+        evidence["observation"] = prompt_observation(evidence["observation"], max_chars=PROMPT_OBSERVATION_CHARS)
+    return evidence
 
 
 def picked_options(answers, groups, shown):
@@ -229,7 +239,7 @@ class OpenAI:
             raise ProviderError("context_limit", "Selection evidence exceeds the bounded context budget. Reduce context before continuing.")
         return await self._request(input, questions, purpose, run_id, model, input_bytes)
 
-    async def plan_subgoals(self, context, run_id, prefix=""):
+    async def plan_subgoals(self, context, run_id):
         """Propose a validated hierarchy update, never an executable game action."""
         run = self.store.require("runs", run_id) if run_id else {}
         model = run.get("model") or run.get("plan", {}).get("model", MODEL)
@@ -237,8 +247,8 @@ class OpenAI:
         if not isinstance(context, dict):
             raise ValueError(f"{label} planning requires a context object")
         schema = PlanningDecision.model_json_schema()
-        if prefix:
-            context = {k: v for k, v in context.items() if k not in PREFIX_KEYS}  # Sent once, in the cached prefix.
+        prefix = static_prefix(context)
+        context = planning_evidence(context)
         input_bytes = len(json.dumps({"evidence": context, "schema": schema}, ensure_ascii=False).encode("utf-8"))
         if input_bytes + len(prefix.encode("utf-8")) + 4608 > 128000:
             raise ProviderError("context_limit", "Planning evidence exceeds the bounded context budget. Reduce context before continuing.")
@@ -448,7 +458,7 @@ class OpenAI:
                 "related_action_id": None if related == "none" else related, "target_id": None if target == "none" else target}
 
 
-    async def batch_turn(self, context, snapshot, dispatch, can_continue, run_id):
+    async def batch_turn(self, context, dispatch, can_continue, run_id):
         """One batch-decide call. Runs the first chosen action here; returns the rest as option keys that the caller re-resolves on fresh observations."""
         started = time.monotonic()
         if not can_continue():
@@ -459,15 +469,15 @@ class OpenAI:
         player_id = context["player"]["id"]
         model = self._run_model(run_id, "player")
         self._checked_model(model)
-        prefix = static_prefix(context, snapshot)
+        prefix = static_prefix(context)
         base = {"current_goal": context.get("current_goal"), "goal_path": context.get("goal_path", []),
                 "recent_own_actions": context.get("recent_own_actions", [])[-5:], "repeated_failures": context.get("repeated_failures"),
                 "operator_instruction": context.get("operator_instruction"), "bug_already_reported": bool(context.get("bug_already_reported")),
                 # last_seen_revision changes on every observation, and discovery order must not change the bytes.
                 "known_locations": sorted(({k: v for k, v in p.items() if k != "last_seen_revision"} if isinstance(p, dict) else p
                                            for p in context.get("known_locations") or []), key=lambda p: json.dumps(p, sort_keys=True)),
-                # Compared in the snapshot's own view, so targets beyond its cap never show as added on every call.
-                "delta": observation_delta(snapshot, prompt_observation(context["observation"], max_chars=SNAPSHOT_CHARS))}
+                "observation": prompt_observation(context["observation"], max_chars=PROMPT_OBSERVATION_CHARS),
+                "player": {k: context["player"].get(k) for k in ("id", "name", "goal")}, "setup": context.get("setup")}
 
         async def ask(groups, listings):
             shown = bounded_listings(listings, json.dumps(base, ensure_ascii=False) + prefix)

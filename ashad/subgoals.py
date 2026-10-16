@@ -534,24 +534,28 @@ def playable(observation):
     return facts.values(observation)["world_ready"]
 
 
-def record_action(plan, observation, action=None):
-    """Count one attempt toward STUCK_ACTIONS on the observation it was chosen on.
+def record_action(plan, observation, action=None, *, stuck=False):
+    """Count one attempt toward STUCK_ACTIONS on the observation it was chosen on; True when counted.
 
-    A wait or a Jev stuck yes (no action) counts only while playable(). An action counts only when the scene was unchanged
-    since the last recorded attempt, or the stage's measured value moved away from its target: a scene change is progress."""
+    A wait (no action) counts only while playable(). A Jev stuck yes also counts on a non-playable screen that is unchanged since
+    the last recorded attempt (a cutscene that never advances), never on one that changed (loading). An action counts only when
+    the scene was unchanged since the last recorded attempt, or the stage's measured value moved away from its target: a scene
+    change is progress."""
     goal = active_goal(plan)
     if not goal:
-        return
+        return False
     world, generation, ready, controls = planning_scene(observation)
     scene = [world, generation, ready, sorted(map(str, controls))]
     last = goal.get("last_scene")
     goal["last_scene"] = [scene, goal.get("measured")]
     if action is None:
-        if playable(observation):
-            goal["attempts"] = goal.get("attempts", 0) + 1
-        return
-    if not last or last[0] == scene or toward(goal["completion"], goal.get("measured"), last[1]):
+        counted = playable(observation) or bool(stuck and last and last[0] == scene)
+    else:
+        counted = not last or last[0] == scene or toward(goal["completion"], goal.get("measured"), last[1])
+    if counted:
         goal["attempts"] = goal.get("attempts", 0) + 1
+    if action is None:
+        return counted
     fingerprint = json.dumps([action.get("verb"), action.get("target_id", ""), _rounded(action.get("parameters") or {})], sort_keys=True)
     label = (action.get("parameters") or {}).get("name") or action.get("verb")
     window = ((goal.get("recent_actions") or []) + [[fingerprint, label]])[-4:]
@@ -564,6 +568,7 @@ def record_action(plan, observation, action=None):
         if not goal.get("repeating"):
             goal["repeats"] = goal.get("repeats", 0) + 1
         goal["repeating"] = label
+    return counted
 
 
 def prompt_plan(plan):

@@ -1407,7 +1407,8 @@ class StructuredPlayers:
         return res, None, []
 
     def _apply_checks(self, run_id, player_id, generation, goal, context, observation, checks):
-        """Logs each Jev quick check. A stuck yes acts as one more attempt on a playable screen, never against a fact that moved in the window.
+        """Logs each Jev quick check. A stuck yes hands the goal's next turn to Sonnet and counts one attempt toward giving the stage up
+        (Opus re-plans, or the run pauses), on a playable or unchanged screen, never against a fact that moved in the window.
         A plan_fits at or below FIT_NO re-plans the stage and a stage_done yes completes it; returns "replan" or "stage_done" when one applied, else None."""
         key = (run_id, player_id)
         applied = None
@@ -1419,9 +1420,10 @@ class StructuredPlayers:
                     payload["reason"] = "fact_progress"
                 else:
                     run = self.store.require("runs", run_id)
-                    subgoals.record_action(run["subgoal_plan"], observation)
+                    payload["applied"] = subgoals.record_action(run["subgoal_plan"], observation, stuck=True)
                     self.store.put("runs", run)
-                    payload["applied"] = True
+                    self.jev_missed[key] = (goal["id"],)
+                    payload["escalated"] = "sonnet"
             elif check == "effect":
                 fact = "done" if context["recent_own_actions"][-1]["effect"] == "changed" else "not_done"
                 payload.update(fact=fact, disagree=(fact == "done" and b == "no") or (fact == "not_done" and b == "yes"))

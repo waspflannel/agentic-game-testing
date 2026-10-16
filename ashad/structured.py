@@ -1008,7 +1008,11 @@ class StructuredPlayers:
             if subgoals.measure({**check, "op": ">=", "value": 0}, observation)[1] is None:
                 continue
             steps = skills.bind(skill["steps"], goal["completion"], replay=True, measured=goal.get("measured"))
-            # A skill whose first action is not offered here is not tried; nothing is counted against it.
+            # A skill that cannot start here, or whose first action is not offered here, is not tried; nothing is counted against it.
+            why = repeat.unusable(steps, context)
+            if why:
+                self.store.event(run_id, "skill_skipped", {"player_id": player_id, "goal_id": goal["id"], "skill": skill["name"], "why": why})
+                continue
             step = next((s for s in steps if s.get("targets") or s["control"] != "select"), None)
             if step is None:
                 action = None
@@ -1224,7 +1228,7 @@ class StructuredPlayers:
         return next_action
 
     async def _run_decision(self, run_id, player_id, generation, current, context, observation, goal, timing):
-        """Replay the decision skill saved for this situation in code, with no model call; one try per goal, and only when its first action is offered here.
+        """Replay the decision skill saved for this situation in code, with no model call; one try per goal, and only when its steps can start and their first action is offered here.
 
         Returns the stop reason, the actions dispatched and the replayed record, or (None, [], None) when nothing was replayed."""
         key = (run_id, player_id)
@@ -1238,8 +1242,9 @@ class StructuredPlayers:
         if not record or self.decision_failed.get(key) == (goal["id"], decision_key):
             return None, [], None
         steps = skills.bind(record["steps"], goal["completion"], replay=True)
-        if self._step_replayer(key, context, steps)(observation)[0] is None:
-            self.store.event(run_id, "decision_skipped", {"player_id": player_id, "goal_id": goal["id"], "key": decision_key, "why": "not_offered"})
+        why = repeat.unusable(steps, {**context, "observation": observation}) or ("not_offered" if self._step_replayer(key, context, steps)(observation)[0] is None else None)
+        if why:
+            self.store.event(run_id, "decision_skipped", {"player_id": player_id, "goal_id": goal["id"], "key": decision_key, "why": why})
             return None, [], None
         stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None,
                                           self._step_replayer(key, context, steps), timing, REPEAT_LIMIT)
@@ -1254,14 +1259,15 @@ class StructuredPlayers:
         return stop, ran, record
 
     async def _run_jev_skill(self, run_id, player_id, generation, current, context, observation, goal, skill_key, timing):
-        """Replay the skill Jev picked in code, or skip it when its first step is not offered here; returns the stop and actions, or (None, []) when skipped.
+        """Replay the skill Jev picked in code, or skip it when its steps cannot start or their first step is not offered here; returns the stop and actions, or (None, []) when skipped.
 
         No tally: a wrong pick is Jev's miss, not the skill's failure."""
         key = (run_id, player_id)
         record = self.store.get("skills", skill_key)
         steps = skills.bind(record["steps"], goal["completion"], replay=True) if record else []
-        if self._step_replayer(key, context, steps)(observation)[0] is None:
-            self.store.event(run_id, "jev_skill_skipped", {"player_id": player_id, "goal_id": goal["id"], "key": skill_key, "why": "not_offered"})
+        why = repeat.unusable(steps, {**context, "observation": observation}) or ("not_offered" if self._step_replayer(key, context, steps)(observation)[0] is None else None)
+        if why:
+            self.store.event(run_id, "jev_skill_skipped", {"player_id": player_id, "goal_id": goal["id"], "key": skill_key, "why": why})
             return None, []
         stop, ran = await self._run_batch(run_id, player_id, generation, current, context, observation, observation, None,
                                           self._step_replayer(key, context, steps), timing, REPEAT_LIMIT)
@@ -1525,6 +1531,7 @@ class StructuredPlayers:
                     return result
                 # Keyed by the observation and held item the model decides on, before its first action changes them.
                 sig = skills.signature(goal["completion"], observation, self.held.get(key, "")) if goal else None
+                decided_on = observation
                 jev_stop, jev_ran = None, []
                 # Jev hybrid: Jev decides first, unless the goal looks stuck or Jev's last batch or skill on it missed.
                 if run["plan"].get("decision_engine") == "jev_hybrid" and goal:
@@ -1568,7 +1575,11 @@ class StructuredPlayers:
                                                           build_id=run["build"].get("id"), run_id=run_id)
                             self.store.event(run_id, "decision_saved", {"player_id": player_id, "goal_id": goal["id"],
                                                                         "key": skills.decision_key(run["project_id"], sig), "name": saved["name"]})
-                if route == "jev" and stop in ("failed", "no_effect", "not_offered", "fact_moved_away"):
+                # A scene change that moved the goal's value no closer to its target (e.g. a menu toggled open and shut) is a miss too.
+                no_progress = route == "jev" and stop == "scene_changed" and not subgoals.toward(
+                    goal["completion"], subgoals.measure(goal["completion"], decided_on)[1],
+                    subgoals.measure(goal["completion"], self.store.get("observations", f"{run_id}:{player_id}") or {})[1])
+                if route == "jev" and (stop in ("failed", "no_effect", "not_offered", "fact_moved_away") or no_progress):
                     self.jev_missed[key] = (goal["id"],)  # Sonnet takes this goal's next turn.
             timing["outcome"] = "decided"
             timing["counts"]["batch_actions"] = len(ran) + (first.get("tool") == "perform_action")

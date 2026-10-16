@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import math
 
-from . import menu
+from . import facts, menu, subgoals
 
 
 USE_RANGE = 64  # Pixels from the player within which an action aimed at a world_position is sent without moving onto the target first.
@@ -128,6 +128,25 @@ def step_for(payload, observation):
         if entity or tile:
             step["targets"] = describe(entity, tile)
     return step
+
+
+def unusable(steps, context):
+    """Why the steps cannot start here, judged on the first step that is not a select: "blocking_ui", "item_missing", "no_target", or None."""
+    step = next((s for s in steps if s.get("targets") or s["control"] != "select"), None)
+    if step is None:
+        return None
+    observation = context["observation"]
+    world_step = "kind=ui" not in (step.get("targets") or "").split() and not step["control"].startswith("ui_")
+    blocked = (observation.get("state", {}).get("player", {}).get("activity") == "ui"
+               or facts.read(facts.values(observation), "player_can_act", {}) is False)
+    if world_step and blocked:
+        return "blocking_ui"
+    held = subgoals.held_counts(observation)
+    if step.get("item") and held is not None and held.get(step["item"], 0) <= 0:
+        return "item_missing"
+    if step.get("targets") and not any((target := view(group)) and matches(target, step["targets"]) for group in menu.action_groups(context)):
+        return "no_target"
+    return None
 
 
 def ordinary(step, context):

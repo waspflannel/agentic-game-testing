@@ -387,7 +387,9 @@ def kept_steps(steps, context, warnings, location):
         except ValidationError:
             warnings.append(f"{location}.{index} dropped: not a valid step")
             continue
-        if step["verifies"] != "unknown" and step["verifies"] not in context["fact_catalog"]["facts"]:
+        # The catalog lists shown names; a step keeps the stored name, like its stage's check.
+        step["verifies"] = facts.STORED.get(step["verifies"], step["verifies"])
+        if step["verifies"] != "unknown" and facts.SHOWN.get(step["verifies"], step["verifies"]) not in context["fact_catalog"]["facts"]:
             warnings.append(f"{location}.{index} dropped: verifies {step['verifies']!r} is not in fact_catalog")
             continue
         if len(kept) < 8:

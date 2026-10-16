@@ -630,14 +630,13 @@ class StructuredPlayers:
             source = "rule"
             if cause is None:
                 cause = "planner_gap"  # The rule's default when it can't decide.
-                if run["plan"].get("decision_engine") == "jev_hybrid":
-                    gap = {"objective": focus["objective"], "completion": check, "measured": focus.get("measured"), "missing": missing[:500],
-                           "tried": [str(t)[:200] for t in tried][:10], "effects": dict(Counter(effects))}
-                    label, confidence = await jev_triage(gap, run["plan"].get("jev_model") or JEV_MODEL, self.coordinator.credentials)
-                    self.store.event(run_id, "jev_check", {"player_id": player_id, "goal_id": focus["id"], "check": "triage",
-                                                           "choice": label, "confidence": confidence, "applied": label is not None})
-                    if label:
-                        cause, source = label, "jev"
+                gap = {"objective": focus["objective"], "completion": check, "measured": focus.get("measured"), "missing": missing[:500],
+                       "tried": [str(t)[:200] for t in tried][:10], "effects": dict(Counter(effects))}
+                label, confidence = await jev_triage(gap, run["plan"].get("jev_model") or JEV_MODEL, self.coordinator.credentials)
+                self.store.event(run_id, "jev_check", {"player_id": player_id, "goal_id": focus["id"], "check": "triage",
+                                                       "choice": label, "confidence": confidence, "applied": label is not None})
+                if label:
+                    cause, source = label, "jev"
             basis = {"kind": kind, "cause": cause, "focus_objective": repair_tasks.target_label(focus["objective"]),
                      "missing": re.sub(r"(?<=\.)\d+(?=[.)])", "#", missing)[:200]}
             bounded = []
@@ -874,7 +873,7 @@ class StructuredPlayers:
         Returns the turn's observation when the pattern was applied, else None (the planner takes the goal)."""
         project_id = run.get("project_id")
         root = next(g for g in plan["goals"] if g["id"] == plan["root_id"])
-        if (run["plan"].get("decision_engine") != "jev_hybrid" or not project_id or plan["active_goal_id"] != root["id"]
+        if (not project_id or plan["active_goal_id"] != root["id"]
                 or subgoals.stages(plan) or plan.get("completion_rejected")):
             return None
         patterns = skills.plan_patterns(self.store, project_id)
@@ -1274,8 +1273,8 @@ class StructuredPlayers:
         return res, None
 
     async def _decide(self, run_id, player_id, generation, current, run, context, observation, goal, routing, timing):
-        """Route one turn: the cache while the leaf has no attempts, then Jev while attempts < BUDGET // 2 (Jev hybrid), else Sonnet.
-        Jev's fallback, an operator instruction or the Today engine send the turn to Sonnet.
+        """Route one turn: the cache while the leaf has no attempts, then Jev while attempts < BUDGET // 2, else Sonnet.
+        A Jev fallback (low confidence, error, or no TypeSafe key) or an operator instruction sends the turn to Sonnet.
 
         Fills routing (route, model, latency_ms, Jev's fields and the batch to learn). Returns (result, first action, stop, actions run after it)."""
         key = (run_id, player_id)
@@ -1304,7 +1303,7 @@ class StructuredPlayers:
         # Keyed by the observation and held item the model decides on, before its first action changes them.
         sig = skills.signature(goal["completion"], observation, self.held.get(key, "")) if goal else None
         result, stop, ran = None, None, []
-        if run["plan"].get("decision_engine") == "jev_hybrid" and goal:
+        if goal:
             if context.get("operator_instruction"):
                 routing["fallback"] = "operator_instruction"
             elif goal.get("attempts", 0) >= subgoals.BUDGET // 2:
@@ -1453,7 +1452,7 @@ class StructuredPlayers:
             if result:
                 timing["bytes"].update(result["bytes"])
             if routing["route"]:
-                # Today's routes carry exactly part 1's keys; Jev hybrid adds pick (Jev) or fallback (Sonnet), and the menu Jev was asked.
+                # Every route carries part 1's keys; a Jev route adds pick, a Sonnet route after Jev adds fallback, and both add the menu Jev was asked.
                 extra = {**{k: routing[k] for k in ("pick", "fallback") if routing[k]}, **routing["menu"]}
                 self.store.event(run_id, "decision_routed", {"player_id": player_id, "route": routing["route"], "latency_ms": routing["latency_ms"],
                                                              "confidence": routing["confidence"], "model": routing["model"], "actions": len(dispatched), **extra})

@@ -125,3 +125,16 @@ def rekey_skills(store):
             if new_key and store.get("skills", new_key) is None:
                 store.put("skills", record, new_key)
             store.delete("skills", key)
+
+
+def drop_decision_engine(store):
+    """Jev hybrid is the only decision flow; strip the old engine choice from settings and stored scenario plans. Runs keep it as history."""
+    with store.transaction():
+        settings = store.get("settings", "main")
+        if settings and "decision_engine" in settings:
+            del settings["decision_engine"]
+            store.put("settings", settings, "main")
+        for scenario in store.list("scenarios"):
+            if "decision_engine" in scenario["plan"]:
+                del scenario["plan"]["decision_engine"]
+                store.put("scenarios", scenario, f"{scenario['id']}:{scenario['revision']}")

@@ -106,6 +106,14 @@ Stages complete in order: a later stage is measured only once every earlier sibl
 
 Each Jev plan pick logs one `plan_pick` event with the offered pattern keys, the picked key, confidences, the gate noul and the bound args; when no pattern is used it gives the reason: `no_patterns`, `too_large`, `jev_error`, `gate`, `low_confidence`, `missing_arg:<name>` or `stale`.
 
+Only an action that leaves the scene unchanged counts toward stuck; waits and a Jev stuck yes do not count while the game is loading or on a non-playable screen.
+
+Under Jev hybrid a failed step is retried by Jev or Sonnet; the stage is replanned only after three failures on the same stage or a Jev `plan_fits` no.
+
+Jev offers its dismiss pick only for a popup over a playable world, never for back-navigation or pause.
+
+Every Jev action turn logs `menu_size`, the verbs and the top three options in `decision_routed`; the speed report shows mean and max menu size and the top three options for each low-confidence fallback.
+
 Supplying a goal still does **not** create a reliable automatic whole-game success detector. The free-text primary objective retains manual acceptance; concrete observable outcomes live in its child goals. When no further grounded work is available, the planner requests operator review. Inspect results and Stop when appropriate. An exhausted checklist alone never proves tutorial completion. Citations and checks constrain proposals but do not prove arbitrary natural-language intent. Full autonomous DEMO completion remains unverified.
 
 ## Observe and recover
@@ -119,6 +127,8 @@ The live camera is for the human operator. Routine model decisions use the filte
 **Recalculate goals** rebuilds the checklist from fresh player state under the same primary objective, model and profile. It holds input, archives the old plan/evidence (unfinished goals are retired, not completed), and leaves the run paused for inspection and a separate Resume. It is unavailable during human/external control. **Cancel recalculation** stops planning without replacing the old plan. The planner can also retire obsolete setup goals automatically rather than insist on returning to a screen already passed.
 
 **Stop** attempts normal save/exit and confirms process teardown. Failed teardown retains its desktop/account reservation until reconciliation succeeds. Existing diagnostics, evidence and operational recovery remain available; removing advanced setup does not remove these safeguards.
+
+After a host suspend, the run resumes once automatically on the next good heartbeat when the suspend is the only investigation reason; it logs `auto_resumed`, or `auto_resume_failed` if Resume is refused.
 
 ## Scope and retained data
 

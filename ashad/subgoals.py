@@ -197,8 +197,10 @@ def select_active(plan):
     return selected
 
 
-def reconcile(plan, observation, control_generation):
-    """Refresh verified progress without inference, retaining history across pause/restart."""
+def reconcile(plan, observation, control_generation, jev_hybrid=False):
+    """Refresh verified progress without inference, retaining history across pause/restart.
+
+    jev_hybrid: changed knowledge asks Jev whether the kept stage still fits (fit_check) instead of replanning it."""
     now = time.time()
     if stale(observation.get("received_at", observation.get("timestamp")), now):
         raise ValueError("Planner requires a fresh observation")
@@ -278,12 +280,18 @@ def reconcile(plan, observation, control_generation):
         if selected["id"] != plan["root_id"]:
             plan["fit_check"] = "new_stage"
     # Loading screens are not new knowledge; new knowledge replans without resetting the no-progress cap.
-    if observation.get("ready") is True:
+    # Without a world (menus) nothing is known, so the first signature once a world is ready is a baseline, not a change.
+    if observation.get("ready") is True and world:
         signature = knowledge_signature(observation)
         if selected and plan.get("knowledge_signature") not in (None, signature):
-            selected["actionable"] = False
-            plan["reason"] = "Observed objectives changed; reassess the active goal."
+            if not jev_hybrid:
+                selected["actionable"] = False
+                plan["reason"] = "Observed objectives changed; reassess the active goal."
+            elif selected["id"] != plan["root_id"]:
+                plan["fit_check"] = "knowledge"
         plan["knowledge_signature"] = signature
+    elif not world:
+        plan.pop("knowledge_signature", None)
     plan["last_observation"] = observation_ref(observation)
     if completed:
         plan["revision"] += 1

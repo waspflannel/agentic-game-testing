@@ -785,9 +785,10 @@ class StructuredPlayers:
         if not plan or plan["player_id"] != player_id:
             return {"observation": observation}  # Historical multi-player/scenario runs retain their existing contract.
         previous_active = plan.get("active_goal_id")
+        jev_hybrid = run["plan"].get("decision_engine") == "jev_hybrid"
         with timed(timing, "plan_reconcile"):
-            completed = subgoals.reconcile(plan, observation, generation)
-            if run["plan"].get("decision_engine") != "jev_hybrid":
+            completed = subgoals.reconcile(plan, observation, generation, jev_hybrid)
+            if not jev_hybrid:
                 plan.pop("fit_check", None)  # Only Jev answers whether a kept stage still fits.
             needs_plan = subgoals.needs_planning(plan)
         self.store.put("runs", run)
@@ -864,7 +865,7 @@ class StructuredPlayers:
             try:
                 with timed(timing, "plan_validate"):
                     revised = subgoals.apply_decision(latest_plan, proposal, context, warnings)
-                    verified = subgoals.reconcile(revised, fresh, generation)
+                    verified = subgoals.reconcile(revised, fresh, generation, jev_hybrid)
                 break
             except ValueError as exc:
                 timing["counts"]["plan_rejected"] = timing["counts"].get("plan_rejected", 0) + 1
@@ -925,7 +926,7 @@ class StructuredPlayers:
                 raise ValueError("The goal names no single count")
             proposal = skills.instantiate(record, args, count, context["fact_catalog"]["values"])
             revised = subgoals.apply_decision(live["subgoal_plan"], proposal, context, warnings)
-            verified = subgoals.reconcile(revised, observation, generation)
+            verified = subgoals.reconcile(revised, observation, generation, jev_hybrid=True)
         except ValueError as exc:
             self.store.event(run_id, "plan_pattern_rejected", {"player_id": player_id, "key": key, "reason": subgoals.rejection_message(exc)})
             return None

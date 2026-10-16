@@ -16,7 +16,7 @@ from .reports import generate_report
 from .repair_tasks import record_task, publish_pending, remove_project_issue_files
 from .store import uid
 from .worker_client import WorkerError
-from . import facts, subgoals
+from . import facts, subgoals, workspace_environment
 from .subgoals import new_plan
 from .validation import validate_plan
 from .workspace_environment import inspect_environment, validate_build
@@ -70,6 +70,8 @@ class Coordinator:
         self.ticks = {}
         self.command_locks = {}
         self.clients = {}
+        self.client_sources = {}  # worker_id -> (url, credential_ref) its cached client was built from.
+        self.client_closes = set()  # Holds close tasks for evicted clients until they finish.
         self.finishing = {}
         self.bindings = {}  # (worker_id, epoch) -> (run_id, player_id); epochs are immutable per run player.
         self.storage = {}  # run_id -> (checked_at, bytes)
@@ -78,6 +80,8 @@ class Coordinator:
         self.wake = asyncio.Event()  # Set when a working turn ends so the next tick starts without the 1 s poll.
         from .structured import StructuredPlayers
         self.structured = StructuredPlayers(self)
+        # Prepare can re-import a worker with a new url or token; drop the cached client then.
+        workspace_environment.on_worker_imported = self.evict_client
 
     def occupied_instances(self):
         """Lifecycle labels cannot release unresolved desktop/account ownership."""
@@ -270,14 +274,26 @@ class Coordinator:
         worker = self.store.require("workers", worker_id)
         if self.client_factory:
             return self.client_factory(worker)
-        if worker_id in self.clients:
+        source = (worker["url"], worker["credential_ref"])
+        if worker_id in self.clients and self.client_sources.get(worker_id) == source:
             return self.clients[worker_id]
+        self.evict_client(worker_id)
         from .worker_client import WorkerClient
         token = self.credentials.get(worker["credential_ref"])
         if not token:
             raise ValueError(f"Worker {worker_id} credential is unavailable")
         self.clients[worker_id] = WorkerClient(worker["url"], token, timeout=8)
+        self.client_sources[worker_id] = source
         return self.clients[worker_id]
+
+    def evict_client(self, worker_id):
+        """Drop the cached client; it closes in a task because client() callers are synchronous."""
+        self.client_sources.pop(worker_id, None)
+        stale = self.clients.pop(worker_id, None)
+        if stale:
+            task = asyncio.get_running_loop().create_task(stale.close())
+            self.client_closes.add(task)
+            task.add_done_callback(self.client_closes.discard)
 
     async def request(self, worker_id, method, path, body=None, timeout=None):
         client = self.client(worker_id)

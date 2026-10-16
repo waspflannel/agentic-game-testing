@@ -31,6 +31,7 @@ CONTRACT = "ashad-worker/1"
 IMAGE = "ashad-workspace-worker"
 ENGINE = "GodotSteam 4.5.1 / 4.17 / Steamworks 1.63"
 STARTUP_SECONDS = 30
+on_worker_imported = None  # The coordinator sets this to evict its cached client for a re-imported worker.
 
 
 class PreparationError(ValueError):
@@ -292,6 +293,8 @@ async def _import_worker(store, credentials, entry, record, directory):
               "host_address": record["container"], "container": record["container"], "enabled": True,
               "environment_owner": record["owner"], "project_id": record["project_id"], "build_id": record["build_id"]}
     store.put("workers", worker)
+    if on_worker_imported:
+        on_worker_imported(worker_id)
     return worker
 
 

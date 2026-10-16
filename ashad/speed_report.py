@@ -299,15 +299,25 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
     context_bytes = sum(event["raw_bytes"] for event in events if event["kind"] == "structured_decision_context")
     store_seconds = sum((row.get("store") or {}).get("seconds") or 0 for row in timings)
     store_bytes = sum((row.get("store") or {}).get("bytes") or 0 for row in timings)
-    # tool: steps run inside the decide timer; subtract them so H1 counts model time only.
+    # tool: steps inside decide are subtracted; tool:act: steps sit inside act.
     model_seconds = (steps.get("decide") or {}).get("total") or 0
-    model_seconds -= sum(entry["total"] or 0 for name, entry in steps.items() if name.startswith("tool:"))
+    model_seconds -= sum(entry["total"] or 0 for name, entry in steps.items() if name.startswith("tool:") and not name.startswith("tool:act:"))
     turns = len(timings) or None
     gap_total = gaps["gap_seconds"]["total"] or 0
     tick_values = _column(timings, "tick_seconds")
     outcomes = [event for event in events if event["kind"] == "structured_action_outcome"]
     action_results = dict(Counter(_action_status(event["payload"]) for event in events if event["kind"] == "action_result"))
+    planning = [event["payload"] for event in events if event["kind"] == "provider_request_finished" and event["payload"].get("purpose") == "planning"]
+    goals = len({event["payload"]["plan"]["primary_goal"] for event in events if event["kind"] == "subgoal_plan_updated"}) or 1
     return {
+        "planner": {
+            "opus_calls": len(planning),
+            "opus_seconds": round(sum(payload.get("latency_seconds") or 0 for payload in planning), 6),
+            "goals": goals,
+            "calls_per_goal": _ratio(len(planning), goals),
+            "routes": dict(Counter(event["payload"]["route"] for event in events if event["kind"] == "plan_routed")),
+            "pattern_rejected": sum(1 for event in events if event["kind"] == "plan_pattern_rejected"),
+        },
         "serial_model_calls": {
             "model_seconds_share": _ratio(model_seconds, turn_total),
             "model_calls_per_decided_turn": _ratio(len(player), decided),
@@ -468,7 +478,9 @@ def print_compare(a, b, path):
             ("jev dismiss", lambda s: s["jev_checks"]["dismiss"]),
             ("jev stuck applied", lambda s: (s["jev_checks"].get("stuck") or {}).get("applied", 0)),
             ("jev effect disagreed", lambda s: s["jev_checks"]["effect_disagreed"]),
-            ("jev triage applied", lambda s: (s["jev_checks"].get("triage") or {}).get("applied", 0))]
+            ("jev triage applied", lambda s: (s["jev_checks"].get("triage") or {}).get("applied", 0)),
+            ("planner calls", lambda s: s["hypotheses"]["planner"]["opus_calls"]),
+            ("planner seconds", lambda s: s["hypotheses"]["planner"]["opus_seconds"])]
     print(f"field {a['run']['id']} {b['run']['id']}")
     for label, value in rows:
         print(f"{label} {_fmt(value(a))} {_fmt(value(b))}")
@@ -505,6 +517,9 @@ def print_report(summary, path):
     if fallbacks:
         print("fallbacks " + " ".join(fallbacks))
     print(_checks_line(summary["jev_checks"]))
+    planner = summary["hypotheses"]["planner"]
+    print(f"planner opus_calls {planner['opus_calls']}  seconds {_fmt(planner['opus_seconds'])}  per_goal {_fmt(planner['calls_per_goal'])}"
+          f"  routes {planner['routes']}  pattern_rejected {planner['pattern_rejected']}")
     for heading, key in (
         ("H1 serial model calls", "serial_model_calls"),
         ("H2 observation payloads", "observation_payloads"),

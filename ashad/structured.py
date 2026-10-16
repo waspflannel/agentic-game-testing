@@ -1167,7 +1167,7 @@ class StructuredPlayers:
                 return why, ran  # "done" for an empty queue, else "not_offered".
             if done >= limit:
                 return "limit", ran
-            with timed(timing, "tool:perform_action"):
+            with timed(timing, "tool:act:perform_action"):
                 last = await self.dispatch(run_id, player_id, "perform_action",
                                            {**action["args"], "reason": "Batch: " + action["description"]}, fresh, generation)
             fresh = last.pop("observation", None)

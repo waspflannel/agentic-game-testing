@@ -694,6 +694,8 @@ class OpenAI:
         picked = picked_options({"actions": ranked}, groups, listings)
         if confidence < ACT_CONFIDENCE or not picked:
             return {"status": "fallback", "reason": "low_confidence" if picked else "not_offered", "confidence": confidence, "latency_ms": int((time.monotonic() - started) * 1000)}
+        if pick == "action" and (picked[0][2] is None or picked[0][2]["tool"] != "perform_action"):
+            return {"status": "fallback", "reason": "no_action", "confidence": confidence, "latency_ms": int((time.monotonic() - started) * 1000)}
         player_id = context["player"]["id"]
         if not can_continue():
             self.store.event(run_id, "decision_cancelled", {"player_id": player_id, "reason": "Session state or generation changed during target selection"})

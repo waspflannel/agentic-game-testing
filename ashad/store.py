@@ -12,6 +12,11 @@ import time
 import uuid
 
 
+# Search skips the embedded observation and context payloads: they carry the whole scene and
+# manual, so almost any game word would match every decision turn.
+SEARCH_SKIP = ("context", "full_observation", "observation")
+
+
 def uid(prefix=""):
     return prefix + uuid.uuid4().hex
 
@@ -182,7 +187,8 @@ class Store:
             needle = search.casefold()
             for row in self.db.execute(query, parameters):
                 event = json.loads(row[0])
-                if not needle or needle in json.dumps(event, ensure_ascii=False).casefold():
+                own = {"kind": event["kind"], "payload": {k: v for k, v in event["payload"].items() if k not in SEARCH_SKIP}}
+                if not needle or needle in json.dumps(own, ensure_ascii=False).casefold():
                     entries.append(event)
                     if len(entries) == limit:
                         break

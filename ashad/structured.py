@@ -765,7 +765,7 @@ class StructuredPlayers:
         await self.report_capability_gap(run_id, player_id, plan, focus, kind=kind, tried=tried, missing=missing, observation=observation)
         run, _ = self.binding(run_id, player_id)
         plan = run["subgoal_plan"]
-        subgoals.give_up(plan, focus["id"], missing)
+        subgoals.give_up(plan, focus["id"], missing, run["plan"].get("decision_engine") == "jev_hybrid")
         self.store.put("runs", run)
         self.store.event(run_id, "subgoal_plan_updated", {"player_id": player_id, "plan": plan, "warnings": [], "outcome": "gave_up"})
         self._forget_turn((run_id, player_id))
@@ -891,7 +891,7 @@ class StructuredPlayers:
                 return None
             try:
                 with timed(timing, "plan_validate"):
-                    revised = subgoals.apply_decision(latest_plan, proposal, context, warnings)
+                    revised = subgoals.apply_decision(latest_plan, proposal, context, warnings, jev_hybrid)
                     verified = subgoals.reconcile(revised, fresh, generation, jev_hybrid)
                 break
             except ValueError as exc:
@@ -960,7 +960,7 @@ class StructuredPlayers:
             if record["uses_count"] and count is None:
                 raise ValueError("The goal names no single count")
             proposal = skills.instantiate(record, args, count, context["fact_catalog"]["values"])
-            revised = subgoals.apply_decision(live["subgoal_plan"], proposal, context, warnings)
+            revised = subgoals.apply_decision(live["subgoal_plan"], proposal, context, warnings, jev_hybrid=True)
             verified = subgoals.reconcile(revised, observation, generation, jev_hybrid=True)
         except ValueError as exc:
             self.store.event(run_id, "plan_pattern_rejected", {"player_id": player_id, "key": key, "reason": subgoals.rejection_message(exc)})

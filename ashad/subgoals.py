@@ -328,7 +328,16 @@ def block(plan, reason):
     plan.update(status="blocked", reason=reason, revision=plan["revision"] + 1)
 
 
-def give_up(plan, goal_id, reason):
+def keep_planned_stage(plan, selected, jev_hybrid):
+    """Plan-once (Jev hybrid): a newly selected stage that already has planned steps stays actionable and Jev confirms it
+    still fits (fit_check) instead of the planner re-planning it; True when kept."""
+    if jev_hybrid and selected["id"] != plan["root_id"] and selected.get("steps"):
+        plan["fit_check"] = "new_stage"
+        return True
+    return False
+
+
+def give_up(plan, goal_id, reason, jev_hybrid=False):
     if goal_id != plan["root_id"]:
         given = {goal_id}
         for goal in plan["goals"]:
@@ -341,6 +350,7 @@ def give_up(plan, goal_id, reason):
         plan.update(status="handed_back", reason=reason)
     else:
         plan["reason"] = reason
+        keep_planned_stage(plan, selected, jev_hybrid)
     plan["revision"] += 1
 
 
@@ -365,7 +375,7 @@ def reopen_after_rejected_claim(plan, note):
                 revision=plan["revision"] + 1)
 
 
-def retire(plan, focus, decision, context):
+def retire(plan, focus, decision, context, jev_hybrid=False):
     """Retirement is not success: the goal and its descendants keep their predicates and leave the active path."""
     retired = {focus["id"]}
     for goal in plan["goals"]:
@@ -374,7 +384,7 @@ def retire(plan, focus, decision, context):
         if goal["id"] in retired and goal["status"] != "completed":
             goal.update(retired=True, status="blocked", actionable=False, blocked_reason=decision["reason"])
     selected = select_active(plan)
-    if selected:
+    if selected and not keep_planned_stage(plan, selected, jev_hybrid):
         selected["actionable"] = False
 
 
@@ -397,8 +407,8 @@ def kept_steps(steps, context, warnings, location):
     return kept
 
 
-def apply_decision(plan, raw, context, warnings=None):
-    """Validate fully before editing a copy; callers commit only while their run is current."""
+def apply_decision(plan, raw, context, warnings=None, jev_hybrid=False):
+    """Validate fully before editing a copy; callers commit only while their run is current. jev_hybrid: see keep_planned_stage."""
     warnings = [] if warnings is None else warnings
     if isinstance(raw, dict):
         raw = copy.deepcopy(raw)
@@ -444,7 +454,7 @@ def apply_decision(plan, raw, context, warnings=None):
         # Retirement is not success: the focus keeps its own completion; the decision's is ignored.
         focus.pop("steps", None)
         result.update(reason=decision["reason"], revision=result["revision"] + 1)
-        retire(result, focus, decision, context)
+        retire(result, focus, decision, context, jev_hybrid)
         return result
     if focus["id"] != result["root_id"]:
         facts.validate(decision["completion"], context["fact_catalog"], "completion")
@@ -492,7 +502,7 @@ def apply_decision(plan, raw, context, warnings=None):
         focus.pop("steps", None)  # Expand and blocked leave no leaf steps to run.
     result.update(reason=decision["reason"], revision=result["revision"] + 1)
     if decision["mode"] == "blocked":
-        give_up(result, focus["id"], decision["reason"])
+        give_up(result, focus["id"], decision["reason"], jev_hybrid)
     else:
         select_active(result)
     return result

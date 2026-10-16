@@ -1565,13 +1565,20 @@ document.addEventListener('toggle', event => {
   (event.target.querySelector('[aria-selected="true"]') || event.target.querySelector('[role="option"]'))?.focus();
 }, true);
 
+let tlSearchTimer;
 // Composer fields update the in-memory draft; the textarea itself is never re-rendered.
 document.addEventListener('input', event => {
   if (event.target.id === 'resume-reason') { state.thread.instructionText = event.target.value; return; }
   if (event.target.dataset.key === 'tl-search') {
     const tl = state.thread.tl;
     tl.searchDraft = event.target.value;
-    if (!tl.searchDraft.trim() && tl.search) { tl.search = ''; loadPage('latest'); }  // Clearing the box shows everything again.
+    clearTimeout(tlSearchTimer);
+    if (!tl.searchDraft.trim()) {
+      if (tl.search) { tl.search = ''; loadPage('latest'); }  // Clearing the box shows everything again.
+      return;
+    }
+    // Searches 300 ms after typing stops, through the submit handler; the form is looked up then because a render may have replaced it.
+    tlSearchTimer = setTimeout(() => $('[data-form="tl-search"]')?.requestSubmit(), 300);
     return;
   }
   const settingsForm = event.target.closest?.('form[data-form^="settings-"]');
@@ -1619,6 +1626,7 @@ document.addEventListener('change', event => {
 document.addEventListener('submit', async event => {
   if (event.target.matches('[data-form="tl-search"]')) {
     event.preventDefault();
+    clearTimeout(tlSearchTimer);  // Enter searches now; drop the pending typed search.
     const tl = state.thread.tl;
     tl.search = tl.searchDraft.trim();
     loadPage('latest');

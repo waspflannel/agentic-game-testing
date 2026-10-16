@@ -5,6 +5,7 @@ import contextlib
 import hashlib
 import json
 import logging
+import math
 import re
 import time
 import traceback
@@ -14,7 +15,8 @@ from datetime import datetime, timezone
 from .ai import (DELTA_CHARS, EXCERPT_CHARS, FIT_NO, NOUL_YES, OPTION_CHARS, PROMPT_OBSERVATION_CHARS, STUCK_DELTAS, ProviderError, band, jev_triage,
                  planning_evidence, static_prefix)
 from .game_controls import run_configuration
-from .menu import GAME_VERBS, SNAPSHOT_CHARS, capability_summary, observation_delta, option_key, prompt_observation, resolve
+from .menu import (GAME_VERBS, SNAPSHOT_CHARS, action_groups, capability_summary, observation_delta, option_key, point, prompt_observation,
+                   resolve)
 from .models import JEV_MODEL, MODEL, PROVIDERS, provider_of
 from .repository import Repository
 from .store import uid
@@ -22,7 +24,7 @@ from . import facts, repair_tasks, repeat, skills, subgoals
 
 LOG = logging.getLogger(__name__)
 LOOP_BACKSTOP_DECISIONS = 6
-MOVEMENT_STALL_LIMIT = 2  # Failed moves from one unchanged position: input is not reaching the character.
+MOVEMENT_STALL_LIMIT = 2  # Failed moves from one unchanged position before each further failure moves toward another offered target.
 BATCH_LIMIT = 5  # Actions per turn from one batch decide.
 REPEAT_LIMIT = 30  # Actions per turn from one repeat step.
 REPEAT_NO_PROGRESS = 2  # Repeat stops in a row with no measured progress before the decider takes the step until the stage's value moves.
@@ -126,6 +128,11 @@ def observed_entity(observation, target_id):
     return next((e for e in observation.get("entities", []) if target_id and e.get("id") == target_id), {})
 
 
+def move_target(args):
+    """The entity id or position a move_to aims at, from its perform_action args or its result."""
+    return args.get("target_id") or tuple((args.get("parameters") or {}).get("position") or ())
+
+
 GOAL_CONTEXT_KEYS = ("id", "parent_id", "objective", "completion", "status", "actionable", "measured", "attempts", "steps")
 FAILED_STATUSES = frozenset({"failed", "rejected", "expired", "cancelled"})
 DELIVERED_STATUSES = frozenset({"completed", "no_effect"})
@@ -162,7 +169,8 @@ class StructuredPlayers:
         self.generations = {}
         self.control_owners = {}
         self.loop_counts = {}
-        self.movement_stalls = {}
+        self.movement_stalls = {}  # (run_id, player_id) -> (generation, position, failed moves there, move targets tried there)
+        self.rerouting = set()  # (run_id, player_id) while a reroute move runs; its own failure does not start another
         self.bug_reports = {}
         self.turn_ended_at = {}
         self.code_waits = {}  # (run_id, player_id) -> (goal_id, seconds of code waits used)
@@ -713,27 +721,51 @@ class StructuredPlayers:
         self.status(run_id, player_id, "error", reason, generation, last_error=reason, error_at=time.time())
         await self.coordinator.investigate(run_id, "decision_needs_instructions", reason, [player_id])
 
-    def _movement_stalled(self, key, generation, observation):
-        """True once enough failed moves leave the player at one position; any other position restarts the count."""
+    def _movement_stalled(self, key, generation, observation, result):
+        """The move targets tried from this position once enough failed moves leave the player there, else None; a new position starts over."""
         position = observation.get("state", {}).get("player", {}).get("position")
         if not isinstance(position, list):
             self.movement_stalls.pop(key, None)
-            return False
+            return None
         previous = self.movement_stalls.get(key)
-        count = previous[2] + 1 if previous and previous[:2] == (generation, position) else 1
-        if count < MOVEMENT_STALL_LIMIT:
-            self.movement_stalls[key] = (generation, position, count)
-            return False
-        self.movement_stalls.pop(key, None)
-        return True
+        count, tried = (previous[2] + 1, previous[3]) if previous and previous[:2] == (generation, position) else (1, set())
+        tried.add(move_target(result))
+        self.movement_stalls[key] = (generation, position, count, tried)
+        return tried if count >= MOVEMENT_STALL_LIMIT else None
 
-    async def _pause_if_stalled(self, run_id, player_id, generation, verb, observation, result):
-        """Pause for review when a failed move leaves the player stalled; True when paused."""
-        if verb != "move_to" or not self._movement_stalled((run_id, player_id), generation, observation):
+    async def _reroute_or_pause(self, run_id, player_id, generation, verb, observation, result):
+        """After stalled moves, move toward the untried offered target nearest the blocked one; pause only when none is left. True when the turn ends."""
+        key = (run_id, player_id)
+        if verb != "move_to":
             return False
+        tried = self._movement_stalled(key, generation, observation, result)
+        if tried is None:
+            return False
+        if key in self.rerouting:
+            return True  # The reroute itself failed: the next failed move tries the next target.
+        run, _ = self.binding(run_id, player_id)
+        context = {"observation": observation, "player": next(p for p in run["plan"]["players"] if p["id"] == player_id),
+                   "transport": run["plan"]["transport"], "world_namespace": run.get("world_namespace"), "seed": run["plan"].get("seed"),
+                   "bug_already_reported": True}
+
+        def at(args):
+            return observed_entity(observation, args["target_id"]).get("position") if args.get("target_id") else (args.get("parameters") or {}).get("position")
+        blocked = at(result)
+        moves = sorted((a for g in action_groups(context) for a in g["actions"]
+                        if a["args"].get("verb") == "move_to" and move_target(a["args"]) not in tried),
+                       key=lambda a: math.dist(blocked, at(a["args"])) if point(blocked) and point(at(a["args"])) else math.inf)
+        if moves:
+            self.rerouting.add(key)
+            try:
+                await self.dispatch(run_id, player_id, "perform_action", {**moves[0]["args"], "reason": f"Reroute: {moves[0]['description']}"},
+                                    observation, generation)
+            finally:
+                self.rerouting.discard(key)
+            return True
+        self.movement_stalls.pop(key, None)
         position = observation["state"]["player"]["position"]
-        reason = (f"The character has not moved from {position} after "
-                  f"{MOVEMENT_STALL_LIMIT} failed moves; game input is not reaching it. "
+        reason = (f"The character has not moved from {position} after failed moves to {len(tried)} targets, "
+                  f"and no other offered move target is left; game input may not be reaching it. "
                   f"Last result: {result.get('reason') or result.get('status')}")
         self.status(run_id, player_id, "error", reason, generation, last_error=reason, error_at=time.time())
         await self.coordinator.investigate(run_id, "movement_unavailable", reason, [player_id])
@@ -1189,14 +1221,14 @@ class StructuredPlayers:
         return await self._after_outcome(run_id, player_id, generation, verb, observation, result)
 
     async def _after_outcome(self, run_id, player_id, generation, verb, observation, result):
-        """Apply the outcome rules for a failure: stalled-move pause, then a replan once failures repeat; True when the turn must end.
+        """Apply the outcome rules for a failure: stalled-move reroute or pause, then a replan once failures repeat; True when the turn must end.
 
         Under Jev hybrid a kept stage with steps retries: the turn is cleared and the next decision (Jev, or Sonnet via
         jev_missed) tries again, and only the FAIL_REPLAN-th failure on that stage replans. Other engines replan on the second
         failure in a row."""
         if result.get("status") not in FAILED_STATUSES:
             return False
-        if await self._pause_if_stalled(run_id, player_id, generation, verb, observation, result):
+        if await self._reroute_or_pause(run_id, player_id, generation, verb, observation, result):
             return True
         run = self.store.require("runs", run_id)
         plan = run.get("subgoal_plan")

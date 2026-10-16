@@ -6,25 +6,49 @@ import json
 import math
 import re
 
+from . import facts
+
 
 GAME_VERBS = ("move_to", "interact", "input", "ui_click", "ui_drag", "ui_text", "ui_scroll", "fish_follow")  # worker/models.py GameAction.verb
 STRUCTURED_TOOLS = ("observe", "explain_objective", "list_entities", "inspect_entity", "list_actions",
                     "get_action_status", "cancel_action", "read_changes", "wait_for_change", "perform_action")
 SNAPSHOT_CHARS = 28000  # The per-subgoal snapshot and the view its delta is compared in.
 FARM_FACTS = ("tiles_tilled", "tiles_watered", "crops_planted", "crops_harvestable", "crop_growth_stage_min")
+BACK = re.compile(r"(?<![a-z])back(button)?(?![a-z])", re.I)  # "BACK", "BackButton", "go_back"; not "Backpack" or "feedback".
+RESUME = re.compile(r"(?<![a-z])resume(?![a-z])", re.I)
 
 
 def point(value):
     return isinstance(value, list) and len(value) == 2 and all(type(n) in (int, float) and math.isfinite(n) for n in value)
 
 
-def action_groups(context):
-    """Bind every option to one complete, observed action before inference."""
+def names(entity):
+    return f"{entity.get('label', '')} {(entity.get('state') or {}).get('node_name', '')}"
+
+
+def pause_menu_open(observation):
+    """The game's pause menu shows: a clickable Resume control is observed (Agronauts' RESUME GAME)."""
+    return any("ui_click" in e.get("actions", []) and RESUME.search(names(e)) for e in observation.get("entities", []))
+
+
+def can_act_in_world(observation):
+    """The world is playable and the player is not in a UI."""
+    return facts.values(observation)["world_ready"] and observation.get("state", {}).get("player", {}).get("activity") != "ui"
+
+
+def action_groups(context, failed=()):
+    """Bind every option to one complete, observed action before inference; actions whose option_key is in failed are dropped.
+
+    Outside a pause menu, exit_menu and Back controls are not offered: there exit_menu opens the pause menu and Back leaves the flow.
+    Outside a playable world only UI controls, inputs and waits are offered."""
     observation = context["observation"]
     state = observation.get("state", {})
     player_position = state.get("player", {}).get("position")
-    entities = [e for e in observation.get("entities", []) if isinstance(e.get("id"), str) and type(e.get("version")) is int]
-    inputs = set(observation.get("inputs", []))
+    paused = pause_menu_open(observation)
+    world = can_act_in_world(observation)
+    entities = [e for e in observation.get("entities", []) if isinstance(e.get("id"), str) and type(e.get("version")) is int
+                and (paused or not BACK.search(names(e)))]
+    inputs = {n for n in observation.get("inputs", []) if paused or not (n == "exit_menu" or BACK.search(n))}
     groups = []
 
     def action(verb, parameters, target=None, label=""):
@@ -41,16 +65,16 @@ def action_groups(context):
         if detail.get("node_name"):
             label = f"{detail['node_name']} ({label})"[:240]
         position = entity.get("position")
-        if "move_to" in advertised and point(position) and point(player_position):
+        if world and "move_to" in advertised and point(position) and point(player_position):
             distance = math.dist(player_position, position)
             if distance <= 480:
                 actions.append(action("move_to", {}, entity, f"Move within interaction range of {label}"))
             else:
                 waypoint = [round(a + (b-a) * 400 / distance, 2) for a, b in zip(player_position, position)]
                 actions.append(action("move_to", {"position": waypoint}, label=f"Move 400 pixels toward observed {label}"))
-        if "interact" in advertised and state.get("player", {}).get("closest_target") == entity["id"]:
+        if world and "interact" in advertised and state.get("player", {}).get("closest_target") == entity["id"]:
             actions.append(action("interact", {}, entity, f"Interact with highlighted {label}"))
-        if "fish_follow" in advertised:
+        if world and "fish_follow" in advertised:
             actions.append(action("fish_follow", {}, entity, "Follow the visible fishing wheel with normal directional input"))
         if "ui_click" in advertised:
             actions.append(action("ui_click", {"button": "left"}, entity, f"Left-click {label}"))
@@ -71,7 +95,7 @@ def action_groups(context):
                     offered.add(text)
                     actions.append(action("ui_text", {"text": text}, entity,
                                           f"Replace {label} with configured {source} {text!r}; typing does not click Confirm"))
-        if "use_item" in inputs and point(position):
+        if world and "use_item" in inputs and point(position):
             actions.append(action("input", {"name": "use_item", "world_position": position, "duration_ms": 500}, entity,
                                   f"Use equipped item aimed at observed {label}; check equipped tool and range first"))
         if actions or "ui_drag" in advertised:
@@ -80,7 +104,7 @@ def action_groups(context):
             groups.append({"description": description, "evidence": entity, "actions": actions, "subject": label,
                            "drag_source": entity if "ui_drag" in advertised else None})
 
-    for tile in state.get("tiles", []):
+    for tile in state.get("tiles", []) if world else []:
         position = tile.get("position")
         if not point(position):
             continue
@@ -104,7 +128,9 @@ def action_groups(context):
                        "actions": [{"tool": "report_game_bug", "args": {}, "description": "Report a suspected game bug (not a missing action)"}]})
     groups.append({"description": "No suitable supported action; request operator instructions instead of silently getting stuck", "actions": [
         {"tool": "needs_instructions", "args": {}, "description": "Pause: the available action candidates do not cover this situation"}]})
-    return groups
+    for group in groups:
+        group["actions"] = [a for a in group["actions"] if option_key(a) not in failed]
+    return [g for g in groups if g["actions"] or g.get("drag_source")]
 
 
 def _observed_targets(observation):
@@ -196,7 +222,7 @@ def listed(group, index):
 
 def batch_options(context):
     """(groups, listings): the goal-relevant action groups and one listing per group, in the same order."""
-    groups = relevant_groups(action_groups(context), context)
+    groups = relevant_groups(action_groups(context, context.get("failed", ())), context)
     return groups, [listed(g, i) for i, g in enumerate(groups)]
 
 

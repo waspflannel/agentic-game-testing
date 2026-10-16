@@ -11,7 +11,7 @@ import { newUsageUi, usageSkeleton, usageRegions } from './views/usage.js';
 import { boardModel, boardSkeleton, boardRegions, issueSkeleton, issueViewRegions } from './views/issues.js';
 import { skillsSkeleton, skillsRegions } from './views/skills.js';
 import { newOverview, readinessDue, overviewModel, overviewSkeleton, overviewRegions, validatedProjectBuilds, defaultRegatherBuildId, regatherDialogHTML } from './views/project.js';
-import { PAGE, MAX_EVENTS, createTimeline, beginPage, applyPage, failPage, seedFromRun, applyLive, timelineCards, timelineRegions, syncCards, cardBody, rawJSON, eventIndex } from './views/timeline.js';
+import { PAGE, OLDER, MAX_EVENTS, createTimeline, beginPage, applyPage, failPage, seedFromRun, applyLive, prependOlder, timelineCards, timelineRegions, syncCards, cardBody, rawJSON, eventIndex } from './views/timeline.js';
 
 const $ = selector => document.querySelector(selector);
 const enc = encodeURIComponent;
@@ -1109,6 +1109,20 @@ async function loadPage(mode, before) {
   return true;
 }
 
+// Prepends up to OLDER earlier events to the window; the live edge keeps following.
+async function loadOlder() {
+  const tl = state.thread.tl;
+  const runId = state.route.id;
+  const current = state.isCurrent;
+  const token = beginPage(tl);
+  renderView();
+  try {
+    const page = await api(`/api/runs/${enc(runId)}/events?before=${tl.events[0]?.seq}&limit=${OLDER}${searchQuery(tl)}`);
+    if (!current() || state.thread.tl !== tl || !prependOlder(tl, token, page)) return;
+  } catch (error) { failPage(tl, token, error); }
+  if (current()) renderView();
+}
+
 // Live edge: append newer events after the run poll. Auto-scroll only when already near the bottom.
 async function pollTimeline(runId) {
   const tl = state.thread.tl;
@@ -1501,7 +1515,7 @@ document.addEventListener('click', async event => {
     state.thread.tl.filter = target.dataset.filter;
     renderView();
   } else if (action === 'tl-older') {
-    if (target.getAttribute('aria-disabled') !== 'true') loadPage('history', state.thread.tl.events[0]?.seq);
+    if (target.getAttribute('aria-disabled') !== 'true') loadOlder();
   } else if (action === 'tl-latest') {
     if (await loadPage('latest')) scrollToLatest();
   } else if (action === 'tl-to-latest') {
@@ -1551,13 +1565,20 @@ document.addEventListener('toggle', event => {
   (event.target.querySelector('[aria-selected="true"]') || event.target.querySelector('[role="option"]'))?.focus();
 }, true);
 
+let tlSearchTimer;
 // Composer fields update the in-memory draft; the textarea itself is never re-rendered.
 document.addEventListener('input', event => {
   if (event.target.id === 'resume-reason') { state.thread.instructionText = event.target.value; return; }
   if (event.target.dataset.key === 'tl-search') {
     const tl = state.thread.tl;
     tl.searchDraft = event.target.value;
-    if (!tl.searchDraft.trim() && tl.search) { tl.search = ''; loadPage('latest'); }  // Clearing the box shows everything again.
+    clearTimeout(tlSearchTimer);
+    if (!tl.searchDraft.trim()) {
+      if (tl.search) { tl.search = ''; loadPage('latest'); }  // Clearing the box shows everything again.
+      return;
+    }
+    // Searches 300 ms after typing stops, through the submit handler; the form is looked up then because a render may have replaced it.
+    tlSearchTimer = setTimeout(() => $('[data-form="tl-search"]')?.requestSubmit(), 300);
     return;
   }
   const settingsForm = event.target.closest?.('form[data-form^="settings-"]');
@@ -1605,6 +1626,7 @@ document.addEventListener('change', event => {
 document.addEventListener('submit', async event => {
   if (event.target.matches('[data-form="tl-search"]')) {
     event.preventDefault();
+    clearTimeout(tlSearchTimer);  // Enter searches now; drop the pending typed search.
     const tl = state.thread.tl;
     tl.search = tl.searchDraft.trim();
     loadPage('latest');

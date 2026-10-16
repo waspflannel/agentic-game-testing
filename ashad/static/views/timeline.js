@@ -2,8 +2,9 @@
 import { esc, icon, humanize } from '../core.js';
 import { rowTokens } from './usage.js';
 
-export const PAGE = 100;        // One page of history; "Load older" replaces the window with the previous page.
-export const MAX_EVENTS = 200;  // The live window grows to this and then drops its oldest events.
+export const PAGE = 100;        // One page of history around a jump, or the latest page after "Return to latest".
+export const OLDER = 1000;      // "Load older" prepends up to this many earlier events; the window keeps everything loaded.
+export const MAX_EVENTS = 200;  // Poll page size for live events.
 export const RAW_LIMIT = 4096;
 
 // ── Kinds ───────────────────────────────────────────────────────────────────
@@ -28,7 +29,7 @@ const EXACT = {
   structured_action_outcome: 'outcome', action_result: 'outcome',
   mcp_tool_result: 'tool', structured_tool_result: 'tool',
   inference_usage: 'model',
-  decision_routed: 'decision', jev_check: 'decision', jev_skill_replayed: 'decision', jev_skill_skipped: 'decision',
+  decision_routed: 'decision', subgoal_attempt: 'decision', subgoal_broken: 'decision', replay_skipped: 'decision',
   launch_approved: 'control', run_paused: 'control', intervention: 'control', resume_failed: 'control', stopping: 'control', run_ended: 'control',
   // Lifecycle milestones read as control rows rather than "Other".
   capacity_reserved: 'control', player_launched: 'control', player_ready: 'control', world_ready: 'control', session_running: 'control', inputs_released: 'control', coordinator_restarted: 'control',
@@ -73,10 +74,9 @@ const tokens = n => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n));
 export const clip = (text, n = 160) => { const s = String(text ?? ''); return s.length > n ? `${s.slice(0, n - 1)}…` : s; };
 const args = value => clip(Object.entries(value || {}).filter(([k]) => k !== 'reason').map(([k, v]) => `${k}=${typeof v === 'string' ? v : JSON.stringify(v)}`).join(', '), 120);
 
-// ── Decision routing and Jev checks ─────────────────────────────────────────
+// ── Decision routing and leaf attempts ───────────────────────────────────────
 const ROUTES = { jev: 'Jev', cache: 'cache', repeat: 'repeat' };
-const FALLBACKS = { low_confidence: 'low confidence', not_offered: 'pick not offered here', too_large: 'request too large' };
-const round = n => String(Math.round(Number(n) * 100) / 100);
+const FALLBACKS = { low_confidence: 'low confidence', not_offered: 'pick not offered here', no_action: 'pick was not a game action', too_large: 'request too large' };
 const words = value => String(value ?? '').replaceAll('_', ' ');
 // Model IDs read as their family name ("claude-sonnet-4-5" → "Sonnet"); anything else stays as recorded.
 const modelName = id => { const family = String(id || '').match(/opus|sonnet|haiku/i)?.[0].toLowerCase(); return family ? family[0].toUpperCase() + family.slice(1) : id || 'unknown model'; };
@@ -99,14 +99,9 @@ function decisionSummary(kind, p) {
     const text = [`Decided by ${by}`, confidence, p.fallback ? `fell back: ${fallbackText(p.fallback)}` : null].filter(Boolean).join(' · ');
     return { text, tone: p.fallback ? 'attention' : undefined };
   }
-  if (kind === 'jev_check') {
-    const applied = p.applied ? ' · applied' : p.reason ? ` · not applied: ${words(p.reason)}` : '';
-    if (p.check === 'triage') return { text: `Jev check · triage: ${p.choice ? `${p.choice} (${round(p.confidence)})` : p.confidence == null ? 'no answer' : `unsure (${round(p.confidence)})`}${applied}` };
-    if (p.check === 'effect') return { text: `Jev check · effect: ${p.band === 'unsure' ? 'unsure about' : p.disagree ? 'disagrees with' : 'agrees with'} fact (${p.band} ${round(p.noul)})` };
-    return { text: `Jev check · ${words(p.check)}: ${p.band} (${round(p.noul)})${applied}` };
-  }
-  if (kind === 'jev_skill_replayed') return { text: `Jev replayed skill ${p.name || short(p.key)} · ${words(p.reason) || 'no stop reason'}, ${p.actions ?? 0} action${p.actions === 1 ? '' : 's'}` };
-  return { text: `Jev skipped skill (${p.why === 'not_offered' ? 'not offered here' : words(p.why) || 'no reason recorded'})` };
+  if (kind === 'subgoal_attempt') return { text: `Attempt ${p.attempts} on leaf · ${p.route} · ${words(p.stop)}` };
+  if (kind === 'subgoal_broken') return { text: `Leaf broken · ${p.outcome}` };
+  return { text: `Replay skipped · ${words(p.why)}` };
 }
 
 function summary(event, kind, finals) {
@@ -168,7 +163,7 @@ function modelSummary(events) {
 }
 
 // ── Window state ────────────────────────────────────────────────────────────
-// mode 'latest' follows the live edge; 'history' shows one older page until "Return to latest".
+// mode 'latest' follows the live edge and keeps every loaded event; 'history' shows the page around a jump until "Return to latest".
 export const createTimeline = () => ({ events: [], mode: 'latest', loaded: false, filter: 'all', search: '', searchDraft: '',
   selected: null, older: 0, newer: 0, total: 0, cursor: 0, unseen: 0, token: 0, loading: false, error: '' });
 
@@ -177,7 +172,7 @@ export function beginPage(tl) { tl.loading = true; tl.error = ''; return ++tl.to
 
 export function applyPage(tl, token, page, mode, latestSeq = 0) {
   if (token !== tl.token) return false;
-  const events = (page.events || []).slice(-PAGE);
+  const events = page.events || [];
   Object.assign(tl, { events, mode, loaded: true, loading: false, older: page.older_count ?? 0, newer: page.newer_count ?? 0, total: page.total ?? 0, unseen: 0,
     cursor: events.length ? events.at(-1).seq : Math.max(latestSeq, page.next ?? 0) });
   return true;
@@ -188,9 +183,8 @@ export function failPage(tl, token, error) { if (token === tl.token) Object.assi
 // The run detail already carries the newest events, so an unfiltered thread opens without its own request.
 export function seedFromRun(tl, run) {
   if (tl.loaded || tl.search || !Array.isArray(run?.events) || !run.events_page) return false;  // Bootstrap rows carry no event page.
-  const events = run.events.slice(-PAGE);
-  const page = run.events_page || {};
-  return applyPage(tl, tl.token, { events, older_count: page.recent_100_older_count ?? Math.max(0, (page.older_count ?? 0) + run.events.length - events.length), newer_count: 0, total: page.total ?? events.length, next: page.next }, 'latest');
+  const page = run.events_page;
+  return applyPage(tl, tl.token, { events: run.events, older_count: page.older_count ?? 0, newer_count: 0, total: page.total ?? run.events.length, next: page.next }, 'latest');
 }
 
 // A live page appends only at the live edge and only after the cursor it was asked for. 'reload' means a gap.
@@ -200,11 +194,18 @@ export function applyLive(tl, token, page, after) {
   const fresh = (page.events || []).filter(e => e.seq > after);
   tl.total = page.total ?? tl.total;
   if (!fresh.length) return 0;
-  const merged = [...tl.events, ...fresh];
-  tl.older += Math.max(0, merged.length - MAX_EVENTS);
-  tl.events = merged.slice(-MAX_EVENTS);
+  tl.events = [...tl.events, ...fresh];
   tl.cursor = fresh.at(-1).seq;
   return fresh.length;
+}
+
+// "Load older": prepends a page of earlier events to the window without dropping any; the mode is unchanged.
+export function prependOlder(tl, token, page) {
+  if (token !== tl.token) return false;
+  const first = tl.events[0]?.seq ?? Infinity;
+  tl.events = [...(page.events || []).filter(e => e.seq < first), ...tl.events];
+  Object.assign(tl, { older: page.older_count ?? 0, loading: false });
+  return true;
 }
 
 // Ledger rows newer than a history page (counts every row, not just search matches).

@@ -1,11 +1,13 @@
 """Skill library from wins: a leaf's steps as a general pattern over its completion fact's args, shared by every configuration of a project."""
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
+import re
 import time
 
-from . import facts, repeat
+from . import facts, repeat, subgoals
 
 MAX_WON_BUILDS = 20
 
@@ -120,7 +122,7 @@ def regressed(record, build_id):
 
 def summary(key, record):
     """The Skills page row for a stored skill record under its store key."""
-    return {"id": key, "name": record["name"], "kind": "decision" if record.get("scope") == "decision" else "subgoal",
+    return {"id": key, "name": record["name"], "kind": record.get("scope") or "subgoal",
             "uses": record["wins"] + record["fails"], "wins": record["wins"], "fails": record["fails"],
             "last_result": record.get("last_result"), "updated": record.get("updated")}
 
@@ -146,13 +148,16 @@ def save(store, project_id, check, steps, won, build_id=None, run_id=None, key=N
 
 def find(store, project_id, check):
     """The usable skills for the check's shape in the project as [(key, record)], most wins first: each has steps and has not failed more often than it won."""
-    prefix = f"{project_id}:{shape(check)}:"
+    found = [(key, record) for key, record in keyed(store, f"{project_id}:{shape(check)}:") if record["steps"] and record["fails"] <= record["wins"]]
+    return sorted(found, key=lambda item: -item[1]["wins"])
+
+
+def keyed(store, prefix):
+    """Every skill record whose key starts with prefix, as (key, record)."""
     # substr, not LIKE: fact names contain _, a LIKE wildcard.
     with store.lock:
         rows = store.db.execute("SELECT id, data FROM records WHERE kind='skills' AND substr(id, 1, ?) = ?", (len(prefix), prefix)).fetchall()
-    found = [(key, record) for key, record in ((key, json.loads(data)) for key, data in rows)
-             if record["steps"] and record["fails"] <= record["wins"]]
-    return sorted(found, key=lambda item: -item[1]["wins"])
+    return [(key, json.loads(data)) for key, data in rows]
 
 
 def signature(check, observation, held):
@@ -188,17 +193,93 @@ def find_decision(store, project_id, sig):
     return record if record and record["steps"] and record["fails"] <= record["wins"] else None
 
 
-def library(store, project_id):
-    """The project's usable skills, subgoal and decision, as (key, record), most wins first; Jev picks among them."""
-    with store.lock:
-        rows = store.db.execute("SELECT id, data FROM records WHERE kind='skills' AND json_extract(data,'$.project_id')=?", (project_id,)).fetchall()
-    usable = [(key, record) for key, record in ((k, json.loads(d)) for k, d in rows) if record["steps"] and record["fails"] <= record["wins"]]
-    return sorted(usable, key=lambda kr: -kr[1]["wins"])
+def plan_key(project_id, stages):
+    """The store key of a plan pattern: the project plus a hash of its stages' check shapes, stable however the planner words the steps."""
+    return f"{project_id}:plan:" + hashlib.sha256(json.dumps([shape(s["completion"]) for s in stages]).encode()).hexdigest()[:16]
 
 
-def describe(record, chars):
-    """The skill as text for Jev, cut to chars: a decision skill (it has a signature) by its screen, a subgoal skill by effect, needs and steps."""
-    if "signature" in record:
-        return f"{record['name']}. Screen: {', '.join(record['signature']['screen'])}"[:chars]
-    steps = "; ".join(f"{s['control']} {s.get('item', '')} {s.get('targets', '')}".strip() for s in record["steps"])
-    return f"{record['name']}: {record['effect']}. Needs: {', '.join(record['preconditions']) or 'nothing'}. Steps: {steps}"[:chars]
+def count_of(text):
+    """The goal's count: the one distinct integer in text, else None ('Plant 5 wheat' is 5; '2 rows of 5' has no count)."""
+    numbers = {int(n) for n in re.findall(r"\d+", text)}
+    return numbers.pop() if len(numbers) == 1 else None
+
+
+def pattern_stage(stage, args, count):
+    """A won stage as a pattern: arg values become {arg}, the goal's count {count} in text and in the check's value,
+    or +{count} when the stage asked for count more than the value at planning; other values stay literal."""
+    def placeholder(text):
+        for arg, value in sorted(args.items(), key=lambda kv: -len(kv[1])):  # wheat_seed before wheat
+            text = text.replace(value, "{" + arg + "}")
+        return text if count is None else re.sub(rf"\b{count}\b", "{count}", text)
+
+    check = stage["completion"]
+    completion = {**check, "description": placeholder(check["description"]),
+                  "args": [{**a, "value": "{" + a["name"] + "}"} if isinstance(a["value"], str) and a["value"] else a for a in check["args"]]}
+    value, planned = check["value"], stage.get("planned_value")
+    if count is not None and type(value) is int:
+        if value == count:
+            completion["value"] = "{count}"
+        elif type(planned) is int and value - planned == count:
+            completion["value"] = "+{count}"
+    return {"objective": placeholder(stage["objective"]), "completion": completion,
+            "steps": bind(stage.get("steps") or [], check), "actionable": stage["actionable"]}
+
+
+def save_plan(store, project_id, objective, stages, won, build_id=None, run_id=None, key=None):
+    """Count a win (replacing the stages) or a failure for the plan pattern at key, by default the stages' key.
+
+    Returns the record, or None when there is nothing to count: a failure of a deleted pattern, or a win whose stages
+    name two values for one arg (a pattern binds one value per arg). That None is the only skip; the caller logs nothing."""
+    key = key or plan_key(project_id, stages)
+    record = store.get("skills", key)
+    if won:
+        args = {}
+        for stage in stages:
+            for arg in stage["completion"]["args"]:
+                if isinstance(arg["value"], str) and arg["value"] and args.setdefault(arg["name"], arg["value"]) != arg["value"]:
+                    return None
+        count = count_of(objective)
+        record = record or {"scope": "plan", "project_id": project_id, "wins": 0, "fails": 0}
+        record["name"] = "plan: " + " → ".join(name(s["completion"]) if s["completion"]["fact"] in facts.FACTS else s["objective"][:40] for s in stages)
+        record["params"] = sorted(args)
+        record["stages"] = [pattern_stage(stage, args, count) for stage in stages]
+        record["uses_count"] = "{count}" in json.dumps(record["stages"], ensure_ascii=False)
+    elif record is None:
+        return None
+    tally(record, won, build_id, run_id)
+    return store.put("skills", record, key)
+
+
+def instantiate(record, args, count, values):
+    """The pattern as a root expand decision for this goal: placeholders filled from args and count, +{count} read on values.
+
+    Shaped like PlanningDecision; apply_decision validates it. A +{count} stage whose fact is not readable raises ValueError."""
+    def fill(text):
+        for arg, value in args.items():
+            text = text.replace("{" + arg + "}", value)
+        return text.replace("{count}", str(count))
+
+    proposed = []
+    for index, stage in enumerate(record["stages"]):
+        completion = copy.deepcopy(stage["completion"])
+        completion["description"] = fill(completion["description"])
+        for arg in completion["args"]:
+            if isinstance(arg["value"], str):
+                arg["value"] = fill(arg["value"])
+        if completion["value"] == "{count}":
+            completion["value"] = count
+        elif completion["value"] == "+{count}":
+            current = facts.read(values, completion["fact"], facts.args_of(completion))
+            if type(current) is not int or count is None:
+                raise ValueError(f"Stage {index} needs {completion['fact']} now plus the count, and it is not readable")
+            completion["value"] = current + count
+        proposed.append({"key": f"s{index}", "parent_key": "", "objective": fill(stage["objective"]), "completion": completion,
+                         "actionable": stage["actionable"], "steps": bind(stage["steps"], completion, replay=True)})
+    return {"goal_id": "root", "mode": "expand", "completion": subgoals.unknown(), "reason": "Cached plan " + record["name"],
+            "subgoals": proposed, "steps": []}
+
+
+def plan_patterns(store, project_id):
+    """The project's usable plan patterns as [(key, record)], most wins first: each has stages and has not failed more often than it won."""
+    usable = [(key, record) for key, record in keyed(store, f"{project_id}:plan:") if record["stages"] and record["fails"] <= record["wins"]]
+    return sorted(usable, key=lambda item: -item[1]["wins"])

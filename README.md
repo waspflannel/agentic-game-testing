@@ -100,13 +100,25 @@ Plans belong to the instance, not the reusable agent. They survive refreshes and
 
 The planner picks each goal's completion check from a typed fact catalog the game bridge (or, for older builds, ASHAD) publishes: `{fact, args, op, value}`, for example `item_count(item_id=wheat) >= 5`. ASHAD measures the fact and compares; `unknown` is allowed and never completes on its own. A check naming a fact or argument outside the catalog is retried once, then the goal is given up as a planner gap. Inventory quantity does not prove cumulative harvesting, delivered input is not success, and the observation's `complete` flag only means coverage was not truncated.
 
-Planning expands the current branch as needed (up to 8 levels / 64 goals), replans after failed actions, and gives up on a goal after six actions or two plans without measured progress, a repeated-action loop, a second invalid check, or the planner reporting it blocked. A given-up goal is logged as an “MCP or game needs updating” issue and the agent moves on; with nothing left it hands back to the operator. Missing recipes or unsupported observations may require discovery or operator assistance; the planner cannot create unavailable controls. Historical runs without a generated plan retain their existing behavior.
+Planning expands the current branch as needed (up to 8 levels / 64 goals) and gives up on a goal when its re-planned leaf breaks again, after a second invalid check, or when the planner reports it blocked. A given-up goal is logged as an “MCP or game needs updating” issue and the agent moves on; with nothing left it hands back to the operator. Missing recipes or unsupported observations may require discovery or operator assistance; the planner cannot create unavailable controls. Historical runs without a generated plan retain their existing behavior.
+
+Stages complete in order: a later stage is measured only once every earlier sibling stage is completed.
+
+Each Jev plan pick logs one `plan_pick` event with the offered pattern keys, the picked key, confidences, the gate noul and the bound args; when no pattern is used it gives the reason: `no_patterns`, `too_large`, `jev_error`, `gate`, `low_confidence`, `missing_arg:<name>` or `stale`.
+
+A turn that dispatches or waits without progress toward any goal on the active path counts one attempt on the active leaf; progress resets it to zero.
+
+A leaf that spends six attempts is broken: the first break re-plans it once, a second break gives it up with one gap. A failed action is left out of that leaf's menus.
+
+Each turn tries the cache while the leaf has no attempts, then Jev (under Jev hybrid, below three attempts), then Sonnet.
+
+Jev asks one action Choice over plain actions and the one 10 s wait; each Jev action turn logs `menu_size` and the top three options in `decision_routed`, and the speed report shows mean and max menu size and the top three options for each low-confidence fallback.
 
 Supplying a goal still does **not** create a reliable automatic whole-game success detector. The free-text primary objective retains manual acceptance; concrete observable outcomes live in its child goals. When no further grounded work is available, the planner requests operator review. Inspect results and Stop when appropriate. An exhausted checklist alone never proves tutorial completion. Citations and checks constrain proposals but do not prove arbitrary natural-language intent. Full autonomous DEMO completion remains unverified.
 
 ## Observe and recover
 
-The instance workspace has four tabs: **Bot view** (the live bot computer), **Goals**, **World state** (retained observed world state) and **Actions** (bounded evidence-based agent activity and model usage). Status, run controls and the resume form stay visible on every tab, and the camera stream runs only while Bot view is open. Load older activity replaces a bounded page; returning to latest does not discard the ledger. Observation age/coverage and decision-time context are explicit; monitor-only diagnostics are not model knowledge. Polling preserves current-page reading position, focus and disclosures.
+The instance workspace has four tabs: **Bot view** (the live bot computer), **Goals**, **World state** (retained observed world state) and **Actions** (bounded evidence-based agent activity and model usage). Status, run controls and the resume form stay visible on every tab, and the camera stream runs only while Bot view is open. Load older activity prepends up to 1000 earlier events and the tab keeps every loaded event; returning to latest does not discard the ledger. Search matches row text, not the embedded observation or context payloads. Observation age/coverage and decision-time context are explicit; monitor-only diagnostics are not model knowledge. Polling preserves current-page reading position, focus and disclosures.
 
 The live camera is for the human operator. Routine model decisions use the filtered JSON observation, profile instructions, objective and recent action outcomes. The executor sends bounded normal game controls; it does not directly grant inventory, complete quests or modify saves. Input delivery is not proof that an intended gameplay effect occurred.
 
@@ -115,6 +127,8 @@ The live camera is for the human operator. Routine model decisions use the filte
 **Recalculate goals** rebuilds the checklist from fresh player state under the same primary objective, model and profile. It holds input, archives the old plan/evidence (unfinished goals are retired, not completed), and leaves the run paused for inspection and a separate Resume. It is unavailable during human/external control. **Cancel recalculation** stops planning without replacing the old plan. The planner can also retire obsolete setup goals automatically rather than insist on returning to a screen already passed.
 
 **Stop** attempts normal save/exit and confirms process teardown. Failed teardown retains its desktop/account reservation until reconciliation succeeds. Existing diagnostics, evidence and operational recovery remain available; removing advanced setup does not remove these safeguards.
+
+After a host suspend, the run resumes once automatically on the next good heartbeat when the suspend is the only investigation reason; it logs `auto_resumed`, or `auto_resume_failed` if Resume is refused.
 
 ## Scope and retained data
 

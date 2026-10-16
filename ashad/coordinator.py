@@ -16,7 +16,7 @@ from .reports import generate_report
 from .repair_tasks import record_task, publish_pending, remove_project_issue_files
 from .store import uid
 from .worker_client import WorkerError
-from . import facts, subgoals
+from . import facts, subgoals, workspace_environment
 from .subgoals import new_plan
 from .validation import validate_plan
 from .workspace_environment import inspect_environment, validate_build
@@ -70,6 +70,8 @@ class Coordinator:
         self.ticks = {}
         self.command_locks = {}
         self.clients = {}
+        self.client_sources = {}  # worker_id -> (url, credential_ref) its cached client was built from.
+        self.client_closes = set()  # Holds close tasks for evicted clients until they finish.
         self.finishing = {}
         self.bindings = {}  # (worker_id, epoch) -> (run_id, player_id); epochs are immutable per run player.
         self.storage = {}  # run_id -> (checked_at, bytes)
@@ -78,6 +80,8 @@ class Coordinator:
         self.wake = asyncio.Event()  # Set when a working turn ends so the next tick starts without the 1 s poll.
         from .structured import StructuredPlayers
         self.structured = StructuredPlayers(self)
+        # Prepare can re-import a worker with a new url or token; drop the cached client then.
+        workspace_environment.on_worker_imported = self.evict_client
 
     def occupied_instances(self):
         """Lifecycle labels cannot release unresolved desktop/account ownership."""
@@ -244,7 +248,6 @@ class Coordinator:
             "unknown_execution": "Inspect the last action and current game state before Resume; do not blindly repeat an action with an unknown outcome.",
             "controller_failure": "Inspect the last rejected action and visible controls. Correct the input problem, then Resume.",
             "suspected_game_freeze": "Inspect the live view and game logs. Resume if the game is responsive; otherwise terminate and rerun.",
-            "movement_unavailable": "The character stayed in place through repeated moves. Check the live view: it may be sitting, in a menu or dialogue, or not receiving bot input. Take control and move once, or close the window, then Resume.",
             "client_disagreement": "Check that all players are connected to the host world, then Resume after synchronization recovers.",
             "coordinator_restarted": "Review the current game state, then Resume to continue with fresh observations.",
             "manual_pause": "Choose Resume when ready. Recovery instructions are optional.",
@@ -270,14 +273,26 @@ class Coordinator:
         worker = self.store.require("workers", worker_id)
         if self.client_factory:
             return self.client_factory(worker)
-        if worker_id in self.clients:
+        source = (worker["url"], worker["credential_ref"])
+        if worker_id in self.clients and self.client_sources.get(worker_id) == source:
             return self.clients[worker_id]
+        self.evict_client(worker_id)
         from .worker_client import WorkerClient
         token = self.credentials.get(worker["credential_ref"])
         if not token:
             raise ValueError(f"Worker {worker_id} credential is unavailable")
         self.clients[worker_id] = WorkerClient(worker["url"], token, timeout=8)
+        self.client_sources[worker_id] = source
         return self.clients[worker_id]
+
+    def evict_client(self, worker_id):
+        """Drop the cached client; it closes in a task because client() callers are synchronous."""
+        self.client_sources.pop(worker_id, None)
+        stale = self.clients.pop(worker_id, None)
+        if stale:
+            task = asyncio.get_running_loop().create_task(stale.close())
+            self.client_closes.add(task)
+            task.add_done_callback(self.client_closes.discard)
 
     async def request(self, worker_id, method, path, body=None, timeout=None):
         client = self.client(worker_id)
@@ -570,10 +585,23 @@ class Coordinator:
                 if suspended > 30:
                     self.store.event(run["id"], "host_suspended", {"player_id": player["id"], "seconds": round(suspended)})
                     reason = f"{player['name']}: the host was suspended for {round(suspended)} s; the worker paused its inputs ({type(exc).__name__}: {exc})"
+                    # The next tick whose heartbeats succeed resumes once if this stays the only pause reason.
+                    run["suspend_auto_resume"] = reason
+                    self.save_run(run)
                 await self.investigate(run["id"], "infrastructure_failure", reason, players=[player["id"]])
                 # Report after investigate: its input hold bumps the generation once, so later ticks dedupe on the new one.
                 if suspended <= 30 and (crash := crash_of(exc, ps.get("worker_status") or {})):
                     await self.structured.report_crash(run["id"], player["id"], *crash, reason)
+                return
+        if suspend_reason := run.pop("suspend_auto_resume", None):
+            self.save_run(run)
+            pause = run.get("pause") or {}
+            if run["state"] == "Investigating" and pause.get("category") == "infrastructure_failure" and pause.get("reason") == suspend_reason:
+                try:
+                    await self.control(run["id"], "resume", command_id=f"auto_resume:{run['investigation_started_at']}")
+                    self.store.event(run["id"], "auto_resumed", {"reason": suspend_reason})
+                except ValueError as exc:
+                    self.store.event(run["id"], "auto_resume_failed", {"reason": suspend_reason, "error": str(exc)})
                 return
         host = next(p for p in run["plan"]["players"] if p["role"] == "host")
         host_state = run["players"][host["id"]]
@@ -645,16 +673,23 @@ class Coordinator:
                 ps["telemetry"] = telemetry
                 if any(previous.get(k) != telemetry.get(k) for k in ("completed_quests", "handler", "votes", "connected", "world_synced", "resources", "world_id")):
                     self.store.event(run["id"], "monitor_observation", {"player_id": player["id"], "source": "read_only_diagnostics", "telemetry": telemetry})
+            loaded = False
             if telemetry:
                 self.check_identity(run, player, ps, telemetry)
-                ready = telemetry.get("connected") is True and telemetry.get("world_synced") is True and telemetry.get("world_loaded") is True
+                loaded = telemetry.get("connected") is True and telemetry.get("world_synced") is True and telemetry.get("world_loaded") is True
+                # The game reports a loaded world while character creation is still up: first readiness also needs a playable observation.
+                observation = self.store.get("observations", f"{run['id']}:{player['id']}") or {}
+                ready = loaded and (bool(ps.get("ready_at")) or subgoals.playable(observation))
+                if loaded and not ready and not ps.get("ready_wait_logged"):
+                    ps["ready_wait_logged"] = True
+                    self.store.event(run["id"], "player_ready_waiting", {"player_id": player["id"], "reason": "World loaded but the latest observation is not playable (no player, player cannot act, or a creation, loading or cutscene screen)"})
                 ps["phase"] = "ready" if ready else "synchronized" if telemetry.get("world_synced") else "connected" if telemetry.get("connected") else "authenticated" if telemetry.get("authenticated") else "launched"
                 if ready and not ps.get("ready_at"):
                     ps["ready_at"] = now
                     self.store.event(run["id"], "player_ready", {"player_id": player["id"], "telemetry_sequence": telemetry.get("sequence")})
-                if telemetry.get("sync_timed_out") and not ready:
+                if telemetry.get("sync_timed_out") and not loaded:
                     raise ValueError("World synchronization timed out; readiness not established")
-            if now - ps["launched_at"] > 180 and ps["phase"] != "ready" and run["state"] == "Starting":
+            if now - ps["launched_at"] > 180 and ps["phase"] != "ready" and not loaded and run["state"] == "Starting":
                 raise ValueError("Initial player readiness deadline expired")
         except Exception as exc:
             exc.monitoring_step = monitoring_step
@@ -932,6 +967,9 @@ class Coordinator:
             key = json.dumps([run.get("investigation_started_at", run.get("investigation_deadline")), category, reason, sorted(players or run["players"])])
             record_task(self.store, run_id, "investigation", reason, key=key, category=category)
             publish_pending(self.store)
+            if run.get("suspend_auto_resume") not in (None, reason):
+                run.pop("suspend_auto_resume")  # Another failure joined the suspend; leave Resume to the operator.
+                self.save_run(run)
             return run  # A repeated alert must never restart the 30-minute clock.
         run["resume_state"] = "Running" if run.get("world_ready_at") else "Starting"
         run.update(state="Investigating", investigation_deadline=time.time()+1800, investigation_started_at=time.time())
@@ -1082,7 +1120,6 @@ class Coordinator:
             for attempt in range(2):
                 warnings = []
                 proposal = await self.ai.plan_subgoals(context, run_id)
-                proposal.pop("first_actions", None)  # No action_options here, so nothing to act on: recalculation only replans.
                 if not current():
                     raise asyncio.CancelledError()
                 try:
@@ -1120,7 +1157,6 @@ class Coordinator:
                     self.save_run(live)
                     self.store.command(scope, command_id, {"acknowledged": True, "revision": revised["revision"]})
                 self.structured.waits.pop(key, None)
-                self.structured.last_decisions.pop(key, None)
                 return live
         except Exception as exc:
             if started:

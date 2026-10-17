@@ -868,7 +868,7 @@ class StructuredPlayers:
         return context
 
     async def _cached_plan(self, run_id, player_id, generation, run, plan, context, observation):
-        """Jev hybrid: expand an unplanned root from a saved plan pattern Jev picks, with its args and the goal's count, instead of calling Opus.
+        """Jev hybrid: expand an unplanned root from a saved plan pattern whose goal matches (exact in code, else Jev) with its saved args and the goal's count, instead of calling Opus.
 
         Returns the turn's observation when the pattern was applied, else None (the planner takes the goal)."""
         project_id = run.get("project_id")
@@ -877,7 +877,7 @@ class StructuredPlayers:
                 or subgoals.stages(plan) or plan.get("completion_rejected")):
             return None
         patterns = skills.plan_patterns(self.store, project_id)
-        pick = await self.coordinator.ai.jev_plan_pick(root["objective"], patterns, context["fact_catalog"], context["item_ids"], run_id)
+        pick = await self.coordinator.ai.plan_pick(root["objective"], patterns, run_id)
         live, _ = self.binding(run_id, player_id)
         if not pick["reason"] and (live.get("subgoal_plan") or {}).get("revision") != plan["revision"]:
             pick["reason"] = "stale"  # The plan moved during the request.

@@ -13,7 +13,7 @@ from .codex_backend import CodexBackend, CodexError
 from .claude_backend import ClaudeBackend, ClaudeError
 from .grok_backend import GrokBackend, GrokError
 from .credentials import Credentials
-from . import facts, jev
+from . import facts, jev, skills
 from .menu import GAME_VERBS, _observed_targets, action_groups, batch_options, listed, numeric_option_id, option_key, point, prompt_observation
 from .models import CLAUDE_CONTROLS_MODEL, CLAUDE_MODEL, GROK_MODEL, JEV_MODEL, MODEL, PROVIDERS, SUPPORTED_MODELS, provider_of
 from .prompts import SOURCE_NOTES_LIMIT, TUNING_MANUAL_LIMIT, TUNING_MINIMUM_BYTES
@@ -25,6 +25,7 @@ SUBSCRIPTION_PRICING = PROVIDERS["codex"]["pricing"]
 
 # Jev hybrid routing. Tuned against the pinned jev-1.13.0 (aliases move); change them only with a v6 A/B (Plan 3).
 ACT_CONFIDENCE = 0.5     # Choice confidence at or above which Jev's pick is acted on; below it Sonnet decides the turn (docs' example floor).
+SAME_GOAL = 0.8          # Noul p at or above which Jev's "same goal" is acted on in plan reuse; the best must also beat the runner-up.
 QUEUE = 3                # Ranked action options run as one batch: Jev's pick, then the next by probability.
 MAX_OPTIONS = 255        # Jev Choice limit.
 OPTION_CHARS = 200       # Criteria text per action option, so 255 options stay inside one 32k-token question.
@@ -592,46 +593,45 @@ class OpenAI:
         result = await self.jev_act(context, groups, listings, action, dispatch, can_continue, run_id, model=response["model"], started=started)
         return result and {**result, "menu": log}
 
-    async def jev_plan_pick(self, objective, patterns, catalog, item_ids, run_id):
-        """One Jev request: which saved plan pattern [(key, record)] achieves objective, and the value of each of its args.
+    async def plan_pick(self, objective, patterns, run_id):
+        """Which saved plan pattern [(key, record)] achieves objective: the plan_pick event (offered keys, picked key, match, similarity, confidence, args, reason).
 
-        Arg options are the run's legal values of the arg's kind.
-        Returns the plan_pick event: offered keys, picked key, confidences, args, and reason, None only when the plan and every arg it needs are confident.
-        The Choice also offers none, so a lone saved plan is not picked just because it is the only option."""
-        records = dict(patterns[:MAX_OPTIONS - 1])  # One option is none.
-        pick = {"offered": list(records), "key": None, "confidences": {}, "args": {}, "reason": None}
-        if not records:
+        An exact goal match (skills.goal_form) is a code fact and skips Jev.
+        Otherwise one Jev request sees goal texts only, one Noul per saved goal; Noul's p is the answer (there is no 1/n normalization like a Choice's confidence).
+        The best must reach SAME_GOAL and beat the runner-up."""
+        candidates = {}
+        for key, record in patterns:
+            if "args" in record:
+                candidates.setdefault(skills.goal_form(record["objective"]), (key, record))  # The most-won pattern of a goal wins.
+        pick = {"offered": [key for key, _ in candidates.values()], "key": None, "match": "none", "similarity": None,
+                "confidence": None, "args": {}, "reason": None}
+        if not candidates:
             return {**pick, "reason": "no_patterns"}
-        model = self.store.require("runs", run_id)["plan"].get("jev_model") or JEV_MODEL
-        # The goal a plan won comes first: its stages read as templates ({count}, {plant_id}) that do not look like the goal.
-        plans = {key: ((f"Won the goal: {record['objective']}. " if record.get("objective") else "") + record["name"] + ": "
-                       + "; ".join(s["objective"] for s in record["stages"]))[:OPTION_CHARS] for key, record in records.items()}
-        # The plan Choice's confidence is the fit check; a stage that does not fit breaks and is re-planned.
-        questions = {"plan": jev.choice("Pick the saved plan in criteria that achieves `goal`, or none if no plan does.",
-                                        {**plans, "none": "None of these plans achieves `goal`."})}
-        options = facts.arg_values(catalog["values"], item_ids)
-        for name in sorted({p for record in records.values() for p in record["params"]}):
-            values = options.get(name)
-            if isinstance(values, list) and 0 < len(values) <= MAX_OPTIONS:
-                questions["arg_" + name] = jev.choice(f"Pick the {name} that `goal` is about.", {v: v for v in values})
-        state = json.dumps({"goal": objective, "facts": catalog["values"]}, ensure_ascii=False)
+        form = skills.goal_form(objective)
+        if form in candidates:
+            key, record = candidates[form]
+            return {**pick, "key": key, "match": "exact", "args": record["args"]}
+        forms = list(candidates)
+        state = json.dumps({"goal": form})
+        questions = {f"g{i}": jev.noul("Is `goal` the same goal as this saved goal: " + json.dumps(saved) + "? N is an amount and may differ; the items, crops, targets and outcome must be the same.",
+                                      {"true": "Reaching one reaches the other, apart from the amount.", "false": "They differ in what is wanted."})
+                     for i, saved in enumerate(forms)}
         if len(state.encode("utf-8")) + len(json.dumps(questions).encode("utf-8")) > QUESTION_BYTES:
             return {**pick, "reason": "too_large"}
+        model = self.store.require("runs", run_id)["plan"].get("jev_model") or JEV_MODEL
         try:
             answers = (await jev.ask(state, questions, credentials=self.credentials, model=model))["answers"]
         except jev.JevError:
             return {**pick, "reason": "jev_error"}
-        pick.update(key=answers["plan"]["choice"], confidences={name: answer["confidence"] for name, answer in answers.items()})
-        if pick["key"] == "none":
-            return {**pick, "key": None, "reason": "none"}
-        if answers["plan"]["confidence"] < ACT_CONFIDENCE:
-            return {**pick, "reason": "low_confidence"}
-        for name in records[pick["key"]]["params"]:
-            answer = answers.get("arg_" + name)
-            if not answer or answer["confidence"] < ACT_CONFIDENCE:
-                return {**pick, "reason": f"missing_arg:{name}"}
-            pick["args"][name] = answer["choice"]
-        return pick
+        ranked = sorted(((answers[f"g{i}"]["noul"], saved) for i, saved in enumerate(forms)), reverse=True)
+        best, saved = ranked[0]
+        pick.update(similarity=round(best, 3), confidence=round(abs(2 * best - 1), 3))
+        if best < SAME_GOAL:
+            return {**pick, "reason": "low_similarity"}
+        if len(ranked) > 1 and ranked[1][0] == best:
+            return {**pick, "reason": "tie"}
+        key, record = candidates[saved]
+        return {**pick, "key": key, "match": "jev", "args": record["args"]}
 
     async def jev_act(self, context, groups, listings, answer, dispatch, can_continue, run_id, *, model, started, calls=1, queue=QUEUE, pick="action"):
         """Acts on a Jev action answer (an option or the wait): dispatches the pick and queues the next by probability,

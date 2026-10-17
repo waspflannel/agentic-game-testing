@@ -161,11 +161,12 @@ def keyed(store, prefix):
 
 
 def signature(check, observation, held):
-    """Where the player is, in terms that repeat across runs: the subgoal's shape, the actionable UI controls by node, the held item and the highlighted target's kind; no positions or ids."""
+    """Where the player is, in terms that repeat across runs: the subgoal's shape, the actionable UI controls by node, the held item and the highlighted target's kind; no positions or ids.
+    Godot's auto names (@Control@123) lose their number."""
     entities = observation.get("entities", [])
     closest = (observation.get("state", {}).get("player") or {}).get("closest_target")
     return {"subgoal": shape(check),
-            "screen": sorted({f"{e.get('parent', '')}/{(e.get('state') or {}).get('node_name') or str(e.get('label', ''))[:40]}"
+            "screen": sorted({re.sub(r"@(\w+)@\d+", r"@\1@", f"{e.get('parent', '')}/{(e.get('state') or {}).get('node_name') or str(e.get('label', ''))[:40]}")
                               for e in entities if e.get("kind") == "ui" and e.get("actions")}),
             "held": held or "",
             "target_kind": next((str(e.get("kind", "")) for e in entities if closest and e.get("id") == closest), "")}
@@ -204,10 +205,19 @@ def count_of(text):
     return numbers.pop() if len(numbers) == 1 else None
 
 
+def goal_form(text):
+    """The goal as compared for plan reuse: case-folded, whitespace collapsed, its count (count_of) as N."""
+    form = " ".join(text.casefold().split())
+    count = count_of(form)
+    return form if count is None else re.sub(rf"\b{count}\b", "N", form)
+
+
 def pattern_stage(stage, args, count):
     """A won stage as a pattern: arg values become {arg}, the goal's count {count} in text and in the check's value,
-    or +{count} when the stage asked for count more than the value at planning; other values stay literal."""
+    or +{count} when the stage asked for count more than the value at planning; other values stay literal.
+    Entity ids (n:m) are dropped."""
     def placeholder(text):
+        text = re.sub(r"\s*\(?\b\d+:\d+\b\)?", "", text)
         for arg, value in sorted(args.items(), key=lambda kv: -len(kv[1])):  # wheat_seed before wheat
             text = text.replace(value, "{" + arg + "}")
         return text if count is None else re.sub(rf"\b{count}\b", "{count}", text)
@@ -241,9 +251,10 @@ def save_plan(store, project_id, goal, stages, won, build_id=None, run_id=None, 
                     return None
         count = count_of(goal["objective"])
         record = record or {"scope": "plan", "project_id": project_id, "wins": 0, "fails": 0}
-        record["objective"] = goal["objective"]  # The goal it won, as written, so Jev can match a goal like it.
+        record["objective"] = goal["objective"]  # The goal it won, as written: matched by goal_form, and Jev compares goal texts.
         record["name"] = "plan: " + " → ".join(name(s["completion"]) if s["completion"]["fact"] in facts.FACTS else s["objective"][:40] for s in stages)
         record["params"] = sorted(args)
+        record["args"] = args
         record["goal"] = pattern_stage(goal, args, count)["completion"]
         record["stages"] = [pattern_stage(stage, args, count) for stage in stages]
         record["uses_count"] = "{count}" in json.dumps(record["stages"], ensure_ascii=False)

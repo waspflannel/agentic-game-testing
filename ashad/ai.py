@@ -610,8 +610,9 @@ class OpenAI:
         candidates = {}
         for key, record in patterns:
             if "args" in record:
-                candidates.setdefault(skills.goal_form(record["objective"]), (key, record))  # The most-won pattern of a goal wins.
-        pick = {"offered": [key for key, _ in candidates.values()], "key": None, "match": "none", "similarity": None,
+                for won in record.get("objectives") or [record["objective"]]:  # One candidate per goal it won, same key.
+                    candidates.setdefault(skills.goal_form(won), (key, record))  # The most-won pattern of a goal wins.
+        pick = {"offered": list(dict.fromkeys(key for key, _ in candidates.values())), "key": None, "match": "none", "similarity": None,
                 "confidence": None, "args": {}, "reason": None}
         if not candidates:
             return {**pick, "reason": "no_patterns"}

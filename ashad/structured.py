@@ -671,13 +671,13 @@ class StructuredPlayers:
             LOG.exception("Could not record skill regression for %s/%s", run_id, player_id)
 
     async def report_false_completion(self, run_id, player_id, plan, note):
-        """Record a completion claim the operator rejected and count a failure for the plan patterns behind it: the one it
-        was saved as and the cached one it started from; never raises."""
+        """Record a completion claim the operator rejected and count a failure for the plan patterns behind it: the one the
+        root was saved as and every cached one the plan used (chunks saved during the run passed their own checks); never raises."""
         try:
             run, ps = self.binding(run_id, player_id)
             claim = subgoals.completion_claim(plan)
             root = next(g for g in plan["goals"] if g["id"] == plan["root_id"])
-            for key in {claim.pop("plan_saved", None), root.pop("plan_pattern", None)} - {None}:
+            for key in ({claim.pop("plan_saved", None)} | {g.pop("plan_pattern", None) for g in plan["goals"]}) - {None}:
                 skills.save_plan(self.store, run.get("project_id"), root, [], False, build_id=run["build"].get("id"), run_id=run_id, key=key)
             goals = {g["id"]: g for g in plan["goals"]}
             basis = {"primary_goal": repair_tasks.target_label(plan["primary_goal"])}
@@ -1027,11 +1027,11 @@ class StructuredPlayers:
         for spent in ("missed", "failed", "failed_once", "step", "skill", "skill_key"):
             goal.pop(spent, None)
         plan = run["subgoal_plan"]
-        root = next(g for g in plan["goals"] if g["id"] == plan["root_id"])
-        if root.get("plan_pattern"):
-            # The first re-plan under a cached plan counts once against its pattern.
-            skills.save_plan(self.store, run.get("project_id"), root, [], False, build_id=run["build"].get("id"), run_id=run_id,
-                             key=root.pop("plan_pattern"))
+        cached = next((g for g in reversed(subgoals.goal_path(plan)) if g.get("plan_pattern")), None)
+        if cached:
+            # The first re-plan under a cached plan counts once against the nearest pattern above the leaf: a chunk, else the root's.
+            skills.save_plan(self.store, run.get("project_id"), cached, [], False, build_id=run["build"].get("id"), run_id=run_id,
+                             key=cached.pop("plan_pattern"))
         self.store.put("runs", run)
         self.request_replan(run_id, player_id, generation, reason, trigger)
         self.status(run_id, player_id, "planning", "Re-planning the current goal: " + reason, generation)

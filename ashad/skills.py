@@ -222,9 +222,19 @@ def pattern_stage(stage, args, count):
             text = text.replace(value, "{" + arg + "}")
         return text if count is None else re.sub(rf"\b{count}\b", "{count}", text)
 
+    def arg_placeholder(arg):
+        value, first = arg["value"], args.get(arg["name"])
+        if not isinstance(value, str) or not first:
+            return value
+        if value == first:
+            return "{" + arg["name"] + "}"
+        if value.startswith(first + "_") or value.endswith("_" + first):
+            return value.replace(first, "{" + arg["name"] + "}", 1)
+        return value
+
     check = stage["completion"]
     completion = {**check, "description": placeholder(check["description"]),
-                  "args": [{**a, "value": "{" + a["name"] + "}"} if isinstance(a["value"], str) and a["value"] else a for a in check["args"]]}
+                  "args": [{**a, "value": arg_placeholder(a)} for a in check["args"]]}
     value, planned = check["value"], stage.get("planned_value")
     if count is not None and type(value) is int:
         if value == count:
@@ -235,20 +245,32 @@ def pattern_stage(stage, args, count):
             "steps": bind(stage.get("steps") or [], check), "actionable": stage["actionable"]}
 
 
+def plan_args(goal, stages):
+    """The plan's one value per check arg, as (args, None), or (None, {arg, values}) when two differ beyond bind's value_ / _value rule."""
+    args = {}
+    for stage in [goal] + stages:
+        for arg in stage["completion"]["args"]:
+            name, value = arg["name"], arg["value"]
+            if not isinstance(value, str) or not value:
+                continue
+            first = args.setdefault(name, value)
+            if value != first and not value.startswith(first + "_") and not value.endswith("_" + first):
+                return None, {"arg": name, "values": [first, value]}
+    return args, None
+
+
 def save_plan(store, project_id, goal, stages, won, build_id=None, run_id=None, key=None):
     """Count a win (replacing the goal check and stages) or a failure for the plan pattern at key, by default the plan's key.
     goal is the root, whose check passed for a win.
 
     Returns the record, or None when there is nothing to count: a failure of a deleted pattern, or a win whose checks
-    name two values for one arg (a pattern binds one value per arg). That None is the only skip; the caller logs nothing."""
+    name two values for one arg (plan_args; a pattern binds one value per arg). The caller logs the skip."""
     key = key or plan_key(project_id, goal, stages)
     record = store.get("skills", key)
     if won:
-        args = {}
-        for stage in [goal] + stages:
-            for arg in stage["completion"]["args"]:
-                if isinstance(arg["value"], str) and arg["value"] and args.setdefault(arg["name"], arg["value"]) != arg["value"]:
-                    return None
+        args, conflict = plan_args(goal, stages)
+        if conflict:
+            return None
         count = count_of(goal["objective"])
         record = record or {"scope": "plan", "project_id": project_id, "wins": 0, "fails": 0}
         record["objective"] = goal["objective"]  # The goal it won, as written: matched by goal_form, and Jev compares goal texts.
@@ -264,11 +286,12 @@ def save_plan(store, project_id, goal, stages, won, build_id=None, run_id=None, 
     return store.put("skills", record, key)
 
 
-def instantiate(record, args, count, values):
-    """The pattern as a root expand decision for this goal: placeholders filled from args and count, +{count} read on values.
+def instantiate(record, args, count, values, goal_id="root"):
+    """The pattern as an expand decision for goal_id: placeholders filled from args and count, +{count} read on values.
     A stage whose check is already met here (e.g. the seeds are already held) is left out.
 
-    Shaped like PlanningDecision; apply_decision validates it. A +{count} check whose fact is not readable raises ValueError."""
+    Shaped like PlanningDecision; apply_decision validates it. A +{count} check whose fact is not readable, or every stage
+    already met, raises ValueError."""
     def fill(text):
         for arg, value in args.items():
             text = text.replace("{" + arg + "}", value)
@@ -297,7 +320,9 @@ def instantiate(record, args, count, values):
             continue
         proposed.append({"key": f"s{index}", "parent_key": "", "objective": fill(stage["objective"]), "completion": completion,
                          "actionable": stage["actionable"], "steps": bind(stage["steps"], completion, replay=True)})
-    return {"goal_id": "root", "mode": "expand", "completion": check(record["goal"], "The goal"), "reason": "Cached plan " + record["name"],
+    if not proposed:
+        raise ValueError("Every stage of the saved plan is already met here")
+    return {"goal_id": goal_id, "mode": "expand", "completion": check(record["goal"], "The goal"), "reason": "Cached plan " + record["name"],
             "subgoals": proposed, "steps": []}
 
 

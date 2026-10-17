@@ -759,6 +759,11 @@ class StructuredPlayers:
             self.store.event(run_id, "subgoals_verified", {"player_id": player_id, "goal_ids": completed,
                              "evidence": subgoals.observation_ref(observation), "full_observation": observation})
             self._save_leaf_skills(run_id, player_id, run, plan, completed)
+            # A finished sub-goal with stages under it is saved as a chunk: a plan pattern any goal like it can reuse.
+            for goal in plan["goals"]:
+                if (goal["id"] in completed and goal["id"] != plan["root_id"]
+                        and any(g.get("parent_id") == goal["id"] and not g.get("retired") for g in plan["goals"])):
+                    self._save_plan(run, plan, goal)
         if completed or previous_active != plan.get("active_goal_id"):
             self._forget_turn((run_id, player_id))
         if plan["status"] == "blocked":
@@ -778,7 +783,7 @@ class StructuredPlayers:
             claim = subgoals.completion_claim(plan)
             if claim["checked"]:
                 # Only a plan that reached its goal's check is saved for reuse; the operator's "not done" counts against it.
-                claim["plan_saved"] = self._save_plan(run, plan)
+                claim["plan_saved"] = self._save_plan(run, plan, next(g for g in plan["goals"] if g["id"] == plan["root_id"]))
             self.store.put("runs", run)
             self.store.event(run_id, "subgoal_plan_updated", {"player_id": player_id, "plan": plan, "warnings": [], "source": "goal_reached"})
             self.store.event(run_id, "goal_reached", {"player_id": player_id, "revision": plan["revision"], "claim": claim})
@@ -949,14 +954,18 @@ class StructuredPlayers:
                 saved = skills.save(self.store, project_id, goal["completion"], steps, True, build_id=run["build"].get("id"), run_id=run_id)
                 self.store.event(run_id, "skill_saved", {"player_id": player_id, "goal_id": goal["id"], "skill": saved["name"], "steps": saved["steps"]})
 
-    def _save_plan(self, run, plan):
-        """Save the plan whose goal check passed as the project's plan pattern for goals like this one: its stages are the
-        tree's completed leaves in depth-first order (without the built-in enter stage), so a plan the planner re-planned or
-        expanded on the way saves as the flat path that won. Returns the saved key, else None."""
+    def _save_plan(self, run, plan, goal):
+        """Save the plan of a goal whose check passed, the root on a checked claim or a finished sub-goal (a chunk), as the
+        project's plan pattern for goals like this one: its stages are the goal's completed leaves in depth-first order
+        (without the built-in enter stage), so a plan the planner re-planned or expanded on the way saves as the flat path
+        that won. A refused save logs plan_save_skipped. Returns the saved key, else None."""
         project_id = run.get("project_id")
         if not project_id:
             return None
-        root = next(g for g in plan["goals"] if g["id"] == plan["root_id"])
+        skipped = {"player_id": plan["player_id"], "goal_id": goal["id"], "key": None}
+        if goal["completion"]["fact"] == "unknown":
+            self.store.event(run["id"], "plan_save_skipped", {**skipped, "reason": "unknown_check"})
+            return None
 
         def won_leaves(parent_id):
             leaves = []
@@ -967,14 +976,18 @@ class StructuredPlayers:
                 leaves += won_leaves(goal["id"]) if has_children else [goal]
             return leaves
 
-        stages = won_leaves(root["id"])
+        stages = won_leaves(goal["id"])
         if not stages:
             return None
-        key = skills.plan_key(project_id, root, stages)
-        saved = skills.save_plan(self.store, project_id, root, stages, True, build_id=run["build"].get("id"), run_id=run["id"], key=key)
+        key = skills.plan_key(project_id, goal, stages)
+        _, conflict = skills.plan_args(goal, stages)
+        if conflict:
+            self.store.event(run["id"], "plan_save_skipped", {**skipped, "key": key, "reason": "two_values", **conflict})
+            return None
+        saved = skills.save_plan(self.store, project_id, goal, stages, True, build_id=run["build"].get("id"), run_id=run["id"], key=key)
         if not saved:
             return None
-        self.store.event(run["id"], "plan_saved", {"player_id": plan["player_id"], "key": key, "name": saved["name"]})
+        self.store.event(run["id"], "plan_saved", {"player_id": plan["player_id"], "goal_id": goal["id"], "key": key, "name": saved["name"]})
         return key
 
     def _active(self, run_id, player_id):

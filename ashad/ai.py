@@ -602,7 +602,7 @@ class OpenAI:
         return result and {**result, "menu": log}
 
     async def plan_pick(self, objective, patterns, run_id):
-        """Which saved plan pattern [(key, record)] achieves objective: the plan_pick event (offered keys, picked key, match, similarity, confidence, args, reason).
+        """Which saved plan pattern [(key, record)] achieves the goal's objective (the root's, or a sub-goal's): the plan_pick event (offered keys, picked key, match, similarity, confidence, args, reason).
 
         An exact goal match (skills.goal_form) is a code fact and skips Jev.
         Otherwise one Jev request sees goal texts only, one Noul per saved goal; Noul's p is the answer (there is no 1/n normalization like a Choice's confidence).

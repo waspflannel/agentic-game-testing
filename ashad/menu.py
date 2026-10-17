@@ -151,11 +151,6 @@ def capability_summary(observation):
 
 def prompt_observation(observation, max_chars=28000):
     result = copy.deepcopy(observation)
-    # The models see ASHAD's playable world_ready and player_can_act, not the bridge's raw loaded-world flags (false during character creation).
-    bridge = result.get("state", {}).get("facts")
-    if isinstance(bridge, dict):
-        derived = facts.values(observation)
-        bridge.update({k: derived[k] for k in ("world_ready", "player_can_act") if k in derived})
     entities = result.pop("entities", [])
     result.pop("known_locations", None)
     result["entities"] = []

@@ -413,6 +413,10 @@ def apply_decision(plan, raw, context, warnings=None):
     if len(result["goals"]) + len(decision["subgoals"]) > MAX_GOALS:
         block(result, "Goal hierarchy reached its bounded size; review the objective before continuing.")
         return result
+    if (focus["id"] == result["root_id"] and decision["completion"]["fact"] != "unknown"
+            and any(proposed["completion"]["fact"] == "unknown" for proposed in decision["subgoals"])):
+        raise ValueError("The root's check must prove the whole objective: a stage no catalog fact proves means the root's check is unknown, "
+                         "or block that stage.")
     generated = {}
     for index, proposed in enumerate(decision["subgoals"]):
         parent = generated[proposed["parent_key"]] if proposed["parent_key"] else focus

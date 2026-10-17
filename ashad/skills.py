@@ -261,7 +261,7 @@ def plan_args(goal, stages):
 
 def save_plan(store, project_id, goal, stages, won, build_id=None, run_id=None, key=None):
     """Count a win (replacing the goal check and stages) or a failure for the plan pattern at key, by default the plan's key.
-    goal is the root, whose check passed for a win.
+    goal is the root or a finished sub-goal (a chunk), whose check passed for a win.
 
     Returns the record, or None when there is nothing to count: a failure of a deleted pattern, or a win whose checks
     name two values for one arg (plan_args; a pattern binds one value per arg). The caller logs the skip."""

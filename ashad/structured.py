@@ -1109,7 +1109,7 @@ class StructuredPlayers:
 
         An untargeted step finishes on one use (or its select, or its ordinary input). A targeted step repeats until no
         target is left or, with a count, until its verifying fact moved by count (count uses when it verifies nothing).
-        cursor["tried"] holds the current step's no_effect targets; _run_batch adds to it."""
+        cursor["tried"] holds the current step's no_effect targets, cleared when a step starts; _run_batch adds to it."""
         state, uses, before = None, 0, None
 
         def verifying(step):
@@ -1120,7 +1120,6 @@ class StructuredPlayers:
         def finish():
             nonlocal state
             cursor["index"] += 1
-            cursor["tried"].clear()
             state = None
 
         def next_action(fresh):
@@ -1128,6 +1127,7 @@ class StructuredPlayers:
             while cursor["index"] < len(steps):
                 step = steps[cursor["index"]]
                 if state is None:
+                    cursor["tried"].clear()
                     state = {"select": "", "tried": cursor["tried"], "skipped": False, "held": self.held.get(key, "")}
                     uses, before = 0, subgoals.measure(verifying(step), fresh)[1]
                 if step.get("targets") and step["count"]:
@@ -1148,6 +1148,8 @@ class StructuredPlayers:
                     return None, "not_offered"
                 if step.get("targets"):
                     uses += why == "use"
+                    if step["verifies"] == "unknown" and step["count"] and uses >= step["count"]:
+                        finish()
                 elif why == "use" or step["control"] == "select":
                     finish()
                 return action, why

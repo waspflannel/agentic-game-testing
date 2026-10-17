@@ -1051,7 +1051,7 @@ class StructuredPlayers:
 
         `start` is the observation the batch was chosen on. `last` is the result of the batch action already run (its
         post-action observation is `fresh`), or None when the batch starts here on `fresh`. With a `tried` set (repeat steps),
-        one no_effect that is not a move is tolerated: the used target and every offered target of the same kind join `tried`; a
+        one no_effect that is not a move is tolerated: the used target joins `tried` and the next pick skips it; a
         second no_effect in a row stops. Returns the stop reason and the actions dispatched here."""
         key = (run_id, player_id)
         run = self.store.require("runs", run_id)
@@ -1081,7 +1081,6 @@ class StructuredPlayers:
                     target = repeat.action_key(ran[-1])
                     if target is not None:
                         tried.add(target)
-                    tried.update(repeat.same_kind(ran[-1], {**context, "observation": fresh}))
                     missed = True
             if goal and subgoals.measure(goal["completion"], fresh)[0]:
                 return "goal_met", ran
@@ -1109,7 +1108,7 @@ class StructuredPlayers:
 
         An untargeted step finishes on one use (or its select, or its ordinary input). A targeted step repeats until no
         target is left or, with a count, until its verifying fact moved by count (count uses when it verifies nothing).
-        cursor["tried"] holds the current step's no_effect targets, cleared when a step starts; _run_batch adds to it."""
+        cursor["tried"] holds the current step's no_effect targets; _run_batch adds to it."""
         state, uses, before = None, 0, None
 
         def verifying(step):
@@ -1120,6 +1119,7 @@ class StructuredPlayers:
         def finish():
             nonlocal state
             cursor["index"] += 1
+            cursor["tried"].clear()
             state = None
 
         def next_action(fresh):
@@ -1127,7 +1127,6 @@ class StructuredPlayers:
             while cursor["index"] < len(steps):
                 step = steps[cursor["index"]]
                 if state is None:
-                    cursor["tried"].clear()
                     state = {"select": "", "tried": cursor["tried"], "skipped": False, "held": self.held.get(key, "")}
                     uses, before = 0, subgoals.measure(verifying(step), fresh)[1]
                 if step.get("targets") and step["count"]:
@@ -1148,8 +1147,6 @@ class StructuredPlayers:
                     return None, "not_offered"
                 if step.get("targets"):
                     uses += why == "use"
-                    if step["verifies"] == "unknown" and step["count"] and uses >= step["count"]:
-                        finish()
                 elif why == "use" or step["control"] == "select":
                     finish()
                 return action, why
@@ -1167,7 +1164,7 @@ class StructuredPlayers:
 
     async def _replay(self, run_id, player_id, generation, current, context, observation, goal, timing):
         """Replay cached steps in code, with no model call: the leaf's steps from goal["step"] (a saved skill for its shape
-        when the planner gave none), then the saved skills for its shape, then the decision cache for this situation. A source in goal["missed"], or one that
+        when the planner gave none), then the decision cache for this situation. A source in goal["missed"], or one that
         cannot start here or whose first action is not offered, is skipped. A source that misses is tallied failed and
         joins goal["missed"].
 
@@ -1182,10 +1179,9 @@ class StructuredPlayers:
             """(kind, key, name, steps, start) in order."""
             if leaf and goal.get("steps"):
                 yield ("skill" if goal.get("skill_key") else "steps"), goal.get("skill_key") or "steps", goal.get("skill") or goal["objective"], goal["steps"], goal.get("step", 0)
-            if leaf:
+            elif leaf:
                 for skill_key, skill_name, steps in self._saved_skills(project_id, goal, observation):
-                    if skill_key != goal.get("skill_key"):
-                        yield "skill", skill_key, skill_name, steps, 0
+                    yield "skill", skill_key, skill_name, steps, 0
             record = skills.find_decision(self.store, project_id, sig) if project_id else None
             if record:
                 yield "decision", skills.decision_key(project_id, sig), record["name"], skills.bind(record["steps"], goal["completion"], replay=True), 0
@@ -1211,11 +1207,10 @@ class StructuredPlayers:
                                             "control": steps[min(start, len(steps) - 1)]["control"], "reason": stop, "actions": len(ran)})
         live, active = self._active(run_id, player_id)
         if active and active["id"] == goal["id"]:
-            # A saved skill tried after the planner's steps were skipped runs from its start each turn; the leaf keeps the planner's steps.
-            if kind != "decision" and (not active.get("steps") or source == (active.get("skill_key") or "steps")):
+            if kind != "decision":
                 active.update(steps=steps, step=cursor["index"])
-                if kind == "skill":
-                    active.update(skill=name, skill_key=source)
+            if kind == "skill":
+                active.update(skill=name, skill_key=source)
             if stop in REPLAY_MISSES:
                 active["missed"] = (active.get("missed") or []) + [source]
             self.store.put("runs", live)
@@ -1278,12 +1273,12 @@ class StructuredPlayers:
         return res, None
 
     async def _decide(self, run_id, player_id, generation, current, run, context, observation, goal, routing, timing):
-        """Route one turn: the cache and Jev while attempts < BUDGET // 2, else Sonnet; `missed` keeps a missing source from repeating.
+        """Route one turn: the cache while the leaf has no attempts, then Jev while attempts < BUDGET // 2, else Sonnet.
         A Jev fallback (low confidence, error, or no TypeSafe key) or an operator instruction sends the turn to Sonnet.
 
         Fills routing (route, model, latency_ms, Jev's fields and the batch to learn). Returns (result, first action, stop, actions run after it)."""
         key = (run_id, player_id)
-        if goal and goal.get("attempts", 0) < subgoals.BUDGET // 2:
+        if goal and not goal.get("attempts"):
             with timed(timing, "act"):
                 stop, ran, _ = await self._replay(run_id, player_id, generation, current, context, observation, goal, timing)
             if ran:

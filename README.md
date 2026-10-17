@@ -110,7 +110,7 @@ A turn that dispatches or waits without progress toward any goal on the active p
 
 A leaf that spends six attempts is broken: the first break re-plans it once, a second break gives it up with one gap. A failed action is left out of that leaf's menus.
 
-Each turn tries the cache, then Jev, while the leaf has fewer than three attempts, then Sonnet. A cache source that misses is not tried again on that leaf. Without a usable TypeSafe key every Jev step falls back to Sonnet (`jev_error:unavailable`). A Jev or Sonnet batch is saved as a decision skill only when its turn made progress, and a stage skill keeps the planner's steps only when their replay did not miss.
+Each turn tries the cache while the leaf has no attempts, then Jev (below three attempts), then Sonnet. Without a usable TypeSafe key every Jev step falls back to Sonnet (`jev_error:unavailable`). A Jev or Sonnet batch is saved as a decision skill only when its turn made progress, and a stage skill keeps the planner's steps only when their replay did not miss.
 
 Jev asks one action Choice over plain actions and the one 10 s wait; each Jev action turn logs `menu_size` and the top three options in `decision_routed`, and the speed report shows mean and max menu size and the top three options for each low-confidence fallback.
 

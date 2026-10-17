@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -17,6 +18,8 @@ from .prompts import batch_request, controls_request, planning_request, selectio
 
 MINIMUM_VERSION = (2, 1, 280)
 PROBE_FAILED = object()  # _cli_version could not run the CLI at all, as opposed to an old or unparseable version.
+# The controller has no console, so a console tool it starts would open its own window and take keyboard focus.
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 TOKEN_REFERENCE = "claude:oauth-token"
 REQUEST_TIMEOUT_SECONDS = 120
 CONTROLS_TIMEOUT_SECONDS = 300
@@ -72,7 +75,7 @@ class ClaudeBackend:
         proc = None
         try:
             proc = await asyncio.create_subprocess_exec(*prefix, "--version", cwd=self.home, env=self._environment(None),
-                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, creationflags=NO_WINDOW)
             async with asyncio.timeout(5):
                 out, _ = await proc.communicate()
             match = re.search(r"(\d+)\.(\d+)\.(\d+) \(Claude Code\)", out.decode("utf-8", "replace"))
@@ -190,7 +193,7 @@ class ClaudeBackend:
         try:
             proc = await asyncio.create_subprocess_exec(*argv, cwd=self.home,
                 env=self._environment(await asyncio.to_thread(self.credentials.get, TOKEN_REFERENCE)),
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, creationflags=NO_WINDOW)
         except OSError:
             raise ClaudeError("provider_failure", "Claude Code could not complete the request; no action was executed.") from None
         output = bytearray()

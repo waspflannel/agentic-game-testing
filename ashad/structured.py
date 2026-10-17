@@ -1167,7 +1167,7 @@ class StructuredPlayers:
 
     async def _replay(self, run_id, player_id, generation, current, context, observation, goal, timing):
         """Replay cached steps in code, with no model call: the leaf's steps from goal["step"] (a saved skill for its shape
-        when the planner gave none), then the saved skills for its shape, then the decision cache for this situation. A source in goal["missed"], or one that
+        when the planner gave none), then the decision cache for this situation. A source in goal["missed"], or one that
         cannot start here or whose first action is not offered, is skipped. A source that misses is tallied failed and
         joins goal["missed"].
 
@@ -1182,10 +1182,9 @@ class StructuredPlayers:
             """(kind, key, name, steps, start) in order."""
             if leaf and goal.get("steps"):
                 yield ("skill" if goal.get("skill_key") else "steps"), goal.get("skill_key") or "steps", goal.get("skill") or goal["objective"], goal["steps"], goal.get("step", 0)
-            if leaf:
+            elif leaf:
                 for skill_key, skill_name, steps in self._saved_skills(project_id, goal, observation):
-                    if skill_key != goal.get("skill_key"):
-                        yield "skill", skill_key, skill_name, steps, 0
+                    yield "skill", skill_key, skill_name, steps, 0
             record = skills.find_decision(self.store, project_id, sig) if project_id else None
             if record:
                 yield "decision", skills.decision_key(project_id, sig), record["name"], skills.bind(record["steps"], goal["completion"], replay=True), 0
@@ -1277,12 +1276,12 @@ class StructuredPlayers:
         return res, None
 
     async def _decide(self, run_id, player_id, generation, current, run, context, observation, goal, routing, timing):
-        """Route one turn: the cache and Jev while attempts < BUDGET // 2, else Sonnet; `missed` keeps a missing source from repeating.
+        """Route one turn: the cache while the leaf has no attempts, then Jev while attempts < BUDGET // 2, else Sonnet.
         A Jev fallback (low confidence, error, or no TypeSafe key) or an operator instruction sends the turn to Sonnet.
 
         Fills routing (route, model, latency_ms, Jev's fields and the batch to learn). Returns (result, first action, stop, actions run after it)."""
         key = (run_id, player_id)
-        if goal and goal.get("attempts", 0) < subgoals.BUDGET // 2:
+        if goal and not goal.get("attempts"):
             with timed(timing, "act"):
                 stop, ran, _ = await self._replay(run_id, player_id, generation, current, context, observation, goal, timing)
             if ran:

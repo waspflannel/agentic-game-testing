@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 
 from .ai import PROMPT_OBSERVATION_CHARS, ProviderError, jev_triage, planning_evidence, static_prefix
 from .game_controls import run_configuration
-from .menu import GAME_VERBS, capability_summary, option_key, prompt_observation, resolve
+from .menu import GAME_VERBS, capability_summary, option_key, prompt_observation, resolve, selected_slot
 from .models import JEV_MODEL, MODEL, PROVIDERS, provider_of
 from .repository import Repository
 from .store import uid
@@ -55,12 +55,6 @@ def timed(timing, step):
 
 def json_bytes(value):
     return len(json.dumps(value, ensure_ascii=False, default=str).encode())
-
-
-def selected_slot(observation):
-    """The hotbar index the game shows as selected; the hotbar entries do not say, only the HotbarUI entities do."""
-    return next((e["state"].get("inventory_index") for e in observation.get("entities", [])
-                 if e.get("parent") == "HotbarUI" and e.get("state", {}).get("selected")), None)
 
 
 def wait_signature(observation):
@@ -149,6 +143,11 @@ def observed_entity(observation, target_id):
 GOAL_CONTEXT_KEYS = ("id", "parent_id", "objective", "completion", "status", "actionable", "measured", "attempts", "steps")
 FAILED_STATUSES = frozenset({"failed", "rejected", "expired", "cancelled"})
 DELIVERED_STATUSES = frozenset({"completed", "no_effect"})
+
+
+def stale_target(result):
+    """A rejection because the target changed before the action ran: no input was delivered, so it is no miss of the action."""
+    return result.get("status") == "rejected" and "Target changed" in str(result.get("reason"))
 
 
 def repeated_failures(events):
@@ -418,7 +417,7 @@ class StructuredPlayers:
     def _count_invalid(self, run_id, player_id, generation, result):
         """The pause counts consecutive failures: a settled non-failed result resets it; in-progress results and stale-target rejections (no input delivered) are skipped."""
         failed = result.get("status") in FAILED_STATUSES
-        if result.get("status", "unknown") in {"running", "accepted", "unknown"} or (failed and result.get("status") == "rejected" and "Target changed" in str(result.get("reason"))):
+        if result.get("status", "unknown") in {"running", "accepted", "unknown"} or stale_target(result):
             return
         latest = self.store.require("runs", run_id)
         ps = latest["players"][player_id]
@@ -754,6 +753,7 @@ class StructuredPlayers:
         with timed(timing, "plan_reconcile"):
             completed = subgoals.reconcile(plan, observation, generation)
             needs_plan = subgoals.needs_planning(plan)
+        trigger = plan.pop("trigger", None)  # Set where planning was requested; read once, so a later call is not mislabelled.
         self.store.put("runs", run)
         if completed:
             self.store.event(run_id, "subgoals_verified", {"player_id": player_id, "goal_ids": completed,
@@ -786,7 +786,7 @@ class StructuredPlayers:
             return None
         if subgoals.broken(plan):
             await self._break(run_id, player_id, generation, observation,
-                              f"Broken: {subgoals.BUDGET} turns on this leaf made no progress; plan another approach.")
+                              f"Broken: {subgoals.BUDGET} turns on this leaf made no progress; plan another approach.", "broken")
             return None
         goal = subgoals.active_goal(plan)
         if (needs_plan and is_leaf(plan, goal) and not goal.get("replanned")
@@ -797,9 +797,7 @@ class StructuredPlayers:
             needs_plan = False
         if not needs_plan:
             return {"observation": observation}
-        reason = plan.get("reason") or ""
-        timing["plan_trigger"] = "new_active_goal" if plan.get("active_goal_id") != previous_active else (
-            re.match(r"\w*", reason).group().casefold() or "other")
+        timing["plan_trigger"] = "new_active_goal" if plan.get("active_goal_id") != previous_active else trigger or "other"
         context = self._planning_context(run, player_id, observation)
         cached = await self._cached_plan(run_id, player_id, generation, run, plan, context, observation)
         if cached:
@@ -985,7 +983,7 @@ class StructuredPlayers:
         plan = run.get("subgoal_plan")
         return run, subgoals.active_goal(plan) if plan and plan["player_id"] == player_id else None
 
-    async def _break(self, run_id, player_id, generation, observation, reason):
+    async def _break(self, run_id, player_id, generation, observation, reason, trigger):
         """The only re-plan trigger: the active leaf is re-planned once, and a second break on it gives up with one gap.
 
         Returns False when there is no current leaf to break."""
@@ -1007,11 +1005,11 @@ class StructuredPlayers:
             skills.save_plan(self.store, run.get("project_id"), root, [], False, build_id=run["build"].get("id"), run_id=run_id,
                              key=root.pop("plan_pattern"))
         self.store.put("runs", run)
-        self.request_replan(run_id, player_id, generation, reason)
+        self.request_replan(run_id, player_id, generation, reason, trigger)
         self.status(run_id, player_id, "planning", "Re-planning the current goal: " + reason, generation)
         return True
 
-    def request_replan(self, run_id, player_id, generation, reason):
+    def request_replan(self, run_id, player_id, generation, reason, trigger):
         run = self.store.require("runs", run_id)
         plan = run.get("subgoal_plan")
         if not plan or plan["player_id"] != player_id or run["players"][player_id]["generation"] != generation:
@@ -1020,7 +1018,7 @@ class StructuredPlayers:
         if not goal:
             return False
         goal["actionable"] = False
-        plan["reason"] = reason
+        plan.update(reason=reason, trigger=trigger)
         self.store.put("runs", run)
         self._forget_turn((run_id, player_id))
         return True
@@ -1070,7 +1068,8 @@ class StructuredPlayers:
             if last is not None:
                 status = last.get("status")
                 if status in FAILED_STATUSES:
-                    return ("cancelled" if status == "cancelled" else "failed"), ran
+                    # A stale target is neither banned from the menus nor a replay miss; the turn still counts an attempt.
+                    return ("cancelled" if status == "cancelled" else "stale" if stale_target(last) else "failed"), ran
                 if fresh is None or key in self.pending:
                     return "pending", ran  # Still running after the settle wait; the next turn reconciles it.
                 if last.get("effect") == "changed":
@@ -1489,7 +1488,8 @@ class StructuredPlayers:
                         "verb": report.get("wanted_verb"), "target_id": report.get("wanted_target_id"),
                         "blocker": report.get("blocker"), "follow_up_error": report.get("follow_up_error")}, observation)
                     if await self._break(run_id, player_id, generation, observation,
-                                         "No supported direct action fits. Decompose missing prerequisites or explain the blocker."):
+                                         "No supported direct action fits. Decompose missing prerequisites or explain the blocker.",
+                                         "needs_instructions"):
                         return timing["outcome"]
                 self.status(run_id, player_id, "error", exc.message, generation, last_error=exc.message, error_at=time.time())
                 category = "decision_needs_instructions" if exc.status == "decision_needs_instructions" else "provider_failure"

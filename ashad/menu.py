@@ -26,6 +26,12 @@ def names(entity):
     return f"{entity.get('label', '')} {(entity.get('state') or {}).get('node_name', '')}"
 
 
+def selected_slot(observation):
+    """The hotbar index the game shows as selected; the hotbar entries do not say, only the HotbarUI entities do."""
+    return next((e["state"].get("inventory_index") for e in observation.get("entities", [])
+                 if e.get("parent") == "HotbarUI" and e.get("state", {}).get("selected")), None)
+
+
 def pause_menu_open(observation):
     """The game's pause menu shows: a clickable Resume control is observed (Agronauts' RESUME GAME)."""
     return any("ui_click" in e.get("actions", []) and RESUME.search(names(e)) for e in observation.get("entities", []))
@@ -64,6 +70,9 @@ def action_groups(context, failed=()):
         detail = entity.get("state") or {}
         if detail.get("node_name"):
             label = f"{detail['node_name']} ({label})"[:240]
+        if entity.get("kind") == "ui" and detail.get("item_id"):
+            # Every inventory slot is a Button; its item comes first so a 200-character Jev option still says which one.
+            label = f"{label} holding {detail['item_id']} x{detail.get('count', '?')}"
         position = entity.get("position")
         if world and "move_to" in advertised and point(position) and point(player_position):
             distance = math.dist(player_position, position)

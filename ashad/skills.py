@@ -161,11 +161,12 @@ def keyed(store, prefix):
 
 
 def signature(check, observation, held):
-    """Where the player is, in terms that repeat across runs: the subgoal's shape, the actionable UI controls by node, the held item and the highlighted target's kind; no positions or ids."""
+    """Where the player is, in terms that repeat across runs: the subgoal's shape, the actionable UI controls by node, the held item and the highlighted target's kind; no positions or ids.
+    Godot's auto names (@Control@123) lose their number."""
     entities = observation.get("entities", [])
     closest = (observation.get("state", {}).get("player") or {}).get("closest_target")
     return {"subgoal": shape(check),
-            "screen": sorted({f"{e.get('parent', '')}/{(e.get('state') or {}).get('node_name') or str(e.get('label', ''))[:40]}"
+            "screen": sorted({re.sub(r"@(\w+)@\d+", r"@\1@", f"{e.get('parent', '')}/{(e.get('state') or {}).get('node_name') or str(e.get('label', ''))[:40]}")
                               for e in entities if e.get("kind") == "ui" and e.get("actions")}),
             "held": held or "",
             "target_kind": next((str(e.get("kind", "")) for e in entities if closest and e.get("id") == closest), "")}

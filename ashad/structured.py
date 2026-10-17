@@ -793,6 +793,13 @@ class StructuredPlayers:
             await self._break(run_id, player_id, generation, observation,
                               f"Broken: {subgoals.BUDGET} turns on this leaf made no progress; plan another approach.", "broken")
             return None
+        if needs_plan:
+            # A saved plan pattern (a chunk, for a sub-goal) is tried before a leaf skill, so an unexpanded sub-goal can reuse its stages.
+            timing["plan_trigger"] = "new_active_goal" if plan.get("active_goal_id") != previous_active else trigger or "other"
+            context = self._planning_context(run, player_id, observation)
+            cached = await self._cached_plan(run_id, player_id, generation, run, plan, context, observation)
+            if cached or not current():
+                return cached  # The pick may have waited on Jev; a run control change meanwhile ends the turn before run is written.
         goal = subgoals.active_goal(plan)
         if (needs_plan and is_leaf(plan, goal) and not goal.get("replanned")
                 and any(k not in (goal.get("missed") or []) for k, _, _ in self._saved_skills(run.get("project_id"), goal, observation))):
@@ -802,11 +809,6 @@ class StructuredPlayers:
             needs_plan = False
         if not needs_plan:
             return {"observation": observation}
-        timing["plan_trigger"] = "new_active_goal" if plan.get("active_goal_id") != previous_active else trigger or "other"
-        context = self._planning_context(run, player_id, observation)
-        cached = await self._cached_plan(run_id, player_id, generation, run, plan, context, observation)
-        if cached:
-            return cached
         revision = plan["revision"]
         self.status(run_id, player_id, "planning", "Finding the next achievable prerequisite for: " + context["current_goal"]["objective"], generation)
         warnings = []
@@ -816,7 +818,8 @@ class StructuredPlayers:
                          "prefix_sha": hashlib.sha256(static_prefix(context).encode()).hexdigest()[:12]})
         for attempt in range(2):
             warnings = []
-            self.store.event(run_id, "plan_routed", {"player_id": player_id, "route": "opus", "trigger": timing["plan_trigger"]})
+            self.store.event(run_id, "plan_routed", {"player_id": player_id, "route": "opus", "trigger": timing["plan_trigger"],
+                                                     "goal_id": context["current_goal"]["id"]})
             with timed(timing, "plan_model"):
                 proposal = await self._plan_subgoals(run_id, player_id, context, observation)
             if not current():
@@ -874,40 +877,52 @@ class StructuredPlayers:
         return context
 
     async def _cached_plan(self, run_id, player_id, generation, run, plan, context, observation):
-        """Jev hybrid: expand an unplanned root from a saved plan pattern whose goal matches (exact in code, else Jev) with its saved args and the goal's count, instead of calling Opus.
+        """Jev hybrid: expand an unplanned goal with no children (root or sub-goal) from a saved plan pattern whose goal matches
+        (exact in code, else Jev) with its saved args and the goal's count, instead of calling Opus. A sub-goal is offered only
+        patterns whose goal check has its check's shape, and keeps its own check.
 
         Returns the turn's observation when the pattern was applied, else None (the planner takes the goal)."""
         project_id = run.get("project_id")
-        root = next(g for g in plan["goals"] if g["id"] == plan["root_id"])
-        if (not project_id or plan["active_goal_id"] != root["id"]
-                or subgoals.stages(plan) or plan.get("completion_rejected")):
+        goal = subgoals.active_goal(plan)
+        if not project_id or not goal:
+            return None
+        is_root = goal["id"] == plan["root_id"]
+        if is_root and (subgoals.stages(plan) or plan.get("completion_rejected")):
+            return None
+        # A broken (re-planned) sub-goal goes to the planner; one with an unknown check has no shape to match.
+        if not is_root and (any(g.get("parent_id") == goal["id"] and not g.get("retired") for g in plan["goals"])
+                            or goal.get("replanned") or goal["completion"]["fact"] == "unknown"):
             return None
         patterns = skills.plan_patterns(self.store, project_id)
-        pick = await self.coordinator.ai.plan_pick(root["objective"], patterns, run_id)
+        if not is_root:
+            patterns = [(key, record) for key, record in patterns if skills.shape(record["goal"]) == skills.shape(goal["completion"])]
+        pick = await self.coordinator.ai.plan_pick(goal["objective"], patterns, run_id)
         live, _ = self.binding(run_id, player_id)
         if not pick["reason"] and (live.get("subgoal_plan") or {}).get("revision") != plan["revision"]:
             pick["reason"] = "stale"  # The plan moved during the request.
-        self.store.event(run_id, "plan_pick", {"player_id": player_id, **pick})
+        self.store.event(run_id, "plan_pick", {"player_id": player_id, "goal_id": goal["id"], **pick})
         if pick["reason"]:
             return None  # The planner decides.
         key, args = pick["key"], pick["args"]
         record = dict(patterns)[key]
-        count = skills.count_of(root["objective"])
+        count = skills.count_of(goal["objective"])
         warnings = []
         try:
             if record["uses_count"] and count is None:
                 raise ValueError("The goal names no single count")
-            proposal = skills.instantiate(record, args, count, context["fact_catalog"]["values"])
+            proposal = skills.instantiate(record, args, count, context["fact_catalog"]["values"], goal_id=goal["id"])
+            if not is_root:
+                proposal["completion"] = goal["completion"]
             revised = subgoals.apply_decision(live["subgoal_plan"], proposal, context, warnings)
         except ValueError as exc:
-            self.store.event(run_id, "plan_pattern_rejected", {"player_id": player_id, "key": key, "reason": subgoals.rejection_message(exc)})
+            self.store.event(run_id, "plan_pattern_rejected", {"player_id": player_id, "goal_id": goal["id"], "key": key, "reason": subgoals.rejection_message(exc)})
             return None
-        next(g for g in revised["goals"] if g["id"] == revised["root_id"])["plan_pattern"] = key
+        next(g for g in revised["goals"] if g["id"] == goal["id"])["plan_pattern"] = key
         verified = subgoals.reconcile(revised, observation, generation)
         live["subgoal_plan"] = revised
         self.store.put("runs", live)
         self.store.event(run_id, "subgoal_plan_updated", {"player_id": player_id, "plan": revised, "warnings": warnings, "source": "plan_pattern"})
-        self.store.event(run_id, "plan_routed", {"player_id": player_id, "route": "plan_cache", "key": key, "name": record["name"]})
+        self.store.event(run_id, "plan_routed", {"player_id": player_id, "route": "plan_cache", "goal_id": goal["id"], "key": key, "name": record["name"]})
         if verified:
             self.store.event(run_id, "subgoals_verified", {"player_id": player_id, "goal_ids": verified,
                              "evidence": subgoals.observation_ref(observation), "full_observation": observation})

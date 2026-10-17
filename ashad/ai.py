@@ -602,7 +602,7 @@ class OpenAI:
         return result and {**result, "menu": log}
 
     async def plan_pick(self, objective, patterns, run_id):
-        """Which saved plan pattern [(key, record)] achieves the goal's objective (the root's, or a sub-goal's): the plan_pick event (offered keys, picked key, match, similarity, confidence, args, reason).
+        """Which saved plan pattern [(key, record)] achieves the goal's objective (the root's, or a sub-goal's): the plan_pick event (offered keys, picked key, match, similarity, verdict_confidence, args, reason).
 
         An exact goal match (skills.goal_form) is a code fact and skips Jev.
         Otherwise one Jev request sees goal texts only, one Noul per saved goal; Noul's p is the answer (there is no 1/n normalization like a Choice's confidence).
@@ -613,7 +613,7 @@ class OpenAI:
                 for won in record.get("objectives") or [record["objective"]]:  # One candidate per goal it won, same key.
                     candidates.setdefault(skills.goal_form(won), (key, record))  # The most-won pattern of a goal wins.
         pick = {"offered": list(dict.fromkeys(key for key, _ in candidates.values())), "key": None, "match": "none", "similarity": None,
-                "confidence": None, "args": {}, "reason": None}
+                "verdict_confidence": None, "args": {}, "reason": None}
         if not candidates:
             return {**pick, "reason": "no_patterns"}
         form = skills.goal_form(objective)
@@ -634,7 +634,7 @@ class OpenAI:
             return {**pick, "reason": "jev_error"}
         ranked = sorted(((answers[f"g{i}"]["noul"], saved) for i, saved in enumerate(forms)), reverse=True)
         best, saved = ranked[0]
-        pick.update(similarity=round(best, 3), confidence=round(abs(2 * best - 1), 3))
+        pick.update(similarity=round(best, 3), verdict_confidence=round(abs(2 * best - 1), 3))
         if best < SAME_GOAL:
             return {**pick, "reason": "low_similarity"}
         if len(ranked) > 1 and ranked[1][0] == best:

@@ -89,3 +89,4 @@ Goal reached popup (goalReachedHTML): the planner's claim as a result slip on th
 - 2026-10-15: Settings › Limits gains native Decision engine (Today default | Jev hybrid) and Jev model (jev-1.13.0 default | jev-preview) selects, with the TypeSafe key status in words (feat/ashad-jev-hybrid-part-1).
 - 2026-10-15: Settings › Limits gains a TypeSafe Jev key card (write-only password input, Save key / Clear key, saved and TYPESAFE_API_KEY status in words) (jev-key).
 - 2026-10-15: Skills page lists cached plan patterns as kind Plan; Actions tab keeps the whole loaded log and search matches row text (perf/ashad-plan-once-staged-tree).
+- 2026-10-17: a build whose readiness request failed reads "Not checked: reason" instead of "Not validated", and its configuration is not told to get controls again (fix/ashad-action-result-signals).

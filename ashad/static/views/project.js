@@ -51,7 +51,7 @@ export function configurationPinWarning(agent, builds, validation) {
     return `Pinned build ${pinned} is no longer registered. Get controls again on a current build to continue.`;
   }
   const check = validation.get(pinned);
-  if (check?.ready === false) {
+  if (check?.ready === false && !check.unchecked) {
     return `Pinned build ${pinned} is no longer valid. Get controls again on a current build to continue.`;
   }
   return '';
@@ -84,7 +84,7 @@ export function overviewRegions(m, ov, now = Date.now() / 1000) {
 
   const validation = b => {
     const v = ov.validation.get(b.id);
-    return !v ? 'Not checked yet' : v.ready ? 'Validated' : `Not validated: ${v.reason || 'reason not reported'}`;
+    return !v ? 'Not checked yet' : v.ready ? 'Validated' : `${v.unchecked ? 'Not checked' : 'Not validated'}: ${v.reason || 'reason not reported'}`;
   };
   const builds = (m.builds.length ? `<ul class="list">${m.builds.map(b => `<li class="list-row"><div class="list-main"><span class="list-title">${esc(b.name || b.id)}</span>`
     + `<span class="mono check-detail" title="${esc(b.manifest_sha256 || '')}">${esc(String(b.source_revision || b.manifest_sha256 || b.id).slice(0, 48))}</span>`

@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import sys
 import tempfile
 import time
@@ -16,6 +17,8 @@ from .prompts import batch_request, planning_request, selection_request
 
 MINIMUM_VERSION = (1, 0, 52)
 PROBE_FAILED = object()  # _cli_version could not run the CLI at all, as opposed to an old or unparseable version.
+# The controller has no console, so a console tool it starts would open its own window and take keyboard focus.
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 REQUEST_TIMEOUT_SECONDS = 120
 MODELS_TIMEOUT_SECONDS = 25
 MAX_OUTPUT_BYTES = 8 * 1024 * 1024
@@ -71,7 +74,7 @@ class GrokBackend:
             # Create the workspace before spawn: cwd is resolved before an inline env= call would mkdir it.
             env = self._environment()
             proc = await asyncio.create_subprocess_exec(*prefix, "--version", cwd=self.workspace, env=env,
-                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, creationflags=NO_WINDOW)
             async with asyncio.timeout(5):
                 out, _ = await proc.communicate()
             match = re.search(r"grok (\d+)\.(\d+)\.(\d+)", out.decode("utf-8", "replace"))
@@ -125,7 +128,7 @@ class GrokBackend:
         try:
             env = self._environment()
             proc = await asyncio.create_subprocess_exec(*prefix, "models", cwd=self.workspace, env=env,
-                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, creationflags=NO_WINDOW)
             async with asyncio.timeout(MODELS_TIMEOUT_SECONDS):
                 out, _ = await proc.communicate()
             text = out.decode("utf-8", "replace")
@@ -183,7 +186,7 @@ class GrokBackend:
                 "--tools", "", "--disable-web-search", "--no-subagents", "--max-turns", "1"]
             try:
                 proc = await asyncio.create_subprocess_exec(*argv, cwd=self.workspace, env=env,
-                    stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+                    stdin=asyncio.subprocess.DEVNULL, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL, creationflags=NO_WINDOW)
             except OSError:
                 raise GrokError("provider_failure", "Grok Build could not complete the request; no action was executed.") from None
             output = bytearray()

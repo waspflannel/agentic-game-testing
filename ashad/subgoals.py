@@ -300,11 +300,11 @@ def give_up(plan, goal_id, reason):
     if selected["id"] == plan["root_id"] and not selected.get("replanned"):
         # The last open subgoal was given up but the goal is unverified: ask the planner once for new subgoals from here.
         selected.update(replanned=True, actionable=False)
-        plan["reason"] = reason
+        plan.update(reason=reason, trigger="gave_up")
     elif selected["id"] == plan["root_id"]:
         plan.update(status="handed_back", reason=reason)
     else:
-        plan["reason"] = reason
+        plan.update(reason=reason, trigger="gave_up")
     plan["revision"] += 1
 
 
@@ -339,7 +339,7 @@ def reopen_after_rejected_claim(plan, note):
     if claim.get("checked"):
         root["completion"] = unknown("The operator said the goal is not done although its check passed: " + claim["reason"])
     root["actionable"] = False
-    plan.update(status="active", reason="You said the primary goal is not done" + (f": {note}" if note else "."),
+    plan.update(status="active", trigger="not_done", reason="You said the primary goal is not done" + (f": {note}" if note else "."),
                 revision=plan["revision"] + 1)
 
 

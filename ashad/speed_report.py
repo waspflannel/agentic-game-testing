@@ -291,6 +291,8 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
     gap_total = gaps["gap_seconds"]["total"] or 0
     tick_values = _column(timings, "tick_seconds")
     outcomes = [event for event in events if event["kind"] == "structured_action_outcome"]
+    # The worker's settle timings; v7/v8 game bridges also put a frame count under "settle" on statuses read without the worker's wait.
+    settles = [s for s in ((e["payload"].get("result") or {}).get("settle") for e in outcomes) if isinstance(s, dict)]
     action_results = dict(Counter(_action_status(event["payload"]) for event in events if event["kind"] == "action_result"))
     planning = [event["payload"] for event in events if event["kind"] == "provider_request_finished" and event["payload"].get("purpose") == "planning"]
     goals = len({event["payload"]["plan"]["primary_goal"] for event in events if event["kind"] == "subgoal_plan_updated"}) or 1
@@ -345,8 +347,9 @@ def _hypotheses(timings, events, steps, calls, gaps, turn_total, event_bytes):
             "action_results": action_results,
             "action_outcomes": dict(Counter((event["payload"].get("result") or {}).get("status", "unknown") for event in events if event["kind"] == "structured_action_outcome")),
             "action_effects": dict(Counter((event["payload"].get("result") or {}).get("effect") or "none" for event in events if event["kind"] == "structured_action_outcome")),
-            "settle_poll_seconds": round(sum(((e["payload"].get("result") or {}).get("settle") or {}).get("poll_seconds", 0) for e in outcomes), 6),
-            "settle_observe_seconds": round(sum(((e["payload"].get("result") or {}).get("settle") or {}).get("observe_seconds", 0) for e in outcomes), 6),
+            "failed_with_effect": sum(1 for e in outcomes if (e["payload"].get("result") or {}).get("game_status") == "failed"),
+            "settle_poll_seconds": round(sum(s.get("poll_seconds", 0) for s in settles), 6),
+            "settle_observe_seconds": round(sum(s.get("observe_seconds", 0) for s in settles), 6),
             "turn_failures": dict(Counter(event["payload"].get("category", "unknown") for event in events if event["kind"] == "agent_turn_failed")),
         },
         "polling_waits": {

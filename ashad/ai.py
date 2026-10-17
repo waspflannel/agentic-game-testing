@@ -14,7 +14,7 @@ from .claude_backend import ClaudeBackend, ClaudeError
 from .grok_backend import GrokBackend, GrokError
 from .credentials import Credentials
 from . import facts, jev, skills
-from .menu import GAME_VERBS, _observed_targets, action_groups, batch_options, listed, numeric_option_id, option_key, point, prompt_observation
+from .menu import GAME_VERBS, _observed_targets, action_groups, batch_options, listed, numeric_option_id, option_key, point, prompt_observation, selected_slot
 from .models import CLAUDE_CONTROLS_MODEL, CLAUDE_MODEL, GROK_MODEL, JEV_MODEL, MODEL, PROVIDERS, SUPPORTED_MODELS, provider_of
 from .prompts import SOURCE_NOTES_LIMIT, TUNING_MANUAL_LIMIT, TUNING_MINIMUM_BYTES
 from .store import uid
@@ -574,6 +574,14 @@ class OpenAI:
         model = self.store.require("runs", run_id)["plan"].get("jev_model") or JEV_MODEL
         groups, listings = batch_options(context)
         menu = jev_menu(groups, context["observation"].get("state", {}).get("player", {}).get("position"))
+        selected = selected_slot(context["observation"])
+        if selected is not None:
+            # Pressing the selected slot does nothing, and selects are never banned, so Jev could pick it turn after turn.
+            def presses_selected(key):
+                group, action = (int(i) for i in key.split("."))
+                args = groups[group]["actions"][action]["args"]
+                return args.get("verb") == "input" and args.get("parameters", {}).get("name") == f"slot_{selected + 1}"
+            menu = {key: text for key, text in menu.items() if not presses_selected(key)}
         if not menu:
             return fallback("no_options")  # Only drag sources or Sonnet-only tools are offered.
         log["menu_size"] = len(menu)

@@ -848,7 +848,8 @@ function probeConfigurationBuilds(ov, projectId, agents) {
       ov.validating.delete(buildId);
       renderView();
     }).catch(error => {
-      ov.validation.set(buildId, { ready: false, reason: error.message });
+      // The request failed (provider, desktop or network), so the build itself was not judged.
+      ov.validation.set(buildId, { ready: false, unchecked: true, reason: error.message });
       ov.validating.delete(buildId);
       renderView();
     });

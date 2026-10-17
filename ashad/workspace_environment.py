@@ -216,15 +216,17 @@ def _tools():
 def _execute(argv, *, cwd, env, shell=False, timeout):
     """No inherited pipes: Docker grandchildren cannot block a timed-out read; the whole tree (Windows) or process group (Linux) is killed."""
     with tempfile.TemporaryFile(dir=cwd) as output:
+        # No console window either: PowerShell and Docker would each open one and take the operator's keyboard focus.
         process = subprocess.Popen(argv, cwd=cwd, env=env, shell=shell, stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.DEVNULL,
-                                   start_new_session=os.name != "nt")
+                                   start_new_session=os.name != "nt", creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
         try:
             process.wait(timeout)
         except BaseException:
             if os.name == "nt":
                 taskkill = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32/taskkill.exe"
                 subprocess.run([str(taskkill), "/T", "/F", "/PID", str(process.pid)], stdin=subprocess.DEVNULL,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=False)
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=False,
+                               creationflags=subprocess.CREATE_NO_WINDOW)
             else:
                 # The child leads its own session, so its process group holds every descendant that didn't detach.
                 with contextlib.suppress(ProcessLookupError):

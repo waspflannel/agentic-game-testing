@@ -243,7 +243,7 @@ class OpenAI:
         prefix = static_prefix(context)
         context = planning_evidence(context)
         input_bytes = len(json.dumps({"evidence": context, "schema": schema}, ensure_ascii=False).encode("utf-8"))
-        if input_bytes + len(prefix.encode("utf-8")) + 4608 > 128000:
+        if input_bytes + len(prefix.encode("utf-8")) + 5600 > 128000:
             raise ProviderError("context_limit", "Planning evidence exceeds the bounded context budget. Reduce context before continuing.")
         return await self._request(context, None, "planning", run_id, model, input_bytes, planning_schema=schema, prefix=prefix)
 
@@ -476,7 +476,7 @@ class OpenAI:
             shown = bounded_listings(listings, json.dumps(base, ensure_ascii=False) + prefix)
             evidence = json.dumps({**base, "options": shown}, ensure_ascii=False, separators=(",", ":"))
             size = len(evidence.encode("utf-8"))
-            if size + len(prefix.encode("utf-8")) + 4608 > 128000:
+            if size + len(prefix.encode("utf-8")) + 5600 > 128000:
                 raise ProviderError("context_limit", "Batch evidence exceeds the bounded context budget. Reduce context before continuing.")
             answers = await self._request(evidence, None, "player", run_id, model, size, batch=True, prefix=prefix)
             return evidence, answers, picked_options(answers, groups, shown)

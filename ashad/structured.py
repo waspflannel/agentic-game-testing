@@ -1211,10 +1211,11 @@ class StructuredPlayers:
                                             "control": steps[min(start, len(steps) - 1)]["control"], "reason": stop, "actions": len(ran)})
         live, active = self._active(run_id, player_id)
         if active and active["id"] == goal["id"]:
-            if kind != "decision":
+            # A saved skill tried after the planner's steps were skipped runs from its start each turn; the leaf keeps the planner's steps.
+            if kind != "decision" and (not active.get("steps") or source == (active.get("skill_key") or "steps")):
                 active.update(steps=steps, step=cursor["index"])
-            if kind == "skill":
-                active.update(skill=name, skill_key=source)
+                if kind == "skill":
+                    active.update(skill=name, skill_key=source)
             if stop in REPLAY_MISSES:
                 active["missed"] = (active.get("missed") or []) + [source]
             self.store.put("runs", live)

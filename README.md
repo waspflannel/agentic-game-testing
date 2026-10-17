@@ -108,7 +108,7 @@ Only a plan whose goal check passed is saved as a plan pattern, with that check;
 
 A turn that dispatches or waits without progress toward any goal on the active path counts one attempt on the active leaf; progress resets it to zero. While the player cannot act (menus, character creation, cutscenes), reaching a screen the leaf has not seen counts as progress, up to 32 per leaf; returning to a seen screen does not. A screen includes the text it shows, so each cutscene slide is its own screen, and there a press whose only effect is new text, such as the first `next_text` that finishes a cutscene's typing, counts as having an effect instead of being left out of the menus.
 
-A leaf that spends six attempts is broken: the first break re-plans it once, a second break gives it up with one gap. A failed action is left out of that leaf's menus.
+A leaf that spends six attempts is broken: the first break re-plans it once, a second break gives it up with one gap. An action that fails or has no effect twice on a leaf is left out of that leaf's menus. A failed action whose next observation shows a change counts as completed, with the game's status kept as `game_status`.
 
 Each turn tries the cache while the leaf has no attempts, then Jev (below three attempts), then Sonnet. Without a usable TypeSafe key every Jev step falls back to Sonnet (`jev_error:unavailable`). A Jev or Sonnet batch is saved as a decision skill only when its turn made progress, and a stage skill keeps the planner's steps only when their replay did not miss.
 

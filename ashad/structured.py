@@ -78,6 +78,13 @@ def is_select_input(action):
     return args.get("verb") == "input" and (name.startswith("slot_") or name in ("hotbar_prev", "hotbar_next"))
 
 
+def ban_miss(goal, action):
+    """Count a miss of the action on the leaf: the first is remembered, a second bans its option from the leaf's menus."""
+    missed = option_key(action)
+    seen = "failed" if missed in (goal.get("failed_once") or []) else "failed_once"
+    goal[seen] = ((goal.get(seen) or []) + [missed])[-FAILED_KEPT:]
+
+
 def shown_text(observation):
     """The text every UI element shows, e.g. a cutscene's typewriter line, which has no actions."""
     return sorted(str(e.get("label", "")) for e in observation.get("entities", []) if e.get("kind") == "ui")
@@ -896,7 +903,13 @@ class StructuredPlayers:
         patterns = skills.plan_patterns(self.store, project_id)
         if not is_root:
             patterns = [(key, record) for key, record in patterns if skills.shape(record["goal"]) == skills.shape(goal["completion"])]
-        pick = await self.coordinator.ai.plan_pick(goal["objective"], patterns, run_id)
+        # A chunk proven for this very check needs no reading of the wording: one is the pick, several go to Jev.
+        same = [(key, record) for key, record in patterns if not is_root and "args" in record and skills.same_check(record, goal["completion"])]
+        if len(same) == 1:
+            key, record = same[0]
+            pick = {"offered": [key], "key": key, "match": "exact", "similarity": None, "verdict_confidence": None, "args": record["args"], "reason": None}
+        else:
+            pick = await self.coordinator.ai.plan_pick(goal["objective"], same or patterns, run_id)
         live, _ = self.binding(run_id, player_id)
         if not pick["reason"] and (live.get("subgoal_plan") or {}).get("revision") != plan["revision"]:
             pick["reason"] = "stale"  # The plan moved during the request.
@@ -1125,6 +1138,12 @@ class StructuredPlayers:
                 return why, ran  # "done" for an empty queue, else "not_offered".
             if done >= limit:
                 return "limit", ran
+            if ran and not is_select_input(ran[-1]) and (last.get("status") in ("failed", "no_effect") or last.get("game_status") == "failed"):
+                # A miss the batch went on past: the turn's stop only sees the last action, so count it here.
+                live, leaf = self._active(run_id, player_id)
+                if leaf:
+                    ban_miss(leaf, ran[-1])
+                    self.store.put("runs", live)
             with timed(timing, "tool:act:perform_action"):
                 last = await self.dispatch(run_id, player_id, "perform_action",
                                            {**action["args"], "reason": "Batch: " + action["description"]}, fresh, generation)
@@ -1280,9 +1299,7 @@ class StructuredPlayers:
         elif stop in ("failed", "no_effect") and actions and not is_select_input(actions[-1]):
             # One miss can be an effect the observation had not caught yet; a second identical miss on this leaf bans it,
             # as repeated_failures waits for two before telling the planner.
-            missed = option_key(actions[-1])
-            seen = "failed" if missed in (goal.get("failed_once") or []) else "failed_once"
-            goal[seen] = ((goal.get(seen) or []) + [missed])[-FAILED_KEPT:]
+            ban_miss(goal, actions[-1])
         attempts = None if progressed else subgoals.record_attempt(run["subgoal_plan"])
         self.store.put("runs", run)
         if attempts:

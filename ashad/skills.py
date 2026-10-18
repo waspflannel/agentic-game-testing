@@ -206,9 +206,11 @@ def count_of(text):
 
 
 def goal_count(goal):
-    """The goal's count: a sub-goal's int check value, else count_of its objective (the root's check may be relative)."""
-    value = goal["completion"].get("value")
-    return value if goal.get("parent_id") and type(value) is int else count_of(goal["objective"])
+    """The goal's count: a sub-goal's int check value, else None; the root's is count_of its objective (its check may be relative)."""
+    if goal.get("parent_id"):
+        value = goal["completion"].get("value")
+        return value if type(value) is int else None
+    return count_of(goal["objective"])
 
 
 def goal_form(text):
@@ -216,6 +218,19 @@ def goal_form(text):
     form = " ".join(text.casefold().split())
     count = count_of(form)
     return form if count is None else re.sub(rf"\b{count}\b", "N", form)
+
+
+def same_check(record, check):
+    """Whether the pattern's saved goal check, filled with its saved args, is check apart from the count (a {count} value matches any int)."""
+    saved = record["goal"]
+    args = {}
+    for arg in saved["args"]:
+        value = arg["value"]
+        for name, saved_value in record["args"].items():
+            value = value.replace("{" + name + "}", saved_value) if isinstance(value, str) else value
+        args[arg["name"]] = value
+    value_ok = type(check["value"]) is int if saved["value"] == "{count}" else saved["value"] == check["value"]
+    return saved["fact"] == check["fact"] and saved["op"] == check["op"] and args == {a["name"]: a["value"] for a in check["args"]} and value_ok
 
 
 def pattern_stage(stage, args, count):

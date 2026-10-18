@@ -205,6 +205,12 @@ def count_of(text):
     return numbers.pop() if len(numbers) == 1 else None
 
 
+def goal_count(goal):
+    """The goal's count: a sub-goal's int check value, else count_of its objective (the root's check may be relative)."""
+    value = goal["completion"].get("value")
+    return value if goal.get("parent_id") and type(value) is int else count_of(goal["objective"])
+
+
 def goal_form(text):
     """The goal as compared for plan reuse: case-folded, whitespace collapsed, its count (count_of) as N."""
     form = " ".join(text.casefold().split())
@@ -246,16 +252,20 @@ def pattern_stage(stage, args, count):
 
 
 def plan_args(goal, stages):
-    """The plan's one value per check arg, as (args, None), or (None, {arg, values}) when two differ beyond bind's value_ / _value rule."""
-    args = {}
+    """The plan's one value per check arg, as (args, None): the base the others derive from (value_ / _value), whatever the order.
+    (None, {arg, values}) when two values differ beyond that rule."""
+    values = {}
     for stage in [goal] + stages:
         for arg in stage["completion"]["args"]:
-            name, value = arg["name"], arg["value"]
-            if not isinstance(value, str) or not value:
-                continue
-            first = args.setdefault(name, value)
-            if value != first and not value.startswith(first + "_") and not value.endswith("_" + first):
-                return None, {"arg": name, "values": [first, value]}
+            if isinstance(arg["value"], str) and arg["value"]:
+                values.setdefault(arg["name"], set()).add(arg["value"])
+    args = {}
+    for name, found in values.items():
+        base = min(found, key=len)
+        for value in found:
+            if value != base and not value.startswith(base + "_") and not value.endswith("_" + base):
+                return None, {"arg": name, "values": [base, value]}
+        args[name] = base
     return args, None
 
 
@@ -271,7 +281,7 @@ def save_plan(store, project_id, goal, stages, won, build_id=None, run_id=None, 
         args, conflict = plan_args(goal, stages)
         if conflict:
             return None
-        count = count_of(goal["objective"])
+        count = goal_count(goal)
         record = record or {"scope": "plan", "project_id": project_id, "wins": 0, "fails": 0}
         won_before = record.get("objectives") or ([record["objective"]] if "objective" in record else [])  # Old rows keep one.
         record["objective"] = goal["objective"]  # The latest goal it won, as written.

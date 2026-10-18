@@ -905,7 +905,7 @@ class StructuredPlayers:
             return None  # The planner decides.
         key, args = pick["key"], pick["args"]
         record = dict(patterns)[key]
-        count = skills.count_of(goal["objective"])
+        count = skills.goal_count(goal)
         warnings = []
         try:
             if record["uses_count"] and count is None:
